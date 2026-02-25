@@ -18,7 +18,7 @@ import seaborn as sns
 
 # 设置路径
 # features_file_labeled = "phylosolid/models/data_labeling_for_classifier_and_ROC.txt"
-features_file_labeled = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/models/data_labeling_for_classifier_and_ROC.txt"
+features_file_labeled = "classifier/scdna/data_labeling_for_classifier_and_ROC.txt"
 
 # 定义特征列
 SELECTED_FEATURES = [

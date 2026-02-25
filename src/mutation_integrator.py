@@ -39,9 +39,9 @@ from collections import defaultdict, Counter
 from typing import Set, List, Dict, Optional, Tuple, Any, Union
 from scipy.special import logsumexp, comb, perm, beta
 from anytree import Node, RenderTree
-from phylosolid.germline_filter import pairwise_counts, jaccard_index, are_mutations_correlated, reorder_columns_by_mutant_stats
-from phylosolid.scaffold_builder import TreeNode, tree_to_dict, print_tree_dict
-from phylosolid.scaffold_builder import print_tree, add_new_mutation_to_tree_independent, split_merged_columns, WriteTfile, compute_bayesian_penalty_each_pos, compute_bayesian_penalty_each_chain_mut_by_pos, build_lineage_parent_dict_from_tree
+from src.germline_filter import pairwise_counts, jaccard_index, are_mutations_correlated, reorder_columns_by_mutant_stats
+from src.scaffold_builder import TreeNode, tree_to_dict, print_tree_dict
+from src.scaffold_builder import print_tree, add_new_mutation_to_tree_independent, split_merged_columns, WriteTfile, compute_bayesian_penalty_each_pos, compute_bayesian_penalty_each_chain_mut_by_pos, build_lineage_parent_dict_from_tree
 import scphylo as scp
 from scphylo.pl._helper import (
     _add_barplot,

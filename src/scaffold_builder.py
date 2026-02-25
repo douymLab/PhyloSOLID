@@ -50,7 +50,7 @@ from scphylo.pl._helper import (
     _newick_info2_mutation_list,
 )
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from phylosolid.germline_filter import reorder_columns_by_mutant_stats
+from src.germline_filter import reorder_columns_by_mutant_stats
 
 # Try to import optional dependencies
 try:
@@ -448,7 +448,7 @@ from collections import defaultdict
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from typing import List, Tuple, Dict
-from phylosolid.germline_filter import pairwise_counts, jaccard_index, are_mutations_correlated
+from src.germline_filter import pairwise_counts, jaccard_index, are_mutations_correlated
 
 def compute_clone_conter(muts, corr_cache, n_shuffle=100):
     clone_counter = defaultdict(int)
@@ -1687,7 +1687,7 @@ import numpy as np
 import pandas as pd
 import math
 from collections import deque
-from phylosolid.germline_filter import pairwise_counts
+from src.germline_filter import pairwise_counts
 
 # -------------------------
 # TreeNode: 最小化树对象

@@ -245,30 +245,34 @@ chmod +x scripts/scrna/**/*.R
 
 If you use PhyloSOLID in your research, please cite:
 
-    1.Yang, Q. et al. PhyloSOLID: robust phylogeny reconstruction from single-cell data despite pervasive errors and extreme sparsity.
+    1.Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
 
 ## License
 
-MIT License
+PhyloSOLID is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-Copyright (c) 2026 douymLab
+### Code Availability
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+The source code, documentation and examples are available on GitHub at [https://github.com/douymLab/PhyloSOLID](https://github.com/douymLab/PhyloSOLID).
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+**Note**: The PhyloSOLID source code is currently being prepared for public release. 
+It will be made publicly available on GitHub by **March 1, 2026**, or upon the manuscript's 
+formal acceptance, whichever comes first. Until then, the code is available for review 
+purposes upon request.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+### Third-party Dependencies
+
+PhyloSOLID uses several third-party tools and libraries:
+- **ANNOVAR**: Users need to install ANNOVAR separately (free for academic use, registration required)
+- **R packages**: Various R packages under GPL/MIT licenses
+- **Python packages**: See requirements.txt for details
+
+Please respect the licenses of these dependencies when using PhyloSOLID.
+
+
+## Contact
+
+For questions and support, please contact: yangqing@westlake.edu.cn & yanmeidou@westlake.edu.cn
+
 
 

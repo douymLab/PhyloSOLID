@@ -8,8 +8,8 @@
 import time
 start_time = time.perf_counter()
 
-import sys
-sys.path.append('/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src')
+
+
 
 ################################################################################################
 ########################################## PhyloSOLID #########################################
@@ -25,14 +25,13 @@ from copy import deepcopy
 
 logger = logging.getLogger(__name__)
 
-# from phylosolid import config
-from phylosolid.data_loader import load_all
-from phylosolid.scrna_classifier import real_time_classifier_predict
-from phylosolid.germline_filter import identify_germline_variants
-from phylosolid.germline_filter import *
-from phylosolid.scaffold_builder import build_scaffold_tree
-from phylosolid.scaffold_builder import *
-from phylosolid.mutation_integrator import *
+from src.data_loader import load_all
+from src.scrna_classifier import real_time_classifier_predict
+from src.germline_filter import identify_germline_variants
+from src.germline_filter import *
+from src.scaffold_builder import build_scaffold_tree
+from src.scaffold_builder import *
+from src.mutation_integrator import *
 
 # 设置所有随机种子
 RANDOM_SEED = 42  # 可以任意指定
