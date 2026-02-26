@@ -1,8 +1,8 @@
 import subprocess
 import sys
 import pandas as pd
-from module.UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
-from module.read_file import handle_barcode
+from UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
+from read_file import handle_barcode
 import os
 from collections import defaultdict
 import argparse

@@ -8,42 +8,71 @@ startTime=`date +%Y%m%d-%H:%M:%S`
 startTime_s=`date +%s`
 echo " ----- Start at : $startTime -----"
 
-# Set ulimit
-ulimit -n 100000
-
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # Load configuration
 CONFIG_FILE="${PROJECT_ROOT}/config/paths.yaml"
+
+# Initialize variables
+CONDA_PYTHON="python"  # Default to system python
+ANNOVAR_DIR=""
+HUMANDB=""
+GENOME_FASTA=""
+GFF3_FILE=""
+MAPPABILITY_FILE=""
+GNOMAD_FILE=""
+RNA_EDITING_FILE=""
+RUN_GET_PRIOR=""
+
 if [ -f "$CONFIG_FILE" ]; then
-    # Simple YAML parser - for production consider using a proper YAML tool
-    ANNOVAR_DIR=$(grep 'script_dir:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    HUMANDB=$(grep 'humandb:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    GENOME_FASTA=$(grep 'genome_fasta:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    GFF3_FILE=$(grep 'gff3_file:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    MAPPABILITY_FILE=$(grep 'mappability_file:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    GNOMAD_FILE=$(grep 'gnomad_file:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    RNA_EDITING_FILE=$(grep 'rna_editing_file:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
-    RUN_GET_PRIOR=$(grep 'run_get_prior:' "$CONFIG_FILE" | grep -v '#' | head -1 | awk '{print $2}' | tr -d '"')
+    echo "Loading configuration from $CONFIG_FILE"
+    
+    # Extract conda python path
+    CONDA_PYTHON=$(grep -A5 'conda:' "$CONFIG_FILE" | grep 'python:' | head -1 | sed -E 's/.*python: *"?([^"]*)"?.*/\1/')
+    if [ -z "$CONDA_PYTHON" ]; then
+        CONDA_PYTHON="python"
+        echo "Warning: conda python not found in config, using system python"
+    else
+        echo "Using conda Python: $CONDA_PYTHON"
+    fi
+    
+    # Extract ANNOVAR paths
+    ANNOVAR_DIR=$(grep -A5 'annovar:' "$CONFIG_FILE" | grep 'script_dir:' | head -1 | sed -E 's/.*script_dir: *"?([^"]*)"?.*/\1/')
+    HUMANDB=$(grep -A5 'annovar:' "$CONFIG_FILE" | grep 'humandb:' | head -1 | sed -E 's/.*humandb: *"?([^"]*)"?.*/\1/')
+    
+    # Extract reference paths
+    GENOME_FASTA=$(grep -A10 'reference:' "$CONFIG_FILE" | grep 'genome_fasta:' | head -1 | sed -E 's/.*genome_fasta: *"?([^"]*)"?.*/\1/')
+    GFF3_FILE=$(grep -A10 'reference:' "$CONFIG_FILE" | grep 'gff3_file:' | head -1 | sed -E 's/.*gff3_file: *"?([^"]*)"?.*/\1/')
+    MAPPABILITY_FILE=$(grep -A10 'reference:' "$CONFIG_FILE" | grep 'mappability_file:' | head -1 | sed -E 's/.*mappability_file: *"?([^"]*)"?.*/\1/')
+    GNOMAD_FILE=$(grep -A10 'reference:' "$CONFIG_FILE" | grep 'gnomad_file:' | head -1 | sed -E 's/.*gnomad_file: *"?([^"]*)"?.*/\1/')
+    RNA_EDITING_FILE=$(grep -A10 'reference:' "$CONFIG_FILE" | grep 'rna_editing_file:' | head -1 | sed -E 's/.*rna_editing_file: *"?([^"]*)"?.*/\1/')
+    RUN_GET_PRIOR=$(grep -A10 'reference:' "$CONFIG_FILE" | grep 'run_get_prior:' | head -1 | sed -E 's/.*run_get_prior: *"?([^"]*)"?.*/\1/')
+    
+    # Output read values for debugging
+    echo "Read ANNOVAR_DIR: $ANNOVAR_DIR"
+    echo "Read HUMANDB: $HUMANDB"
+    
 else
     echo "Warning: Config file not found at $CONFIG_FILE"
     echo "Using default paths from environment variables"
-    ANNOVAR_DIR=${ANNOVAR_DIR:-""}
-    HUMANDB=${HUMANDB:-""}
-    GENOME_FASTA=${GENOME_FASTA:-""}
-    GFF3_FILE=${GFF3_FILE:-""}
-    MAPPABILITY_FILE=${MAPPABILITY_FILE:-""}
-    GNOMAD_FILE=${GNOMAD_FILE:-""}
-    RNA_EDITING_FILE=${RNA_EDITING_FILE:-""}
-    RUN_GET_PRIOR=${RUN_GET_PRIOR:-""}
 fi
 
+# Remove trailing slashes
+ANNOVAR_DIR=$(echo "$ANNOVAR_DIR" | sed 's/\/$//')
+HUMANDB=$(echo "$HUMANDB" | sed 's/\/$//')
+
 # Validate required paths
-if [ -z "$ANNOVAR_DIR" ] || [ ! -f "${ANNOVAR_DIR}/annotate_variation.pl" ]; then
-    echo "ERROR: ANNOVAR not found. Please install ANNOVAR and set script_dir in config/paths.yaml"
+if [ -z "$ANNOVAR_DIR" ] || [ ! -d "$ANNOVAR_DIR" ]; then
+    echo "ERROR: ANNOVAR directory not found. Please install ANNOVAR and set script_dir in config/paths.yaml"
     echo "Current ANNOVAR_DIR: $ANNOVAR_DIR"
+    exit 1
+fi
+
+if [ ! -f "${ANNOVAR_DIR}/annotate_variation.pl" ]; then
+    echo "ERROR: annotate_variation.pl not found in $ANNOVAR_DIR"
+    ls -la "$ANNOVAR_DIR" | head -10
     exit 1
 fi
 
@@ -96,7 +125,8 @@ echo "============ Annovar annotation: Start ============"
 ${ANNOVAR_DIR}/annotate_variation.pl -build hg38 -out ${out_dir_name}/${prefix_name}.anno \
     -dbtype wgEncodeGencodeBasicV46 ${out_dir_name}/${prefix_name}.bed ${HUMANDB}/
 
-python -m others.get_mutation_anno_table \
+# Direct script path instead of -m
+${CONDA_PYTHON} ${SCRIPT_DIR}/get_mutation_anno_table.py \
     -m ${identifier_file} \
     -i ${out_dir_name}/${prefix_name}.anno \
     -o ${out_dir_name}/${prefix_name}.anno_info.txt
@@ -106,7 +136,7 @@ echo "============ Annovar annotation: Completed ============"
 # Prior from gnomad
 echo "============ Get prior from gnomad: Start ============"
 if [ -f "$RUN_GET_PRIOR" ]; then
-    python $RUN_GET_PRIOR splitprior \
+    ${CONDA_PYTHON} $RUN_GET_PRIOR splitprior \
         -s ${sampleid} \
         --bedfile ${out_dir_name}/${prefix_name}.bed \
         --outdir ${out_dir_name} \
@@ -122,7 +152,8 @@ echo "============ Get prior from gnomad: Completed ============"
 ################################################################
 # Get features
 echo "============ Get features: Start ============"
-python -m module.extract_features \
+# Direct script path instead of -m
+${CONDA_PYTHON} ${SCRIPT_DIR}/extract_features.py \
     --mutations ${identifier_file} \
     --fasta $GENOME_FASTA \
     --gff3_file $GFF3_FILE \
@@ -140,7 +171,8 @@ echo "============ Get features: Completed ============"
 ################################################################
 # Get depth in mutant spots and unmutant spots
 echo "============ Get depth in spots: Start ============"
-python -m others.get_mutspots_new_for_dp_and_features \
+# Direct script path instead of -m
+${CONDA_PYTHON} ${SCRIPT_DIR}/get_mutspots_new_for_dp_and_features.py \
     --bam ${bamfile} \
     --mutation_list ${identifier_file} \
     --barcode_file ${barcode_file} \
@@ -153,7 +185,7 @@ echo "============ Get depth in spots: Completed ============"
 ################################################################
 # Calculate R square between mutant allele number and expression
 echo "============ Calculate R square: Start ============"
-python ${SCRIPT_DIR}/cal_Rsquare_as_new_feature_for_scRNA.py \
+${CONDA_PYTHON} ${SCRIPT_DIR}/cal_Rsquare_as_new_feature_for_scRNA.py \
     --feature_file ${out_dir_name}/${prefix_name}.feature_depth.txt \
     --reads_filepath ${out_dir_name}/depth_in_spots \
     --output_file ${out_dir_name}/${prefix_name}.feature_depth_Rsquare.txt
@@ -176,7 +208,8 @@ if [ "${ase_filepath}" != "no" ]; then
 
     tail -n +2 ${out_dir_name}/${prefix_name}.feature_depth_Rsquare_sigFilter.txt | cut -f4 > ${out_dir_name}/${prefix_name}.mutation_list.txt
 
-    python -m others.filter_ASE \
+    # Direct script path instead of -m
+    ${CONDA_PYTHON} ${SCRIPT_DIR}/filter_ASE.py \
         --bam ${bamfile} \
         --RNA_editing $RNA_EDITING_FILE \
         --ase_file ${ase_filepath}/${sampleid}.candidate_ASE_sites.txt \
@@ -227,7 +260,8 @@ if [ -f "${out_dir_name}/${sampleid}.${prefix_name}.prior.out" ]; then
     prior_arg="--prior ${out_dir_name}/${sampleid}.${prefix_name}.prior.out"
 fi
 
-python -m others.extract_feature_patch_add_r_add_pkl_refine_UMI_add_adj \
+# Direct script path instead of -m
+${CONDA_PYTHON} ${SCRIPT_DIR}/extract_feature_patch_add_r_add_pkl_refine_UMI_add_adj.py \
     --features ${out_dir_name}/${prefix_name}.feature_final.txt \
     --thread "${thread}" \
     --outdir "${out_dir_name}" \

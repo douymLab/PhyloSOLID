@@ -1,0 +1,130 @@
+name: phylosolid_env
+channels:
+  - conda-forge
+  - bioconda
+  - r
+  - defaults
+dependencies:
+  # Python base
+  - python=3.9
+  - pip
+  
+  # Core scientific computing
+  - numpy>=1.21.0
+  - pandas>=1.3.0
+  - scipy>=1.7.0
+  - matplotlib>=3.4.0
+  - seaborn>=0.11.0
+  
+  # Machine learning
+  - scikit-learn>=1.0.0
+  - joblib>=1.0.0
+  
+  # Graph analysis and networks
+  - networkx>=2.6.0
+  - python-igraph>=0.9.0
+  - leidenalg>=0.8.0
+  - python-louvain>=0.15
+  - anytree>=2.8.0
+  - pygraphviz
+  
+  # Single-cell analysis
+  - scanpy>=1.9.0
+  - anndata>=0.8.0
+  
+  # Bioinformatics
+  - pysam>=0.19.0
+  - pybedtools>=0.9.0
+  - pyfaidx>=0.7.0
+  - igraph
+  
+  # Parallel processing and utilities
+  - tqdm>=4.62.0
+  - multiprocess
+  
+  # Statistics
+  - statsmodels>=0.13.0
+  
+  # Phylogenetics related
+  - ete3
+  - dendropy
+  
+  # File handling
+  - h5py>=3.4.0
+  - hdf5>=1.12.0
+  - pytables>=3.6.0
+  
+  # Git
+  - git
+  
+  # R language support
+  - r-base=4.3
+  - r-essentials
+  - r-devtools
+  - r-remotes
+  - r-tidyverse
+  - r-dplyr
+  - r-tidyr
+  - r-purrr
+  - r-ggplot2
+  - r-stringr
+  - r-optparse
+  - r-ape
+  - r-phangorn
+  - r-phytools
+  - r-phylogram
+  - r-reticulate
+  - r-dendextend
+  - r-pheatmap
+  - r-circlize
+  - r-ggnewscale
+  - r-ggtext
+  - r-pals
+  - r-Polychrome
+  - r-gridextra
+  - r-patchwork
+  - r-cowplot
+  - r-rlang
+  - r-pracma
+  - r-gtable
+  - r-tibble
+  - r-sampling
+  - r-TreeDist
+  
+  # Bioconductor packages (using bioconductor- prefix)
+  - bioconductor-treeio
+  - bioconductor-annotationdbi
+  - bioconductor-org.hs.eg.db
+  - bioconductor-complexheatmap
+  - bioconductor-ggtree
+  - bioconductor-ggtreeextra
+  
+  # Pip installed packages
+  - pip:
+    # Deep learning (optional)
+    - torch>=1.9.0
+    
+    # Phylogenetics tools
+    - scphylo-tools>=0.1.0
+    
+    # Logging and debugging
+    - loguru>=0.5.0
+    
+    # Python-R interface
+    - rpy2>=3.5.0
+    
+    # Interactive visualization
+    - plotly>=5.3.0
+    
+    # Additional Python packages
+    - gitpython>=3.1.0
+    - requests>=2.26.0
+    - json5>=0.9.0
+    - pyyaml>=5.4.0
+    - cloudpickle>=2.0.0
+    - pytest>=6.2.0
+    - black>=21.0.0
+    - cogent3>=2022.0.0
+    - biopython>=1.79
+    - hdf5plugin>=3.0.0
+    - pickle5>=0.0.11

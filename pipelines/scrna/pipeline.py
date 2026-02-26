@@ -38,8 +38,37 @@ class SCRNAPipeline(Pipeline):
         self.add_step('tree_building', 
                      SCRNATreeBuildingStep(self.workdir, script_dir, config))
     
+    def get_step_output(self, step_name: str, output_name: str = None) -> Optional[Path]:
+        """
+        Get output from a specific step
+        
+        Args:
+            step_name: Name of the step (e.g., 'tree_building')
+            output_name: Name of the output (e.g., 'tree_file')
+        
+        Returns:
+            Path to output file or None if not found
+        """
+        if step_name not in self.steps:
+            self.logger.warning(f"Step {step_name} not found")
+            return None
+        
+        if output_name:
+            return self.steps[step_name].get_output(output_name)
+        return self.steps[step_name].get_all_outputs()
+    
+    def get_tree_file(self) -> Optional[Path]:
+        """
+        Get the final tree file path
+        
+        Returns:
+            Path to tree file or None if not found
+        """
+        return self.get_step_output('tree_building', 'tree_file')
+    
     def run(self, sample_id: str, mutation_list: Path, bam_file: Path,
-            barcode_file: Path, metadata_file: Optional[Path] = None,
+            barcode_file: Path, celltype_file: Optional[Path] = None,
+            metadata_file: Optional[Path] = None,
             read_len: int = 91, cellnum: int = 155, threads: int = 4,
             running_type: str = "benchmark", ase_filepath: Optional[str] = None,
             steps: List[str] = None, parallel: bool = False) -> Dict[str, Any]:
@@ -65,6 +94,14 @@ class SCRNAPipeline(Pipeline):
         """
         self.logger.info(f"Starting scRNA pipeline for sample {sample_id}")
         
+        # 确定 celltype 的来源
+        if celltype_file:
+            self.logger.info(f"Using provided celltype file: {celltype_file}")
+        elif metadata_file and barcode_file:
+            self.logger.info(f"Will generate celltype file from metadata: {metadata_file}")
+        else:
+            self.logger.warning("No celltype information provided (neither --celltype-file nor --metadata)")
+        
         # Prepare arguments for each step
         step_kwargs = {
             'feature_extraction': {
@@ -83,15 +120,15 @@ class SCRNAPipeline(Pipeline):
                 'bam_file': bam_file,
                 'barcode_file': barcode_file,
                 'cellnum': cellnum,
-                'threads': min(threads, 2)  # Tree input may only need 2 threads
+                'threads': min(threads, 2)
             },
             'tree_building': {
                 'sample_id': sample_id,
                 'cellnum': cellnum,
-                'metadata_file': metadata_file,
+                'celltype_file': celltype_file,       # 直接传递，可能为 None
+                'metadata_file': metadata_file,       # 用于生成
                 'barcode_file': barcode_file,
-                # Features file from tree input step
-                'features_file': self.workdir / '02_treeinput' / 'treeinput' / 'features_file.txt'
+                'features_file': self.workdir / '01_features' / f"{sample_id}.{running_type}_patched.feature.txt"
             }
         }
         
@@ -137,12 +174,3 @@ class SCRNAPipeline(Pipeline):
         }
         
         return self.results
-    
-    def get_tree_file(self) -> Optional[Path]:
-        """
-        Get the final tree file path
-        
-        Returns:
-            Path to tree file or None if not found
-        """
-        return self.get_step_output('tree_building', 'tree_file')

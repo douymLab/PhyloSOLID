@@ -1,0 +1,135 @@
+name: phylosolid_env
+channels:
+  - conda-forge
+  - bioconda
+  - r
+  - defaults
+dependencies:
+  # Python core
+  - python=3.9
+  - pip
+  
+  # Core scientific computing
+  - numpy=1.23.5
+  - pandas=1.5.3
+  - scipy=1.10.1
+  - matplotlib=3.7.1
+  - seaborn=0.12.2
+  
+  # Machine learning
+  - scikit-learn=1.2.2
+  - joblib=1.2.0
+  
+  # Graph analysis and networks
+  - networkx=3.0
+  - python-igraph=0.10.4
+  - leidenalg=0.9.1
+  - python-louvain=0.16
+  - pygraphviz=1.10
+  
+  # Single-cell analysis
+  - scanpy=1.9.3
+  - anndata=0.8.0
+  
+  # Bioinformatics
+  - pysam=0.21.0
+  - pybedtools=0.9.1
+  - pyfaidx=0.7.2.1
+  - igraph=0.10.4
+  
+  # Parallel processing and utilities
+  - tqdm=4.65.0
+  - multiprocess=0.70.14
+  
+  # Statistics
+  - statsmodels=0.13.5
+  
+  # Phylogenetics related
+  - ete3=3.1.2
+  - dendropy=4.5.2
+  
+  # File handling
+  - h5py=3.8.0
+  - hdf5=1.14.0
+  - pytables=3.8.0
+  
+  # Git
+  - git=2.40.1
+  
+  # R language support
+  - r-base=4.3.0
+  - r-essentials=4.3
+  - r-devtools=2.4.5
+  - r-remotes=2.4.2
+  - r-tidyverse=2.0.0
+  - r-dplyr=1.1.2
+  - r-tidyr=1.3.0
+  - r-purrr=1.0.1
+  - r-ggplot2=3.4.2
+  - r-stringr=1.5.0
+  - r-optparse=1.7.3
+  - r-ape=5.7-1
+  - r-phangorn=2.11.1
+  - r-phytools=1.5-1
+  - r-phylogram=2.1.0
+  - r-reticulate=1.28
+  - r-dendextend=1.17.1
+  - r-pheatmap=1.0.12
+  - r-circlize=0.4.15
+  - r-ggnewscale=0.4.9
+  - r-ggtext=0.1.2
+  - r-pals=1.7
+  - r-Polychrome=1.5.1
+  - r-gridextra=2.3
+  - r-patchwork=1.1.2
+  - r-cowplot=1.1.1
+  - r-rlang=1.1.0
+  - r-pracma=2.4.2
+  - r-gtable=0.3.3
+  - r-tibble=3.2.1
+  - r-sampling=2.9
+  
+  # TreeDist (从 conda-forge 安装)
+  - r-treedist=2.4.1
+  
+  # Bioconductor packages (使用 conda 的 bioconductor 前缀)
+  - bioconductor-treeio=1.24.0
+  - bioconductor-annotationdbi=1.62.0
+  - bioconductor-org.hs.eg.db=3.16.0
+  - bioconductor-complexheatmap=2.16.0
+  - bioconductor-ggtree=3.8.0
+  - bioconductor-ggtreeextra=1.8.0
+  
+  # Pip installed packages
+  - pip:
+    # Phylogenetics tools
+    - scphylo-tools==0.1.0
+    
+    # Tree and graph tools
+    - anytree==2.8.0
+    
+    # Logging and debugging
+    - loguru==0.7.2
+    
+    # Python-R interface
+    - rpy2==3.5.5
+    
+    # Interactive visualization
+    - plotly==5.14.1
+    
+    # Additional Python packages
+    - gitpython==3.1.31
+    - requests==2.31.0
+    - json5==0.9.14
+    - pyyaml==6.0
+    - cloudpickle==2.2.1
+    - pytest==7.3.1
+    - black==23.3.0
+    - cogent3==2023.2.13a1
+    - biopython==1.81
+    - hdf5plugin==4.0.0
+    - pickle5==0.0.12
+    
+    # Deep learning (optional - 如果不需要可以删除)
+    - torch==2.0.1
+

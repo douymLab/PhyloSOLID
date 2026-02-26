@@ -9,8 +9,8 @@ import numpy as np
 from scipy import stats
 from scipy.stats import ttest_ind  # 用于差异分析的 T 检验
 import multiprocessing
-from module.UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
-from utils import check_dir
+from UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
+from myutils import check_dir
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.stats import mannwhitneyu
 import warnings

@@ -5,7 +5,7 @@ import scipy
 # from utils import  calculate_rbc_for_paired_wilcoxon, check_dir,combine_info_from_cigar, get_chr_size, get_indel_info, handle_p_value_log10,handle_posname,judge_pos_in_indel,do_wilicox_sum_test, round_to_nearest_bin, wilcoxon_with_rbc
 import os
 import pysam
-from module.UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele, handle_cigar, handle_pos, handle_quality_matrix, handle_seq
+from UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele, handle_cigar, handle_pos, handle_quality_matrix, handle_seq
 from collections import Counter,defaultdict
 import numpy as np
 import matplotlib.pyplot as plt

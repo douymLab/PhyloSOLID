@@ -79,6 +79,10 @@ def load_config(config_file: Optional[Path]) -> Dict:
 def load_paths_config(config_file: Optional[Path] = None) -> dict:
     """Load paths configuration from YAML file"""
     default_paths = {
+        'conda': {  # 新增 conda 配置
+            'python': None,
+            'env_path': None
+        },
         'annovar': {
             'script_dir': None,
             'humandb': None,
@@ -144,6 +148,15 @@ def main():
     # Subcommands
     subparsers = parser.add_subparsers(dest='mode', required=True, help='Analysis mode')
     
+    # check-annovar subcommand
+    check_parser = subparsers.add_parser('check-annovar', 
+                                        help='Check ANNOVAR installation and configuration')
+    check_parser.add_argument('--config', '-c', type=Path, required=True,
+                             help='Configuration file path')
+    # Add threads parameter for consistency (though not used)
+    check_parser.add_argument('--threads', '-t', type=int, default=4,
+                             help='Number of threads (default: 4)')
+    
     # scRNA subcommand
     scrna_parser = subparsers.add_parser('scrna', help='scRNA-seq mode')
     scrna_parser.add_argument('--sample', '-s', required=True, help='Sample ID')
@@ -152,7 +165,10 @@ def main():
     scrna_parser.add_argument('--bam', '-b', required=True, type=Path, help='BAM file')
     scrna_parser.add_argument('--barcode', '-bc', required=True, type=Path, 
                              help='Barcode file')
-    scrna_parser.add_argument('--metadata', type=Path, help='Metadata file for cell type extraction')
+    scrna_parser.add_argument('--celltype-file', type=Path, 
+                             help='Pre-computed cell type file (if not provided, will be generated from metadata)')
+    scrna_parser.add_argument('--metadata', type=Path, 
+                             help='Metadata file for cell type extraction (used if celltype-file not provided)')
     scrna_parser.add_argument('--read-len', type=int, default=91, help='Read length (default: 91)')
     scrna_parser.add_argument('--cellnum', type=int, default=155, help='Number of cells (default: 155)')
     scrna_parser.add_argument('--threads', '-t', type=int, default=4, help='Number of threads (default: 4)')
@@ -166,7 +182,8 @@ def main():
     scrna_parser.add_argument('--parallel', action='store_true',
                              help='Run feature extraction and tree input in parallel')
     
-    # scDNA subcommand (placeholder)
+    
+    # scDNA subcommand
     scdna_parser = subparsers.add_parser('scdna', help='scDNA-seq mode')
     scdna_parser.add_argument('--sample', '-s', required=True, help='Sample ID')
     scdna_parser.add_argument('--mutation-list', '-m', required=True, type=Path, 
@@ -198,23 +215,129 @@ def main():
     
     # Load configuration
     config = load_config(args.config)
-    config.update({'threads': args.threads, 'verbose': args.verbose})
     
-    # Create working directory
-    workdir = args.workdir / args.sample
-    workdir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Working directory: {workdir}")
+    # Safely update configuration based on available attributes
+    if hasattr(args, 'threads'):
+        config['threads'] = args.threads
+    if hasattr(args, 'verbose'):
+        config['verbose'] = args.verbose
+    elif args.verbose:  # Global verbose flag
+        config['verbose'] = True
     
-    # Check input files
-    for file_arg in ['mutation_list', 'bam', 'barcode']:
-        file_path = getattr(args, file_arg)
-        if not file_path.exists():
-            logger.error(f"Input file not found: {file_path}")
-            sys.exit(1)
+    # Create working directory only for pipeline modes
+    if args.mode not in ['check-annovar']:
+        workdir = args.workdir / args.sample
+        workdir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Working directory: {workdir}")
+    
+    # Check input files only for pipeline modes
+    if args.mode not in ['check-annovar']:
+        for file_arg in ['mutation_list', 'bam', 'barcode']:
+            file_path = getattr(args, file_arg)
+            if not file_path.exists():
+                logger.error(f"Input file not found: {file_path}")
+                sys.exit(1)
     
     try:
-        # Run appropriate pipeline based on mode
-        if args.mode == 'scrna':
+        # Handle check-annovar mode
+        if args.mode == 'check-annovar':
+            # Load paths configuration
+            paths_config = load_paths_config(args.config)
+            
+            print("\n" + "="*60)
+            print("PhyloSOLID ANNOVAR Configuration Check")
+            print("="*60)
+            
+            annovar_config = paths_config.get('annovar', {})
+            annovar_dir = annovar_config.get('script_dir')
+            humandb = annovar_config.get('humandb')
+            build = annovar_config.get('build', 'hg38')
+            
+            print(f"Genome build: {build}")
+            print("-" * 40)
+            
+            all_good = True
+            
+            # Check ANNOVAR script directory
+            if annovar_dir:
+                annovar_path = Path(annovar_dir)
+                annotate_script = annovar_path / 'annotate_variation.pl'
+                table_script = annovar_path / 'table_annovar.pl'
+                convert_script = annovar_path / 'convert2annovar.pl'
+                
+                print(f"ANNOVAR directory: {annovar_path}")
+                
+                if annotate_script.exists():
+                    print(f"  ✅ annotate_variation.pl found")
+                else:
+                    print(f"  ❌ annotate_variation.pl not found")
+                    all_good = False
+                
+                if table_script.exists():
+                    print(f"  ✅ table_annovar.pl found")
+                else:
+                    print(f"  ⚠️  table_annovar.pl not found (optional)")
+                
+                if convert_script.exists():
+                    print(f"  ✅ convert2annovar.pl found")
+                else:
+                    print(f"  ⚠️  convert2annovar.pl not found (optional)")
+            else:
+                print("❌ ANNOVAR script_dir not configured in paths.yaml")
+                all_good = False
+            
+            print("-" * 40)
+            
+            # Check humandb directory
+            if humandb:
+                humandb_path = Path(humandb)
+                print(f"humandb directory: {humandb_path}")
+                
+                if humandb_path.exists():
+                    print(f"  ✅ Directory exists")
+                    
+                    # Check for required database files
+                    required_dbs = [
+                        f'{build}_refGene.txt',
+                        f'{build}_refGeneMrna.fa',
+                        f'{build}_refGene.txt.gz',
+                        f'{build}_refGeneMrna.fa.gz'
+                    ]
+                    
+                    found_dbs = []
+                    for db in required_dbs:
+                        db_file = humandb_path / db
+                        if db_file.exists():
+                            found_dbs.append(db)
+                    
+                    if found_dbs:
+                        print(f"  ✅ Found database files: {', '.join(found_dbs[:3])}")
+                        if len(found_dbs) > 3:
+                            print(f"     and {len(found_dbs)-3} more")
+                    else:
+                        print(f"  ❌ No {build} database files found")
+                        print(f"     Please run: ./annotate_variation.pl -downdb -buildver {build} -webfrom annovar refGene {humandb}")
+                        all_good = False
+                else:
+                    print(f"  ❌ Directory does not exist")
+                    all_good = False
+            else:
+                print("❌ humandb not configured in paths.yaml")
+                all_good = False
+            
+            print("="*60)
+            
+            if all_good:
+                print("\n✅ ANNOVAR check passed! Your configuration looks good.")
+                print("   You can now run PhyloSOLID pipelines.")
+                sys.exit(0)
+            else:
+                print("\n❌ ANNOVAR check failed. Please fix the issues above.")
+                print("   See documentation for ANNOVAR installation instructions.")
+                sys.exit(1)
+        
+        # Run scRNA pipeline
+        elif args.mode == 'scrna':
             pipeline = SCRNAPipeline(workdir, script_dir, config)
             
             results = pipeline.run(
@@ -222,6 +345,7 @@ def main():
                 mutation_list=args.mutation_list,
                 bam_file=args.bam,
                 barcode_file=args.barcode,
+                celltype_file=getattr(args, 'celltype_file', None),
                 metadata_file=getattr(args, 'metadata', None),
                 read_len=getattr(args, 'read_len', 91),
                 cellnum=getattr(args, 'cellnum', 155),
@@ -246,7 +370,8 @@ def main():
             with open(summary_file, 'w') as f:
                 yaml.dump(results, f, default_flow_style=False)
             logger.info(f"Summary saved to: {summary_file}")
-            
+        
+        # Run scDNA pipeline
         elif args.mode == 'scdna':
             pipeline = scDNAPipeline(workdir, script_dir, config)
             
@@ -262,7 +387,7 @@ def main():
             logger.info("=" * 50)
             logger.info("scDNA pipeline completed")
             logger.info(f"Steps completed: {', '.join(results.keys())}")
-            
+        
         else:
             logger.error(f"Mode '{args.mode}' not implemented")
             sys.exit(1)

@@ -1,0 +1,44 @@
+name: phylosolid_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Python core
+  - python=3.9
+  - pip
+  
+  # Core scientific (精简版本号，让 conda 自动选择兼容版本)
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - networkx
+  - python-igraph
+  - leidenalg
+  - pysam
+  - tqdm
+  - joblib
+  
+  # R support
+  - r-base=4.3
+  - r-essentials
+  - r-tidyverse
+  - r-ggplot2
+  - r-dplyr
+  - r-ape
+  
+  # Bioconductor
+  - bioconductor-treeio
+  
+  # Pip packages
+  - pip:
+    - scphylo-tools
+    - anytree
+    - scanpy
+    - anndata
+    - loguru
+    - rpy2
+

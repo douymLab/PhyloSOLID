@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Extract features from BAM file for phylogenetic analysis
+"""
+
 import shutil
 import argparse
 from collections import Counter, defaultdict
@@ -13,14 +18,15 @@ import pandas as pd
 import subprocess
 import uuid
 import sys
+import tempfile
 from pybedtools import BedTool
 import pysam
 import scipy
 import scipy.stats
-from module.UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele, handle_cigar, handle_pos, handle_quality_matrix, handle_seq
-from module.read_file import read_h5ad_file_2
-from module.spatial_features import spatial_moran
-from utils import calc_SegBias_for_one_sample, calc_vdb, combine_info_from_cigar, do_wilicox_sum_test, get_chr_size, get_indel_info, handle_p_value_log10, handle_posname,check_dir, judge_pos_in_indel, str_to_dict
+from UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele, handle_cigar, handle_pos, handle_quality_matrix, handle_seq
+from read_file import read_h5ad_file_2
+from spatial_features import spatial_moran
+from myutils import calc_SegBias_for_one_sample, calc_vdb, combine_info_from_cigar, do_wilicox_sum_test, get_chr_size, get_indel_info, handle_p_value_log10, handle_posname,check_dir, judge_pos_in_indel, str_to_dict
 from pyfaidx import Fasta
 
 
@@ -33,11 +39,139 @@ chr1    16618273        G       T       NA      chr1_16618314_G_C       CROCCP2 
 chr1    16618274        C       A       NA      chr1_16618314_G_C       CROCCP2 170     155     4       haplo>3 artifacts       C,G:80;C,C:71;A,G:3;A,C:1
 
 file: spatial feature.txt
-#chr	pos	ref	alt	test_sig	early_mutation	late_mutation	verylate_mutation	ks_pvalue	
-# moranI_pvalue	mutant_rate	mutant_rate_prob	mutant_rate_likelihood mutant_rate_vaf	mean_vaf	
-# max_vaf	r_square	wilcoxon_pvalue	outlier_clusters	outlier_vaf	outlier_moranI_pvalue
+#chr    pos ref alt test_sig    early_mutation  late_mutation   verylate_mutation   ks_pvalue   
+# moranI_pvalue mutant_rate mutant_rate_prob    mutant_rate_likelihood mutant_rate_vaf  mean_vaf    
+# max_vaf   r_square    wilcoxon_pvalue outlier_clusters    outlier_vaf outlier_moranI_pvalue
 
 '''
+
+
+def merge_files_by_key(file_A, file_B, key_indices=(0,1,2,3), output_file=None, print_both=False):
+    """
+    Merge two files based on key columns (replaces compare_files.pl)
+    
+    Args:
+        file_A: Path to first file (reference file)
+        file_B: Path to second file (query file)
+        key_indices: Tuple of column indices to use as key (default: 0,1,2,3)
+        output_file: Path to output file (if None, returns list of matching lines)
+        print_both: If True, print both A and B lines; if False, print only B lines
+    
+    Returns:
+        If output_file is None: list of matching lines from B (or both files)
+        If output_file is given: writes to file and returns None
+    """
+    
+    # Read files
+    df_A = pd.read_csv(file_A, header=None, sep='\t', dtype=str, comment='#')
+    df_B = pd.read_csv(file_B, header=None, sep='\t', dtype=str, comment='#')
+    
+    # Create key columns
+    key_cols = list(key_indices)
+    
+    # Create key strings for matching
+    df_A['_key'] = df_A.iloc[:, key_cols].apply(lambda x: ','.join(x.values.astype(str)), axis=1)
+    df_B['_key'] = df_B.iloc[:, key_cols].apply(lambda x: ','.join(x.values.astype(str)), axis=1)
+    
+    # Perform merge
+    if print_both:
+        # Merge to get both A and B lines
+        merged = pd.merge(df_A, df_B, on='_key', how='inner', suffixes=('_A', '_B'))
+        # Drop the key column
+        merged = merged.drop(columns=['_key'])
+        # Reorder columns to put A first then B
+        a_cols = [col for col in merged.columns if col.endswith('_A')]
+        b_cols = [col for col in merged.columns if col.endswith('_B')]
+        result_df = merged[a_cols + b_cols]
+    else:
+        # Only get B lines that match A
+        matching_keys = set(df_A['_key'].values)
+        result_df = df_B[df_B['_key'].isin(matching_keys)].drop(columns=['_key'])
+    
+    # Output
+    if output_file:
+        result_df.to_csv(output_file, sep='\t', header=False, index=False)
+        return output_file
+    else:
+        # Convert back to list of strings (matching Perl output format)
+        return ['\t'.join(row.astype(str)) for _, row in result_df.iterrows()]
+
+
+def get_integration_from_identifier_and_file(identifier, query_file, key_indices=(0,1,2,3)):
+    """
+    Get integration result from identifier and query file
+    (Replaces the Perl script functionality)
+    
+    Args:
+        identifier: String like "chr1_1000_A_G"
+        query_file: Path to query file
+        key_indices: Column indices to match
+    
+    Returns:
+        Matching line from query file as string, or empty string if no match
+    """
+    
+    # Parse identifier
+    parts = identifier.split('_')
+    if len(parts) < 4:
+        return ""
+    
+    identifier_line = "\t".join(parts[:4])
+    
+    # Create temporary file with identifier
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(identifier_line + '\n')
+        temp_file = f.name
+    
+    try:
+        # Use merge_files_by_key to find matches
+        matches = merge_files_by_key(temp_file, query_file, key_indices, print_both=False)
+        
+        if matches:
+            return matches[0]  # Return first match
+        else:
+            return ""
+            
+    except Exception as e:
+        print(f"Warning: Could not process {identifier} with {query_file}: {e}")
+        return ""
+    finally:
+        # Clean up temp file
+        os.unlink(temp_file)
+
+
+def combine_phase_sf_python(phase_result_file, sf_file, tmp_dir, index_in_query="0 1 2 3"):
+    """
+    Combine phase result file and sf file using pandas
+    (Replaces the Perl script functionality)
+    
+    Args:
+        phase_result_file: Path to phase result file
+        sf_file: Path to sf file
+        tmp_dir: Temporary directory for output
+        index_in_query: Space-separated string of column indices
+    
+    Returns:
+        Path to combined output file
+    """
+    
+    # Parse index columns
+    key_indices = tuple(int(x) for x in index_in_query.split())
+    
+    # Generate output filename
+    tmp_filename = str(uuid.uuid4())
+    compare_file = os.path.join(tmp_dir, tmp_filename)
+    
+    # Use merge_files_by_key to combine files
+    merge_files_by_key(
+        file_A=phase_result_file,
+        file_B=sf_file,
+        key_indices=key_indices,
+        output_file=compare_file,
+        print_both=True  # Print both A and B lines
+    )
+    
+    return compare_file
 
 
 def refine_mean(in_list):
@@ -297,7 +431,7 @@ class Features:
 
     def add_info_from_ind_genotype(self, ind_geno_line):
         """
-        #chrom	site	ID	germline	mutant	cluster	spot_number	consensus_read_count	genotype	p_mosaic	Gi	vaf
+        #chrom  site    ID  germline    mutant  cluster spot_number consensus_read_count    genotype    p_mosaic    Gi  vaf
 
         """
         ind_geno_line=ind_geno_line.strip().split("\t")
@@ -382,31 +516,6 @@ class Features:
         # self.outlier_moranI_vaf_pvalue=sf_line[23]
         # self.num_outlier_cluster=len(self.outlier_clusters.strip().split(","))
 
-    ####### this version the distance exon is list
-    # def add_info_from_gff(self,sline):
-    #     """
-    #     gene_info, collected from gff file, download from gencode
-    #     """
-    #     try:
-    #         exon_boundary_1=int(sline[6])-int(sline[1]); exon_boundary_2=int(sline[7])-int(sline[1])
-    #         strand=sline[9]; Infos=sline[11]
-    #         info_dict=handle_gff_info(Infos)
-    #         exon_distance=exon_boundary_1 if abs(exon_boundary_1)<abs(exon_boundary_1) else exon_boundary_2
-    #         if self.gene_id=="no":
-    #             self.gene_id=[]
-
-    #         if "transcript_id" in info_dict.keys():
-    #             t_id=info_dict["transcript_id"].split(".")[0]
-    #             print(self.transcript_name)
-    #             print("t_id",t_id)
-    #             if t_id in self.transcript_name:
-    #                 self.gene_type.append(info_dict["gene_type"])
-    #                 self.exon_number.append(info_dict["exon_number"])
-    #                 self.strand.append(strand)
-    #                 self.distanceExon.append(exon_distance)
-    #     except:
-    #         print(sline)
-
     def add_info_from_gff(self,sline):
         """
         gene_info, collected from gff file, download from gencode
@@ -455,42 +564,6 @@ class Features:
             print(sline)
             pass
         
-
-    # def add_info_from_phase(self,phase_result,phase_type="combine"):
-    #     """
-    #     phase_info, from phase file
-    #     chr1    9271143 A       G       NA      chr1_9271218_G_T        H6PD    73      52      6       haplo>3 artifacts       A,G:29;A,T:17;G,G:2;G,T:4
-    #     chr1    9271168 A       G       NA      chr1_9271218_G_T        H6PD    81      64      3       haplo>3 artifacts       A,G:34;A,T:27;G,G:1;G,T:2
-    #     chr1    9271195 A       G       NA      chr1_9271218_G_T        H6PD    88      78      4       haplo>3 artifacts       A,G:42;A,T:32;G,G:3;G,T:1
-    #     """
-    #     s_phase_result=phase_result.strip().split("\t")
-    #     # print(s_phase_result)
-    #     self.haplotype=s_phase_result[10]
-    #     if self.haplotype=="haplo=3":
-    #         details=s_phase_result[12]
-    #         values = [int(item.split(":")[1]) for item in details.split(";")]
-    #         pick_hSNP_value=values[0::2] if values[-2] < values[-1] else values[1::2] 
-    #         # discordant=min(values[-2:]);discordant_prop=int(pick_hSNP_value[-1])/sum(pick_hSNP_value[0:-1])
-    #         discordant=min(values[-2:]);discordant_prop=int((pick_hSNP_value[-1]))/int(sum(pick_hSNP_value[0:-1]))
-    #         self.phase_discordant.append(discordant)
-    #         self.phase_discordant_prop.append(discordant_prop)
-    #     else:
-    #         self.phase_discordant.append("no")
-    #         self.phase_discordant_prop.append("no")
-        
-    #     phase_site=s_phase_result[5]
-    #     _,phase_pos,_,_=handle_posname(phase_site)
-    #     distancePhase=abs(int(phase_pos)-int(self.pos))
-    #     self.distancePhase.append(distancePhase)
-
-    #     if self.phase_condition=="no":
-    #         self.phase_condition=[]
-        
-    #     self.phase_site=[]
-    #     self.phase_condition.append(s_phase_result[10])
-    #     self.phase_site.append(s_phase_result[5])
-    #     self.mut_origin=s_phase_result[4]
-    
     def add_info_from_phase(self,phase_result,phase_type="combine"):
         """
         phase_info, from phase file
@@ -604,7 +677,7 @@ class Features:
 
     def add_mappability_info(self,mappability_info):
         """
-        chr1	10157	10158	0.0
+        chr1    10157   10158   0.0
         """
         
         #if mappability_info!="" and len(mappability_info.strip().split("\n"))==1:
@@ -624,45 +697,6 @@ class Features:
         #         score.append(line.strip().split("\t")[3])
         #     self.mappability_score=",".join(score)
 
-#     def add_annotation_from_annovar_table(self,annovar_info):
-#         """
-# chr1    2185380 2185380 T       A       exonic  FAAP20  .       nonsynonymous   SNV
-# chr1    2310102 2310102 C       A       UTR3    SKI     NM_003036:c.*3337C>A    .       .
-# chr1    3630128 3630128 G       A       downstream      TPRG1L;WRAP73   dist=642        .       .
-# chr1    632663  632663  C       A       ncRNA_exonic    MIR12136        .       .       .
-# chr1    633442  633442  C       A       upstream        MIR12136        dist=757        .       .
-# chr1    633963  633963  T       G       intergenic      MIR12136;OR4F16 dist=1278;dist=51753    .       .
-# chr1    19219002        19219002        G       A       ncRNA_intronic  EMC1-AS1        .       .       .
-# chr1    153357876       153357876       G       T       UTR5    S100A9  NM_002965:c.-408G>T     .       .
-# chr20   63735923        63735923        C       T       UTR5;UTR3       LIME1;ZGPAT     NM_001305654:c.-1627C>T;NM_001083113:c.*4C>T;NM_032527:c.*4C>T;NM_001195653:c.*4C>T;NM_001195654:c.*4C>T;NM_181485:c.*4C>T      .       .
-#         """
-#         # print(annovar_info)
-#         s_annovar_info=annovar_info.strip().split("\t")
-#         self.pos_anno=s_annovar_info[5]
-
-#         if self.pos_anno=="exonic":
-#             self.func_anno=s_annovar_info[8]
-
-
-#     def add_annotation_from_annovar_all(self,annovar_info):
-#         """
-#         UTR5    RPS27(ENST00000651669.1:c.-35C>T)       chr1    153990762       153990762       C       T
-#         UTR5    RPS27(ENST00000651669.1:c.-34C>T)       chr1    153990763       153990763       C       T
-#         UTR3    RPS27(ENST00000651669.1:c.*54T>C)       chr1    153992147       153992147       T       C
-#         UTR3    ARL8A(ENST00000272217.7:c.*1041T>A,ENST00000614750.1:c.*1090T>A),GPR37L1(ENST00000367282.6:c.*4870A>T)  chr1    202133426       202133426       A       T
-#         intergenic      ENSG00000223649(dist=38643),SLC30A1(dist=40008) chr1    211531560       211531560       T       C
-#         """
-#         # print(annovar_info)
-#         s_annovar_info=annovar_info.strip().split("\t")
-#         self.pos_anno=s_annovar_info[0]
-
-
-#     def add_annotation_from_annovar_exon(self,annovar_info):
-#         """
-#         line3   nonsynonymous SNV       RPS12:ENST00000230050.4:exon3:c.G73C:p.A25P,    chr6    132815030       132815030       G       C
-#         """
-#         s_annovar_info=annovar_info.strip().split("\t")
-#         self.func_anno=s_annovar_info[1]
 
     def add_annotation_from_annovar(self,annovar_info):
         s_annovar_info=annovar_info.strip().split("\t")
@@ -1353,31 +1387,6 @@ def get_script_path():
     return script_dir
 
 
-def combine_phase_sf(phase_result_file,sf_file,compare_pl_path,tmp_dir,index_in_query="0 1 2 3"):
-    ## using pandas will cost more memory and more time
-    # df1 = pd.read_csv(phase_result_file,header=NULL)
-    # df1.columns=["chrom","pos","ref","alt","alt_origin","phase_site","gene_name","total_DP","phased_DP","phased_mutDP",\
-    #              "haplotype","annotation","detailed_infomation"]
-    
-    # df2 = pd.read_csv(sf_file)
-    # df2.columns=[]
-    # merged_df = pd.merge(df1, df2, on=['Col1', 'Col2', 'Col3', 'Col4'])
-
-    #script_dir=get_script_path()
-    #compare_pl_path=os.path.join(os.path.dir(script_dir),"others","compare_files.pl")
-    # print(compare_pl_path)
-    tmp_filename=str(uuid.uuid4())
-    compare_file=os.path.join(tmp_dir,tmp_filename)
-    command=f"perl {compare_pl_path} {phase_result_file} {sf_file} {index_in_query} >{compare_file}"
-    result=subprocess.run(command,shell=True,check=True)
-
-    if result.returncode!=0:
-        print(f"Something wrong when run command: {command}")
-        sys.exit()
-
-    return compare_file
-
-
 def handle_h5_file(spaceranger_result_dir, count_file='raw_feature_bc_matrix.h5'):
     if spaceranger_result_dir=="":
         empty_df=""
@@ -1411,24 +1420,6 @@ def handle_h5ad_file(h5ad_file):
             empty_df['pos_y'] = adata.obs['y_array']
 
     return empty_df, adata
-
-
-def get_intergration_from_identifier_and_file(compare_pl_path,identifier,query_file,index_in_query="0 1 2 3"):
-    """
-    This function is used to get the intergration result from identifier and one special query file.
-    Note: The top 4 columns of query_file must be "chrom pos ref alt"
-    
-    """
-    perl_script=compare_pl_path
-    identifier_line="\t".join(identifier.strip().split("_"))
-
-    command=f"echo -e \"{identifier_line}\" |perl {perl_script} - {query_file} {index_in_query}|sort -u"
-    try:
-        result=subprocess.check_output(command,text=True,shell=True)
-        return result
-    except:
-        print(f"Something wrong when run the command: {command}")
-        return ""
 
 
 def get_gene_expression(bam_file, gtf_file,out_file,htseq_path=""):
@@ -1467,16 +1458,20 @@ def get_total_gene_count(gene_count_file):
     return result
 
 
-def get_info_by_bedtools(tmp_mappbablity_file,identifier):
+def get_info_by_bedtools(tmp_mappbablity_file, identifier, bedtools_available=True):
+    """Get information using bedtools intersect - silent version"""
+    if not bedtools_available:
+        return ""
+        
     chrom,pos,_,_=handle_posname(identifier)
     identifier_line="\t".join([chrom,str(pos),str(pos)])
-    command=f"echo -e \"{identifier_line}\" |bedtools intersect -a {tmp_mappbablity_file} -b - "
+    command=f"echo -e \"{identifier_line}\" |bedtools intersect -a {tmp_mappbablity_file} -b - 2>/dev/null"
 
     try:
         result=subprocess.check_output(command,shell=True,text=True)
         return result
     except:
-        print(f"Something wrong when run {command}!")
+        # Completely silent fail
         return ""
 
 
@@ -1945,7 +1940,6 @@ def handle_perline(sample,
                    UBtag,
                    tmpdir,
                    mode,
-                   compare_pl_path,
                    reference_fasta,
                    grep_sf_info,
                    sf_file,
@@ -1965,6 +1959,7 @@ def handle_perline(sample,
                    readLen,
                    barcode_dir,
                    prior,
+                   bedtools_available,  # 新增参数
                    line):
     """
     This function is used to get the features for per site
@@ -1994,7 +1989,7 @@ def handle_perline(sample,
         mutation_features.readLen=readLen
 
         if sf_file!="":
-            sf_line=get_intergration_from_identifier_and_file(compare_pl_path,identifier,sf_file)
+            sf_line = get_integration_from_identifier_and_file(identifier, sf_file, (0,1,2,3))
             if sf_line!="":
                 sf_line=sf_line.strip().split("\t")
                 mutation_features.add_info_from_sf(sf_line)
@@ -2002,19 +1997,20 @@ def handle_perline(sample,
     print("running for ", identifier)
     #Feature(phase):discordant distancePhase
     if combine_phase_file!="":
-        combine_phase_result=get_intergration_from_identifier_and_file(compare_pl_path,identifier, combine_phase_file)
+        combine_phase_result = get_integration_from_identifier_and_file(identifier, combine_phase_file, (0,1,2,3))
         if combine_phase_result!="":
-            mutation_features.add_info_from_phase(combine_phase_result,phase_type="combine")
-        # for results in combine_phase_result.strip().split("\n"):
-        #     if results!="":
-        #         mutation_features.add_info_from_phase(results)
+            # Handle multiple lines if they exist
+            for line in combine_phase_result.split('\n'):
+                if line.strip():
+                    mutation_features.add_info_from_phase(line, phase_type="combine")
+    
     if no_combine_phase_file!="":
-        no_combine_phase_result=get_intergration_from_identifier_and_file(compare_pl_path,identifier, no_combine_phase_file)
+        no_combine_phase_result = get_integration_from_identifier_and_file(identifier, no_combine_phase_file, (0,1,2,3))
         if no_combine_phase_result!="":
-            mutation_features.add_info_from_phase(no_combine_phase_result,phase_type="no_combine")
-        # for results in no_combine_phase_result.strip().split("\n"):
-        #     if results!="":
-        #         mutation_features.add_info_from_phase(results)
+            for line in no_combine_phase_result.split('\n'):
+                if line.strip():
+                    mutation_features.add_info_from_phase(line, phase_type="no_combine")
+
     #Feature: read-level features from bam (In this version, the gene information will grep from bam file)
     if bam_file!="":
         read_info_dict,dp=handle_bam_file(bam_file,mut_chrom,mut_pos,mut_ref[0],mut_alt,CBtag,UBtag,readLen)
@@ -2036,8 +2032,6 @@ def handle_perline(sample,
             ref_spot_dp_list, alt_spot_dp_list=grep_dp_from_barcode_dir2(barcode_file2)
             mutation_features.add_info_from_barcode_dir(ref_spot_dp_list, alt_spot_dp_list)
 
-
-
     #Feature: distanceExon genetype GeneNumber
     if gff3_file!="":
         # print("add gff3_info for", identifier)
@@ -2050,37 +2044,42 @@ def handle_perline(sample,
         tmp_bed.close()
         run_type_gff="command"
 
-        if run_type_gff=="pybedtool":
-            mutation_Bed=BedTool(tmp_bed_file)
-            gff_Bed=BedTool(exon_sort_gff_file)
-            mutation_closest=mutation_Bed.closest(gff_Bed)
-
-        elif run_type_gff=="command":
-            command=f"bedtools closest -b {exon_sort_gff_file}  -a {tmp_bed_file} -wa -wb"
-            try:
-                # print("command is ",command)
-                mutation_closest=subprocess.check_output(command,text=True,shell=True)
-                mutation_closest=mutation_closest.strip().split("\n")
-            except:
-                print(f"Something wrong when run the command: {command}")
-                mutation_closest=[""]
-        else:
-            pass
-
-        for line in mutation_closest:
-            if line=="":
-                continue
-
+        if bedtools_available:
             if run_type_gff=="pybedtool":
-                sline=line.fields
+                mutation_Bed=BedTool(tmp_bed_file)
+                gff_Bed=BedTool(exon_sort_gff_file)
+                mutation_closest=mutation_Bed.closest(gff_Bed)
+
             elif run_type_gff=="command":
-                sline=line.strip().split("\t")
+                command=f"bedtools closest -b {exon_sort_gff_file}  -a {tmp_bed_file} -wa -wb"
+                try:
+                    # print("command is ",command)
+                    mutation_closest=subprocess.check_output(command,text=True,shell=True)
+                    mutation_closest=mutation_closest.strip().split("\n")
+                except:
+                    print(f"Something wrong when run the command: {command}")
+                    mutation_closest=[""]
             else:
-                continue
-            # print(sline)
-            # mutation_features.add_info_from_gff(sline)
-            mutation_features.add_info_from_wgEncodeGencodeExon(sline)
-        mutation_features.distanceExon=min(mutation_features.distanceExon) if mutation_features.distanceExon!=[] else "no"
+                pass
+
+            for line in mutation_closest:
+                if line=="":
+                    continue
+
+                if run_type_gff=="pybedtool":
+                    sline=line.fields
+                elif run_type_gff=="command":
+                    sline=line.strip().split("\t")
+                else:
+                    continue
+                # print(sline)
+                # mutation_features.add_info_from_gff(sline)
+                mutation_features.add_info_from_wgEncodeGencodeExon(sline)
+            mutation_features.distanceExon=min(mutation_features.distanceExon) if mutation_features.distanceExon!=[] else "no"
+        else:
+            # print(f"bedtools not available, skipping gff3 processing for {identifier}")
+            print(f"Skipping gff3 processing for {identifier}")
+            mutation_features.distanceExon="no"
         # mutation_features.distanceExonIgnoreStrand=min(mutation_features.distanceExonIgnoreStrand) if mutation_features.distanceExonIgnoreStrand!=[] else "no"
         # print(mutation_features.distanceExon, mutation_features.distanceExonIgnoreStrand)
     #Feature: expression (may be deleted)
@@ -2114,12 +2113,12 @@ def handle_perline(sample,
 
     #Feature: mappbablity score
     if used_tmp_mappbablity_file!="":
-        # mappability_info=get_intergration_from_identifier_and_file(compare_pl_path,only_pos_identifier,used_tmp_mappbablity_file,index_in_query="0 1 0 1")
-        mappability_info=get_info_by_bedtools(used_tmp_mappbablity_file,identifier)
-        # print(mappability_info)
-        for mappability_line in mappability_info.strip().split("\n"):
-            if mappability_line!="":
-                mutation_features.add_mappability_info(mappability_line)
+        # Pass bedtools_available to suppress warnings when bedtools is not available
+        mappability_info = get_info_by_bedtools(used_tmp_mappbablity_file, identifier, bedtools_available)
+        if mappability_info and mappability_info.strip():
+            for mappability_line in mappability_info.strip().split("\n"):
+                if mappability_line!="":
+                    mutation_features.add_mappability_info(mappability_line)
 
     #Feature: annotation
     # if annovar_annotaion_file_all!="":
@@ -2143,12 +2142,12 @@ def handle_perline(sample,
             mutation_features.add_annotation_from_annovar(annovar_annotaion_info)
 
     if ind_count_file!="":
-        ind_count_info=get_intergration_from_identifier_and_file(compare_pl_path,only_pos_identifier,ind_count_file,index_in_query="0 1 0 1")
+        ind_count_info = get_integration_from_identifier_and_file(only_pos_identifier, ind_count_file, (0,1,0,1))
         if ind_count_info!="":
             mutation_features.add_consensus_info(ind_count_info)
 
     if ind_geno_file!="":
-        ind_geno_info=get_intergration_from_identifier_and_file(compare_pl_path,identifier,ind_geno_file,index_in_query="0 1 3 4")
+        ind_geno_info = get_integration_from_identifier_and_file(identifier, ind_geno_file, (0,1,3,4))
         # ind_geno_info=get_intergration_from_identifier_and_file(compare_pl_path,only_pos_identifier,ind_geno_file,index_in_query="0 1 0 1")
         
         if ind_geno_info!="":
@@ -2157,7 +2156,7 @@ def handle_perline(sample,
             print(identifier)
 
     if vaf_cluster_file!="":
-        vaf_cluster_info=get_intergration_from_identifier_and_file(compare_pl_path,identifier,vaf_cluster_file,index_in_query="0 1 3 4")
+        vaf_cluster_info = get_integration_from_identifier_and_file(identifier, vaf_cluster_file, (0,1,3,4))
         if vaf_cluster_info!="":
             mutation_features.add_info_from_cluster_vaf(vaf_cluster_info)
 
@@ -2166,7 +2165,7 @@ def handle_perline(sample,
         mutation_features.add_context_info(GCcontent,DNAMutationType,RNAMutationType, equal_to_previous_bases, cause_ploy_alt)
 
     if prior!="":
-        prior_info=get_intergration_from_identifier_and_file(compare_pl_path,only_pos_identifier,prior,index_in_query="0 1 0 1")
+        prior_info = get_integration_from_identifier_and_file(only_pos_identifier, prior, (0,1,0,1))
         # print(prior_info)
         if prior_info!="":
             mutation_features.add_prior(prior_info)
@@ -2184,15 +2183,33 @@ def handle_perline(sample,
     return out_dict
 
 
+def check_bedtools():
+    """Check if bedtools is available"""
+    import shutil
+    bedtools_path = shutil.which('bedtools')
+    if bedtools_path is None:
+        print("WARNING: bedtools not found in PATH")
+        print("Some features related to gff3 and mappability will be skipped")
+        return False
+    else:
+        print(f"bedtools found: {bedtools_path}")
+        return True
+
+
 def main():
     print("START:",datetime.now())
+    
+    # Check if bedtools is available
+    bedtools_available = check_bedtools()
+    
     check_dir(args.outdir)
     tmp_name=str(uuid.uuid4())
     tmpdir=os.path.join(str(args.outdir),"tmp"+tmp_name)
     check_dir(tmpdir)
-    current_directory = os.path.dirname(os.path.abspath(__file__))
-    compare_pl_path=os.path.join(os.path.dirname(current_directory),"others/compare_files.pl")
-    # gene_count_file=args.gene_count_file
+    
+    # The Perl script is no longer needed - using Python functions instead
+    # compare_pl_path=os.path.join(os.path.dirname(current_directory),"others/compare_files.pl")
+    
     gene_count_file=""
     gff3_file=args.gff3_file
     knownGene_file=args.knownGene_file
@@ -2242,6 +2259,7 @@ def main():
     sample=args.sample
     barcode_dir=args.barcode_dir
     prior=args.prior
+    
     if mode=="normal":   
         partial_func=partial(handle_perline,
                              sample,
@@ -2249,7 +2267,6 @@ def main():
                             UBtag,  
                             tmpdir,
                             mode,
-                            compare_pl_path,
                             reference_fasta,
                             grep_sf_info,
                             sf_file,
@@ -2269,7 +2286,8 @@ def main():
                             vaf_cluster_file,
                             readLen,
                             barcode_dir,
-                            prior
+                            prior,
+                            bedtools_available  # 新增参数
                             )
     
     elif mode=="test":
@@ -2279,7 +2297,6 @@ def main():
                             UBtag,  
                             tmpdir,
                             mode,
-                            compare_pl_path,
                             reference_fasta,
                             grep_sf_info,
                             sf_file, #sf_file
@@ -2300,6 +2317,7 @@ def main():
                             readLen,
                             "", # barcode_dir
                             "", # prior
+                            bedtools_available  # 新增参数
                             )
 
     # print(lines)
@@ -2338,7 +2356,7 @@ def main():
 
     print("END:",datetime.now())
     
-    shutil.rmtree(tmpdir)  
+    shutil.rmtree(tmpdir)
 
 
 def test():
@@ -2375,9 +2393,4 @@ parser.add_argument("--mode",required=False,default="normal",choices=["test","no
 args = parser.parse_args()
     
 if __name__ == '__main__':
-    main()  
-   
-
-
-
-
+    main()

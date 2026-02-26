@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from ..base import PipelineStep
-from ...utils.command import CommandRunner
+from utils.command import CommandRunner
 
 class scDNAFeatureExtractionStep(PipelineStep):
     """scDNA feature extraction step (placeholder)"""

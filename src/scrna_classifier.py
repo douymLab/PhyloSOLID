@@ -11,6 +11,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.impute import SimpleImputer
 import joblib
 from collections import Counter
+from pathlib import Path
+
 
 # 定义特征列
 SELECTED_FEATURES = [
@@ -164,7 +166,8 @@ def real_time_classifier_predict(df_for_classifier_all, sampleid, outputpath):
     
     # 1. 加载训练数据
     print("=== 加载训练数据 ===")
-    features_file_labeled = "classifier/scrna/data_labeling_sampling.ratio_155_space.csv"
+    script_dir = Path(__file__).parent
+    features_file_labeled = script_dir / 'classifer' / 'scrna' / 'data_labeling_sampling.ratio_155_space.csv'
     df_training = pd.read_csv(features_file_labeled, sep="\t")
     print(f"训练数据形状: {df_training.shape}")
     print(f"训练数据类别分布: {Counter(df_training['label2'])}")

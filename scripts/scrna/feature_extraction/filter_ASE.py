@@ -8,8 +8,8 @@ import pysam
 import pandas as pd
 from pybedtools import BedTool
 import numpy as np
-from module.UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
-from utils import check_dir
+from UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
+from myutils import check_dir
 from scipy.stats import binom
 import statsmodels.stats.multitest as smm
 

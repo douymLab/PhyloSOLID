@@ -149,10 +149,4 @@ class Pipeline(ABC):
             self.run_step(name, **kwargs)
         return self.results
 
-### `pipelines/scrna/__init__.py`
-```python
-"""scRNA-seq pipeline module"""
 
-from .pipeline import SCRNAPipeline
-
-__all__ = ['SCRNAPipeline']
