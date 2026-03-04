@@ -30,10 +30,10 @@ python -m cli.main --workdir demo/expected_output scrna \
 
 ## 完整流程
 python -m cli.main --workdir demo/test_output scrna \
-    --sample Org4S15D63 \
-    --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
-    --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
-    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
+    --sample Org10S4D46 \
+    --mutation-list demo/input/Org10S4D46/02_identifier/identifier.txt \
+    --bam demo/input/Org10S4D46/01_rawdata/Org10S4D46.bam \
+    --barcode demo/input/Org10S4D46/01_rawdata/Org10S4D46_CB.txt \
     --threads 4 \
     --read-len 100 \
-    --cellnum 155
+    --cellnum 836
