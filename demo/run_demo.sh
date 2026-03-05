@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Set paths
-SAMPLE="Org10S4D46"
+SAMPLE="Org4S15D63"
 MUTATION_LIST="$SCRIPT_DIR/input/02_identifier/identifier.txt"
 BAM_FILE="$SCRIPT_DIR/input/01_rawdata/${SAMPLE}.bam"
 BARCODE_FILE="$SCRIPT_DIR/input/01_rawdata/${SAMPLE}_CB.txt"
@@ -50,8 +50,8 @@ python -m cli.main  --workdir "$WORKDIR"  scrna \
     --bam "$BAM_FILE" \
     --barcode "$BARCODE_FILE" \
     --threads 4 \
-    --read-len 91 \
-    --cellnum 836 \
+    --read-len 100 \
+    --cellnum 155 \
     --running-type benchmark \
     --verbose
 
