@@ -1,0 +1,23 @@
+# config/paths.yaml
+# External tool paths - users need to set these according to their installation
+
+# Conda environment (required for Python scripts)
+conda:
+  python: "path/to/envs/bin/python"  # Path to conda Python interpreter
+  env_path: "path/to/envs"           # Path to conda environment
+
+# ANNOVAR (required for variant annotation)
+# Please install ANNOVAR from http://www.openbioinformatics.org/annovar/
+annovar:
+  script_dir: "、path/to/software/annovar"       # Directory containing annotate_variation.pl
+  humandb: "、path/to/software/annovar/humandb"  # Directory containing downloaded databases
+  build: "hg38"                                                              # Genome build (hg38/hg19)
+
+# Other reference files (paths need to be updated by user)
+reference:
+  genome_fasta: "/path/to/resource/hg38/genome.fa"
+  gff3_file: "/path/to/resource/hg38/wgEncodeGencodeExonSupportV44.sort.bed"
+  mappability_file: "/path/to/resource/hg38/k24.umap.bedgraph"
+  gnomad_file: "/path/to/resource/hg38/hg38_gnomad312_genome_only_af_all.txt"
+  rna_editing_file: "/path/to/resource/hg38/COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed"
+

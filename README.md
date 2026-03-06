@@ -3,13 +3,22 @@
 Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
 
 
-> **Important Note for Users**:
+> **Important Note for Users**
+
 > PhyloSOLID is under active development, especially during its preprint stage. The software and its associated resources are continuously being updated and improved. If you encounter any issues, have feature requests, or need guidance, **please do not hesitate to contact us**. We are committed to providing timely support and would greatly appreciate your feedback to make PhyloSOLID better for the entire community. You can reach us at the emails provided in the Contact section.
 
 
 ## Overview
 
 PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from single-cell sequencing data. It supports both scRNA-seq and scDNA-seq modes, with features for mutation filtering, tree construction, and visualization.
+
+
+> **System Requirements:**
+
+> PhyloSOLID is primarily developed and tested on Linux. We recommend running it on Linux or macOS systems. Windows users can use WSL (Windows Subsystem for Linux).
+
+
+
 
 ## Installation
 
@@ -23,7 +32,7 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 ### Step 1: Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/phylosolid.git
+git clone https://github.com/douymLab/PhyloSOLID.git
 cd phylosolid
 ```
 
@@ -72,11 +81,13 @@ cp config/paths.yaml.template config/paths.yaml
 - Reference files (genome FASTA, GFF3, etc.)
 - Other external tools
 
-### Step 6: Download reference files from Figshare
+### Step 6: Resource Files
 
-All required reference files for running PhyloSOLID with the hg38 genome build are publicly available on Figshare. 
-Figshare DOI: 10.6084/m9.figshare.31489249
-The Figshare repository contains the following six compressed (.gz) files:
+All required resource files for running PhyloSOLID with the hg38 genome build are available on Figshare. **Due to their large total size (~8.85 GB), these files are not included in the GitHub repository and must be downloaded separately.**
+
+**Figshare URL**: [https://figshare.com/s/2aee3e878688722e9c6f](https://figshare.com/s/2aee3e878688722e9c6f)
+
+The Figshare repository contains the following six compressed (`.gz`) files:
 
 | File | Description | Size |
 |:-----|:------------|------:|
@@ -87,36 +98,37 @@ The Figshare repository contains the following six compressed (.gz) files:
 | `hg38_gnomad312_genome_only_af_all.txt.gz` | Population allele frequencies from gnomAD v3.1.2 | 4.65 GB |
 | `COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz` | Curated RNA editing sites | 58.26 MB |
 
-
 ##### Download and Setup Instructions
-1. Download all six .gz files from Figshare using the DOI link: 10.6084/m9.figshare.31489249
-2. Place the downloaded files in a dedicated directory on your system (e.g., /path/to/reference/).
+1. Download all six `.gz` files from Figshare using the URL: https://figshare.com/s/2aee3e878688722e9c6f
+2. Place the downloaded files in a dedicated directory on your system (e.g., `/path/to/resource/`).
 3. Extract each file. You can do this one by one or with a simple loop in your terminal:
+
 ```
-# Navigate to your reference directory
-cd /path/to/reference/
+# Navigate to your resource directory
+cd /path/to/resource/
 
 # Extract all .gz files
 for file in *.gz; do
     gunzip "$file"
 done
 ```
+
 4. Configure the paths to the extracted files in your config/paths.yaml file.
 Example config/paths.yaml configuration:
+
 ```
 # ANNOVAR configuration
 annovar:
   script_dir: "/path/to/software/annovar"      # Directory containing annotate_variation.pl
   humandb: "/path/to/software/annovar/humandb" # Directory with downloaded databases
-  build: "hg38"                                 # Genome build (hg38/hg19)
+  build: "hg38"                                # Genome build (hg38/hg19)
 
 # Reference files (paths to extracted files)
 reference:
-  genome_fasta: "/path/to/reference/genome.fa"                               # Extracted from genome.fa.gz
-  gff3_file: "/path/to/reference/wgEncodeGencodeExonSupportV44.sort.bed"    # Extracted from wgEncodeGencodeExonSupportV44.sort.bed.gz
-  mappability_file: "/path/to/reference/k24.umap.bedgraph"                  # Extracted from k24.umap.bedgraph.gz (use k100.umap.bedgraph if needed)
-  gnomad_file: "/path/to/reference/hg38_gnomad312_genome_only_af_all.txt"   # Extracted from hg38_gnomad312_genome_only_af_all.txt.gz
-  rna_editing_file: "/path/to/reference/COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed" # Extracted from COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz
+  genome_fasta: "/path/to/resource/genome.fa"                              # Extracted from genome.fa.gz
+  gff3_file: "/path/to/resource/wgEncodeGencodeExonSupportV44.sort.bed"    # Extracted from wgEncodeGencodeExonSupportV44.sort.bed.gz
+  mappability_file: "/path/to/resource/k24.umap.bedgraph"                  # Extracted from k24.umap.bedgraph.gz (use k100.umap.bedgraph if needed)
+  gnomad_file: "/path/to/resource/hg38_gnomad312_genome_only_af_all.txt"   # Extracted from hg38_gnomad312_genome_only_af_all.txt.gz
   ```
 
 ### Step 7: Verify installation
@@ -150,7 +162,6 @@ phylosolid --workdir ./results scrna \
     --read-len 100 \
     --cellnum 155 \
     --threads 8 \
-    --running-type production \
     --workdir ./results \
     --config config/paths.yaml
 ```
@@ -213,11 +224,11 @@ After running, results are organized as:
 ```
 workdir/
 └── SAMPLE_ID/
-    ├── 01_features/              # Feature extraction results
+    ├── 01_features/                # Feature extraction results
     │   ├── depth_in_spots/
     │   ├── SAMPLE_ID.benchmark_patched.feature.txt
     │   └── ...
-    ├── 02_treeinput/              # Tree input files
+    ├── 02_treeinput/               # Tree input files
     │   ├── treeinput/
     │   │   ├── treeinput_spot_c_155.csv
     │   │   ├── treeinput_scid_barcode.txt
@@ -246,7 +257,7 @@ cd demo
 1. Feature extraction
 
 ```
-python -m cli.main --workdir demo/expected_output scrna \
+phylosolid --workdir demo/expected_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
     --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
@@ -258,7 +269,7 @@ python -m cli.main --workdir demo/expected_output scrna \
 
 2. Tree input generation
 ```
-python -m cli.main --workdir demo/expected_output scrna \
+phylosolid --workdir demo/expected_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
     --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
@@ -269,7 +280,7 @@ python -m cli.main --workdir demo/expected_output scrna \
 
 3. Tree building
 ```
-python -m cli.main --workdir demo/expected_output scrna \
+phylosolid --workdir demo/expected_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
     --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
@@ -280,11 +291,11 @@ python -m cli.main --workdir demo/expected_output scrna \
 
 ##### Complete pipeline with demo data
 ```
-python -m cli.main --workdir demo/test_output scrna \
+phylosolid --workdir demo/test_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
     --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
-    --barcode demo/input/Org4S15D63/01_rawdata/Org10S4D46_CB.txt \
+    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
     --threads 4 \
     --read-len 100 \
     --cellnum 155
@@ -303,7 +314,7 @@ If you see "ANNOVAR not found" error:
 ### Reference files not found
 If you see errors about missing reference files:
 
-1. Download the reference files package from Figshare using the DOI: 10.6084/m9.figshare.31489249
+1. Download the resource files package from Figshare using the URL: https://figshare.com/s/2aee3e878688722e9c6f
 2. Ensure files are extracted to the correct location
 3. Verify paths in config/paths.yaml point to the extracted files
 4. Check file permissions (ensure files are readable)
@@ -331,11 +342,6 @@ chmod +x scripts/scrna/**/*.R
 If you use PhyloSOLID in your research, please cite:
 
     1. Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
-
-## Data Citation
-If you use the reference files from Figshare, please cite:
-
-    2. Yang, Q., Dou, Y. (2026). PhyloSOLID resources. Figshare. https://doi.org/10.6084/m9.figshare.31489249
 
 ## License
 
