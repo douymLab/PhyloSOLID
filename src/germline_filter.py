@@ -656,10 +656,23 @@ def identify_germline_variants(
     prob_threshold = None
     
     if df_labeled is None:
-        # 固定训练集路径
-        criteria_path = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/germline_filter/criteria/stats_data_by_merged_3samples_withLabels.csv"
+        # 获取项目根目录（假设当前文件在 src/phylosolid/germline_filter/ 下）
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        # 向上到项目根目录：src/phylosolid/germline_filter -> src/phylosolid -> src -> 根目录
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file_dir))))
+        
+        # 构建 resource 文件夹下的路径
+        criteria_path = os.path.join(
+            project_root,
+            "resource",
+            "stats_data_by_merged_3samples_withLabels.csv"
+        )
+        
         if os.path.exists(criteria_path):
             df_labeled = pd.read_csv(criteria_path)
+            print(f"Loaded criteria file from: {criteria_path}")  # 可选的调试信息
+        else:
+            print(f"Warning: Criteria file not found at {criteria_path}")  # 可选的警告信息
     
     if df_labeled is not None and not df_labeled.empty:
         if sampleid is not None and "sampleid" in df_labeled.columns:
