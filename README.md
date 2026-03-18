@@ -31,7 +31,7 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 ```bash
 git clone https://github.com/douymLab/PhyloSOLID.git
-cd phylosolid
+cd PhyloSOLID
 ```
 
 ### Step 2: Install Python dependencies
