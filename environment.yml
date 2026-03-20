@@ -102,10 +102,10 @@ dependencies:
   # Pip installed packages
   - pip:
     # Deep learning (optional)
-    - torch>=1.9.0
+    - torch>=1.9.0,<2.0.0 # (Avoid installing the new version that requires Python 3.11 or higher)
     
     # Phylogenetics tools
-    - scphylo-tools>=0.1.0
+    - scphylo-tools>=0.0.4
     
     # Logging and debugging
     - loguru>=0.5.0
@@ -124,7 +124,7 @@ dependencies:
     - cloudpickle>=2.0.0
     - pytest>=6.2.0
     - black>=21.0.0
-    - cogent3>=2022.0.0
+    - cogent3
     - biopython>=1.79
     - hdf5plugin>=3.0.0
     - pickle5>=0.0.11
