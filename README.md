@@ -140,6 +140,43 @@ cd demo
 ```
 
 ## Usage
+
+### Binary matrix mode (Direct tree building)
+
+For users who already have a binary mutation matrix, PhyloSOLID provides a direct mode that skips feature extraction and tree input generation:
+
+```
+# Basic usage
+python -m cli.main binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -outputpath output_dir
+
+# Or using the installed command
+phylosolid binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -outputpath output_dir
+```
+
+##### Input format (tab-separated):
+
+Rows: cells (first column contains cell barcodes/IDs)
+Columns: mutations (column headers are mutation IDs)
+Values: 1 (present), 0 (absent), NA (missing data)
+Example (matrix.txt):
+
+| cell_id | chr1_1000_A_G | chr2_2000_C_T | chr3_3000_G_A |
+|:--------|:--------------|:--------------|--------------:|
+| Cell_1 | 1 | 0 | 1 |
+| Cell_2 | 0 | 1 | NA |
+| Cell_3 | 1 | 1 | 0 |
+
+##### Output:
+```
+output_dir/
+├── phylo_scaffold_tree/
+│   ├── cell_by_mut.CFMatrix
+│   └── celltree.newick
+├── df_celltype.txt
+└── ...
+```
+
+
 ### scRNA-seq mode
 ##### Basic usage:
 ```
@@ -195,10 +232,10 @@ phylosolid --workdir ./results scdna \
 ## Input File Formats
 ### Mutation list (mutations.txt)
 ```
-chr1_1000_A_G_gene1
-chr1_2000_C_T_gene2
-chr2_3000_G_A_gene1
-chr3_4000_T_C_gene3
+chr1_1000_A_G
+chr1_2000_C_T
+chr2_3000_G_A
+chr3_4000_T_C
 ```
 Format: chromosome_position_reference_alt_gene
 

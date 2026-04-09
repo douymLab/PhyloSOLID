@@ -1,0 +1,150 @@
+{
+    "name": "ROOT",
+    "children": [
+        {
+            "name": "chr9_91232109_C>CTTAT",
+            "children": [
+                {
+                    "name": "chr9_79602437_G>A",
+                    "children": [
+                        {
+                            "name": "chr2_177844406_GT>G",
+                            "children": [
+                                {
+                                    "name": "chr13_35593448_T>G",
+                                    "children": [
+                                        {
+                                            "name": "chr11_40223839_G>GT",
+                                            "children": [
+                                                {
+                                                    "name": "chr1_30775458_C>T",
+                                                    "children": [
+                                                        {
+                                                            "name": "chr12_55841107_GT>G",
+                                                            "children": [
+                                                                {
+                                                                    "name": "chr2_235552139_A>ATG",
+                                                                    "children": [
+                                                                        {
+                                                                            "name": "chr3_181032100_GA>G",
+                                                                            "children": [
+                                                                                {
+                                                                                    "name": "chr13_54754211_G>GA",
+                                                                                    "children": [
+                                                                                        {
+                                                                                            "name": "chr9_4259245_T>TTTTATTTA",
+                                                                                            "children": [
+                                                                                                {
+                                                                                                    "name": "chr8_25976670_A>T",
+                                                                                                    "children": [
+                                                                                                        {
+                                                                                                            "name": "chr6_135647703_AT>A"
+                                                                                                        }
+                                                                                                    ]
+                                                                                                }
+                                                                                            ]
+                                                                                        }
+                                                                                    ]
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    ]
+                                                                }
+                                                            ]
+                                                        }
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "chr9_106306487_CT>C",
+            "children": [
+                {
+                    "name": "chr1_53301408_T>A",
+                    "children": [
+                        {
+                            "name": "chr19_9734206_G>GT",
+                            "children": [
+                                {
+                                    "name": "chr4_55987018_C>CGT"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "chr17_717206_TA>T",
+            "children": [
+                {
+                    "name": "chr1_49664418_GT>G",
+                    "children": [
+                        {
+                            "name": "chr21_16719208_GA>G"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mut_16"
+        },
+        {
+            "name": "mut_12"
+        },
+        {
+            "name": "mut_9"
+        },
+        {
+            "name": "mut_1"
+        },
+        {
+            "name": "mut_14"
+        },
+        {
+            "name": "mut_5"
+        },
+        {
+            "name": "mut_15"
+        },
+        {
+            "name": "mut_8"
+        },
+        {
+            "name": "mut_7"
+        },
+        {
+            "name": "mut_4"
+        },
+        {
+            "name": "mut_10"
+        },
+        {
+            "name": "mut_6"
+        },
+        {
+            "name": "mut_3"
+        },
+        {
+            "name": "mut_2"
+        },
+        {
+            "name": "mut_13"
+        },
+        {
+            "name": "chr9_9117220_GT>G"
+        },
+        {
+            "name": "mut_11"
+        }
+    ]
+}

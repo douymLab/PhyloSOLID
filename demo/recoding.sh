@@ -29,7 +29,7 @@ python -m cli.main --workdir demo/expected_output scrna \
 
 
 ## 完整流程
-python -m cli.main --workdir demo/test_output scrna \
+python -m cli.main --workdir demo/expected_output scrna \
     --sample Org10S4D46 \
     --mutation-list demo/input/Org10S4D46/02_identifier/identifier.txt \
     --bam demo/input/Org10S4D46/01_rawdata/Org10S4D46.bam \
@@ -37,3 +37,13 @@ python -m cli.main --workdir demo/test_output scrna \
     --threads 4 \
     --read-len 100 \
     --cellnum 836
+
+
+##### binary matrix input mode
+cd /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID
+python -m cli.main --workdir demo/expected_output binary-matrix \
+    --sample UMB1465 \
+    --inputfile demo/input/UMB1465/demo_input.tsv \
+    --outputpath demo/expected_output/UMB1465
+
+

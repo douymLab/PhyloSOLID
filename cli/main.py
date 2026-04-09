@@ -10,6 +10,7 @@ import logging
 import sys
 import os
 import yaml
+import subprocess  # 添加这行
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -157,6 +158,14 @@ def main():
     check_parser.add_argument('--threads', '-t', type=int, default=4,
                              help='Number of threads (default: 4)')
     
+    # ========== 新增 binary-matrix 子命令 ==========
+    binary_parser = subparsers.add_parser('binary-matrix', 
+                                          help='Build tree directly from binary matrix')
+    binary_parser.add_argument('-s', '--sampleid', required=True, help='Sample ID')
+    binary_parser.add_argument('-i', '--inputfile', required=True, help='Binary matrix file')
+    binary_parser.add_argument('-o', '--outputpath', required=True, help='Output directory')
+    # ==============================================
+    
     # scRNA subcommand
     scrna_parser = subparsers.add_parser('scrna', help='scRNA-seq mode')
     scrna_parser.add_argument('--sample', '-s', required=True, help='Sample ID')
@@ -197,6 +206,25 @@ def main():
                              help='Steps to run (default: all)')
     
     args = parser.parse_args()
+    
+    # ========== 处理 binary-matrix 模式（放在最前面） ==========
+    if args.mode == 'binary-matrix':
+        binput_script = Path(__file__).parent.parent / 'src' / 'run_phylosilid_fullTree_binput.py'
+        if not binput_script.exists():
+            print(f"Error: Binary matrix script not found: {binput_script}")
+            sys.exit(1)
+        
+        cmd = [sys.executable, str(binput_script), 
+               '-s', args.sampleid, 
+               '-i', args.inputfile, 
+               '-o', args.outputpath]
+        
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            sys.exit(e.returncode)
+        return
+    # ========================================================
     
     # Setup logging
     setup_logging(args.verbose, args.log_file)

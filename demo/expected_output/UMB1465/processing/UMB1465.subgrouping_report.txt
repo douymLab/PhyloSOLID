@@ -1,0 +1,175 @@
+================================================================================
+MUTATION SUB-GROUPING FINAL REPORT
+================================================================================
+Sample: UMB1465
+Total main groups: 20
+Total subgroups: 2
+Total mutations with hierarchy: 35
+High CV mutations (excluded from analysis): 0
+CV filtering: 17/17 mutations passed CV threshold
+
+Main Group 0:
+  Backbone mutation: chr9_91232109_C>CTTAT
+  Total mutations: 13
+  Number of subgroups: 2
+    Subgroup 0_backbone: 1 mutations
+      - chr9_91232109_C>CTTAT [MAIN_BACKBONE]
+    Subgroup 0_0 (SUB_BACKBONE): 12 mutations
+      - chr2_177844406_GT>G [SUB_BACKBONE]
+      - chr11_40223839_G>GT
+      - chr8_25976670_A>T
+      - chr9_4259245_T>TTTTATTTA
+      - chr6_135647703_AT>A
+      - chr13_35593448_T>G
+      - chr9_79602437_G>A
+      - chr2_235552139_A>ATG
+      - chr1_30775458_C>T
+      - chr12_55841107_GT>G
+      - chr3_181032100_GA>G
+      - chr13_54754211_G>GA
+
+Main Group 1:
+  Backbone mutation: chr9_106306487_CT>C
+  Total mutations: 4
+  Number of subgroups: 2
+    Subgroup 1_backbone: 1 mutations
+      - chr9_106306487_CT>C [MAIN_BACKBONE]
+    Subgroup 1_0 (SUB_BACKBONE): 3 mutations
+      - chr1_53301408_T>A [SUB_BACKBONE]
+      - chr4_55987018_C>CGT
+      - chr19_9734206_G>GT
+
+Main Group 2:
+  Backbone mutation: chr17_717206_TA>T
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 2_backbone: 1 mutations
+      - chr17_717206_TA>T [MAIN_BACKBONE]
+
+Main Group 3:
+  Backbone mutation: mut_16
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 3_backbone: 1 mutations
+      - mut_16 [MAIN_BACKBONE]
+
+Main Group 4:
+  Backbone mutation: mut_12
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 4_backbone: 1 mutations
+      - mut_12 [MAIN_BACKBONE]
+
+Main Group 5:
+  Backbone mutation: mut_9
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 5_backbone: 1 mutations
+      - mut_9 [MAIN_BACKBONE]
+
+Main Group 6:
+  Backbone mutation: mut_1
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 6_backbone: 1 mutations
+      - mut_1 [MAIN_BACKBONE]
+
+Main Group 7:
+  Backbone mutation: mut_14
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 7_backbone: 1 mutations
+      - mut_14 [MAIN_BACKBONE]
+
+Main Group 8:
+  Backbone mutation: mut_5
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 8_backbone: 1 mutations
+      - mut_5 [MAIN_BACKBONE]
+
+Main Group 9:
+  Backbone mutation: mut_15
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 9_backbone: 1 mutations
+      - mut_15 [MAIN_BACKBONE]
+
+Main Group 10:
+  Backbone mutation: mut_8
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 10_backbone: 1 mutations
+      - mut_8 [MAIN_BACKBONE]
+
+Main Group 11:
+  Backbone mutation: mut_7
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 11_backbone: 1 mutations
+      - mut_7 [MAIN_BACKBONE]
+
+Main Group 12:
+  Backbone mutation: mut_4
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 12_backbone: 1 mutations
+      - mut_4 [MAIN_BACKBONE]
+
+Main Group 13:
+  Backbone mutation: mut_10
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 13_backbone: 1 mutations
+      - mut_10 [MAIN_BACKBONE]
+
+Main Group 14:
+  Backbone mutation: mut_6
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 14_backbone: 1 mutations
+      - mut_6 [MAIN_BACKBONE]
+
+Main Group 15:
+  Backbone mutation: mut_3
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 15_backbone: 1 mutations
+      - mut_3 [MAIN_BACKBONE]
+
+Main Group 16:
+  Backbone mutation: mut_2
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 16_backbone: 1 mutations
+      - mut_2 [MAIN_BACKBONE]
+
+Main Group 17:
+  Backbone mutation: mut_13
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 17_backbone: 1 mutations
+      - mut_13 [MAIN_BACKBONE]
+
+Main Group 18:
+  Backbone mutation: chr9_9117220_GT>G
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 18_backbone: 1 mutations
+      - chr9_9117220_GT>G [MAIN_BACKBONE]
+
+Main Group 19:
+  Backbone mutation: mut_11
+  Total mutations: 1
+  Number of subgroups: 1
+    Subgroup 19_backbone: 1 mutations
+      - mut_11 [MAIN_BACKBONE]
+
+================================================================================
+SUMMARY STATISTICS
+================================================================================
+Total mutations considered: 35
+  - Successfully analyzed and placed in tree: 35
+  - Excluded due to high CV: 0
+Success rate: 100.0% (35/35)
+High CV exclusion rate: 0.0% (0/35)
