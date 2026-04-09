@@ -169,10 +169,12 @@ Example (matrix.txt):
 ##### Output:
 ```
 output_dir/
-├── phylo_scaffold_tree/
-│   ├── cell_by_mut.CFMatrix
-│   └── celltree.newick
-├── df_celltype.txt
+├── phylo/
+│   ├── final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred.CFMatrix
+│   └── ...
+├── processing/
+│   ├── df_celltype.txt
+│   └── ...
 └── ...
 ```
 
