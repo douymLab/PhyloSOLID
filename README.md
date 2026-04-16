@@ -230,6 +230,38 @@ phylosolid --workdir ./results scdna \
     --barcode barcodes.txt
 ```
 
+### SpaceTracer mode (Skip feature extraction and classifier)
+SpaceTracer mode is designed for users who want to directly build trees without running feature extraction and the classifier step. This mode:
+
+- Skips the feature extraction step entirely
+- Bypasses the mutation classifier
+- Uses a dedicated tree building script
+- Accepts the same input parameters as scRNA mode
+
+##### Basic usage:
+```
+phylosolid --workdir ./results spacetracer \
+    --sample SAMPLE_ID \
+    --mutation-list mutations.txt \
+    --bam sample.bam \
+    --barcode barcodes.txt
+```
+##### With all options:
+```
+phylosolid --workdir ./results spacetracer \
+    --sample SAMPLE_ID \
+    --mutation-list mutations.txt \
+    --bam sample.bam \
+    --barcode barcodes.txt \
+    --metadata metadata.txt \
+    --read-len 100 \
+    --cellnum 155 \
+    --threads 8 \
+    --config config/paths.yaml
+```
+
+
+
 
 ## Input File Formats
 ### Mutation list (mutations.txt)

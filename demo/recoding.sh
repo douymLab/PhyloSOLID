@@ -58,6 +58,15 @@ python -m cli.main --workdir demo/expected_output/spacetracer_mode spacetracer \
     --read-len 100 \
     --cellnum 155
 
+# If phylosolid is setup:
+phylosolid --workdir demo/expected_output/spacetracer_mode spacetracer \
+    --sample Org4S15D63 \
+    --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
+    --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
+    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
+    --threads 4 \
+    --read-len 100 \
+    --cellnum 155
 
 
 
