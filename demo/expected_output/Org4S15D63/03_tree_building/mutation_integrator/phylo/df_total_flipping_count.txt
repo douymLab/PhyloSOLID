@@ -1,2 +1,0 @@
-total_flipping_False_Negative	total_flipping_False_Positive	total_flipping_NA_to_0	total_flipping_NA_to_1
-32	24	100	6

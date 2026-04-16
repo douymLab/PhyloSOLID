@@ -1,8 +1,0 @@
-chr2_3576510_G_A	exonic(synonymous_SNV)	RPS7
-chr7_148415475_C_T	exonic(synonymous_SNV)	CNTNAP2
-chrM_7941_A_T	exonic(unknown)	MT-CO2
-chrM_3054_G_A	ncRNA_exonic	MT-RNR2
-chrM_15392_G_T	exonic(unknown)	MT-CYB
-chrM_6722_G_A	exonic(unknown)	MT-CO1
-chrM_7066_C_A	exonic(unknown)	MT-CO1
-chrM_3822_C_A	exonic(unknown)	MT-ND1

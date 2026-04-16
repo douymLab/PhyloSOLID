@@ -1,8 +1,0 @@
-chrM_7941_A_T
-chr7_148415475_C_T
-chrM_3054_G_A
-chrM_15392_G_T
-chrM_7066_C_A
-chr2_3576510_G_A
-chrM_3822_C_A
-chrM_6722_G_A

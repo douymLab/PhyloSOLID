@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Date: 2025/09/16
 # Update: 2025/10/13
 # Author: Qing
@@ -68,7 +70,7 @@ parser.add_argument("-s", "--sampleid", default="sampleid", type=str, help="The 
 parser.add_argument("-i", "--inputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/data", type=str, help="The inputpath contains the preprocessing results from raw posterior-reads data.")
 parser.add_argument("-o", "--outputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/results", type=str, help="The outputpath you want to save results.")
 parser.add_argument("-c", "--celltype_file", default=None, type=str, help="The celltype_file you should provide. If you can't generate this file, please set 'None'.")
-parser.add_argument("--features_file", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/models/scrna/check_classifier/P6_mosaic/features_file.txt", type=str, help="The features_file you should provide. If you can't generate this file, please set 'None'.")
+parser.add_argument("--features_file", default=None, type=str, help="The features_file you should provide. If you can't generate this file, please set 'None'.")
 parser.add_argument("--is_predict_germ", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to predict germline mutations.")
 parser.add_argument("--is_detect_passtree_by_dp", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to run Dynamic programing step.")
 parser.add_argument("--is_filter_quality", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to filter mutations in scaffold steps by coverage quality.")
@@ -81,24 +83,6 @@ inputpath = args.inputpath
 outputpath = args.outputpath
 celltype_file = args.celltype_file
 features_file = args.features_file
-
-# sampleid = "P6_merged"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_10xP6_merged/phylo_allmuts/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_10xP6_merged/phylo_allmuts/results"
-# celltype_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_10xP6_merged/celltype_files/P6_combined_annotation.txt"
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/models/scrna/check_classifier/P6_mosaic/features_file.txt"
-
-# sampleid = "100k"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/benchmark_100k/phylo_benchmark/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/benchmark_100k/phylo_benchmark/results.rerun_removeFPs"
-# celltype_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_A549/Genotyper/treeinput_100k/pass_tree_using_fisher_test/mosaic_checked/annofiles/100k.celltype_cluster_by_heatmap.cellanno.txt"
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/benchmark_100k/phylo_benchmark/treeinput/features_file.txt"
-
-# sampleid = "10k"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/benchmark_10k/phylo_benchmark/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/benchmark_10k/phylo_benchmark/results.rerun_removeFPs"
-# celltype_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_A549/PhyloSOLID_tree/10k/phylo_38true/annofiles/annotation_file.phylo_10k_52muts_1147cells.txt"
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/benchmark_10k/phylo_benchmark/treeinput/features_file.txt"
 
 
 outputpath_classifier = os.path.join(outputpath, "classifier_filter")

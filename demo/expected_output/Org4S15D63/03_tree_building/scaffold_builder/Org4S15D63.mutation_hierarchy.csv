@@ -1,8 +1,0 @@
-mutation,main_group,sub_group,is_backbone,is_sub_backbone
-chrM_7941_A_T,0,0_backbone,True,False
-chrM_3054_G_A,1,1_backbone,True,False
-chrM_7066_C_A,2,2_backbone,True,False
-chrM_15392_G_T,0,0_0,False,True
-chrM_3822_C_A,0,0_0,False,False
-chrM_6722_G_A,0,0_0,False,False
-chr7_148415475_C_T,0,0_0,False,False

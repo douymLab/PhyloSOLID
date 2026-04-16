@@ -1,9 +1,0 @@
-,identifier,fp_cells_count,fp_cells_ratio_per_mutation,total_ones_cells,total_zeros_cells,total_coverage_cells
-0,chrM_7941_A_T,12,0.13953488372093023,86,51,137
-1,chrM_3054_G_A,47,0.5802469135802469,81,56,137
-2,chr2_3576510_G_A,4,0.16,25,70,95
-3,chrM_15392_G_T,0,0.0,23,90,113
-4,chrM_6722_G_A,0,0.0,21,91,112
-5,chrM_7066_C_A,5,0.2631578947368421,19,117,136
-6,chrM_3822_C_A,0,0.0,10,113,123
-7,chr7_148415475_C_T,0,0.0,5,85,90

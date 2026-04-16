@@ -1,9 +1,0 @@
-mutation_id	sample_id	predicted_label	probability_artifact	probability_germline	probability_mosaic
-chrM_7941_A_T	Org4S15D63	mosaic	0.275	0.066	0.659
-chr7_148415475_C_T	Org4S15D63	mosaic	0.068	0.001	0.931
-chrM_3054_G_A	Org4S15D63	mosaic	0.464	0.063	0.473
-chrM_15392_G_T	Org4S15D63	mosaic	0.136	0.005	0.859
-chrM_7066_C_A	Org4S15D63	mosaic	0.225	0.001	0.774
-chr2_3576510_G_A	Org4S15D63	mosaic	0.095	0.009	0.896
-chrM_3822_C_A	Org4S15D63	mosaic	0.268	0.002	0.73
-chrM_6722_G_A	Org4S15D63	mosaic	0.126	0.005	0.869

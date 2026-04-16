@@ -10,7 +10,7 @@ import logging
 import sys
 import os
 import yaml
-import subprocess  # 添加这行
+import subprocess
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src import __version__
 from pipelines.scrna.pipeline import SCRNAPipeline
 from pipelines.scdna.pipeline import scDNAPipeline
+from pipelines.spacetracer.pipeline import SpaceTracerPipeline
 
 def setup_logging(verbose: bool = False, log_file: Optional[Path] = None):
     """
@@ -80,7 +81,7 @@ def load_config(config_file: Optional[Path]) -> Dict:
 def load_paths_config(config_file: Optional[Path] = None) -> dict:
     """Load paths configuration from YAML file"""
     default_paths = {
-        'conda': {  # 新增 conda 配置
+        'conda': {
             'python': None,
             'env_path': None
         },
@@ -154,17 +155,41 @@ def main():
                                         help='Check ANNOVAR installation and configuration')
     check_parser.add_argument('--config', '-c', type=Path, required=True,
                              help='Configuration file path')
-    # Add threads parameter for consistency (though not used)
     check_parser.add_argument('--threads', '-t', type=int, default=4,
                              help='Number of threads (default: 4)')
     
-    # ========== 新增 binary-matrix 子命令 ==========
+    # binary-matrix subcommand
     binary_parser = subparsers.add_parser('binary-matrix', 
                                           help='Build tree directly from binary matrix')
     binary_parser.add_argument('-s', '--sampleid', required=True, help='Sample ID')
     binary_parser.add_argument('-i', '--inputfile', required=True, help='Binary matrix file')
     binary_parser.add_argument('-o', '--outputpath', required=True, help='Output directory')
-    # ==============================================
+    
+    # spacetracer subcommand
+    spacetracer_parser = subparsers.add_parser('spacetracer', 
+                                               help='SpaceTracer mode (skip feature extraction)')
+    spacetracer_parser.add_argument('--sample', '-s', required=True, help='Sample ID')
+    spacetracer_parser.add_argument('--mutation-list', '-m', required=True, type=Path, 
+                                   help='Mutation list file')
+    spacetracer_parser.add_argument('--bam', '-b', required=True, type=Path, help='BAM file')
+    spacetracer_parser.add_argument('--barcode', '-bc', required=True, type=Path, 
+                                   help='Barcode file')
+    spacetracer_parser.add_argument('--celltype-file', type=Path, 
+                                   help='Pre-computed cell type file')
+    spacetracer_parser.add_argument('--metadata', type=Path, 
+                                   help='Metadata file for cell type extraction')
+    spacetracer_parser.add_argument('--read-len', type=int, default=91, help='Read length (default: 91)')
+    spacetracer_parser.add_argument('--cellnum', type=int, default=155, help='Number of cells (default: 155)')
+    spacetracer_parser.add_argument('--threads', '-t', type=int, default=4, help='Number of threads')
+    spacetracer_parser.add_argument('--running-type', default='benchmark',
+                                   choices=['benchmark', 'production'], 
+                                   help='Running type (default: benchmark)')
+    spacetracer_parser.add_argument('--ase-filepath', help='ASE file path (optional)')
+    spacetracer_parser.add_argument('--steps', nargs='+',
+                                   choices=['tree_input', 'tree_building'],
+                                   help='Steps to run (default: both)')
+    spacetracer_parser.add_argument('--parallel', action='store_true',
+                                   help='Run steps in parallel')
     
     # scRNA subcommand
     scrna_parser = subparsers.add_parser('scrna', help='scRNA-seq mode')
@@ -191,7 +216,6 @@ def main():
     scrna_parser.add_argument('--parallel', action='store_true',
                              help='Run feature extraction and tree input in parallel')
     
-    
     # scDNA subcommand
     scdna_parser = subparsers.add_parser('scdna', help='scDNA-seq mode')
     scdna_parser.add_argument('--sample', '-s', required=True, help='Sample ID')
@@ -207,7 +231,7 @@ def main():
     
     args = parser.parse_args()
     
-    # ========== 处理 binary-matrix 模式（放在最前面） ==========
+    # Handle binary-matrix mode
     if args.mode == 'binary-matrix':
         binput_script = Path(__file__).parent.parent / 'src' / 'run_phylosilid_fullTree_binput.py'
         if not binput_script.exists():
@@ -224,7 +248,6 @@ def main():
         except subprocess.CalledProcessError as e:
             sys.exit(e.returncode)
         return
-    # ========================================================
     
     # Setup logging
     setup_logging(args.verbose, args.log_file)
@@ -249,7 +272,7 @@ def main():
         config['threads'] = args.threads
     if hasattr(args, 'verbose'):
         config['verbose'] = args.verbose
-    elif args.verbose:  # Global verbose flag
+    elif args.verbose:
         config['verbose'] = True
     
     # Create working directory only for pipeline modes
@@ -261,10 +284,11 @@ def main():
     # Check input files only for pipeline modes
     if args.mode not in ['check-annovar']:
         for file_arg in ['mutation_list', 'bam', 'barcode']:
-            file_path = getattr(args, file_arg)
-            if not file_path.exists():
-                logger.error(f"Input file not found: {file_path}")
-                sys.exit(1)
+            if hasattr(args, file_arg):
+                file_path = getattr(args, file_arg)
+                if file_path and not file_path.exists():
+                    logger.error(f"Input file not found: {file_path}")
+                    sys.exit(1)
     
     try:
         # Handle check-annovar mode
@@ -363,6 +387,44 @@ def main():
                 print("\n❌ ANNOVAR check failed. Please fix the issues above.")
                 print("   See documentation for ANNOVAR installation instructions.")
                 sys.exit(1)
+        
+        # Handle spacetracer mode
+        elif args.mode == 'spacetracer':
+            pipeline = SpaceTracerPipeline(workdir, script_dir, config)
+            
+            if args.steps is None:
+                steps = ['tree_input', 'tree_building']
+            else:
+                steps = args.steps
+            
+            results = pipeline.run(
+                sample_id=args.sample,
+                mutation_list=args.mutation_list,
+                bam_file=args.bam,
+                barcode_file=args.barcode,
+                celltype_file=getattr(args, 'celltype_file', None),
+                metadata_file=getattr(args, 'metadata', None),
+                read_len=args.read_len,
+                cellnum=args.cellnum,
+                threads=args.threads,
+                running_type=args.running_type,
+                ase_filepath=getattr(args, 'ase_filepath', None),
+                steps=steps,
+                parallel=args.parallel
+            )
+            
+            logger.info("=" * 50)
+            logger.info("SpaceTracer pipeline completed successfully!")
+            logger.info(f"Steps completed: {', '.join(results.keys())}")
+            
+            tree_file = pipeline.get_tree_file()
+            if tree_file:
+                logger.info(f"Tree file: {tree_file}")
+            
+            summary_file = workdir / 'pipeline_summary.yaml'
+            with open(summary_file, 'w') as f:
+                yaml.dump(results, f, default_flow_style=False)
+            logger.info(f"Summary saved to: {summary_file}")
         
         # Run scRNA pipeline
         elif args.mode == 'scrna':

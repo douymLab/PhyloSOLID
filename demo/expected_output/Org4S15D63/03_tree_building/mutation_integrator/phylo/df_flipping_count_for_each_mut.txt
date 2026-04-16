@@ -1,9 +1,0 @@
-	flipping_False_Negative	flipping_False_Positive	flipping_NA_to_0	flipping_NA_to_1
-chrM_7941_A_T	9	12	0	0
-chrM_15392_G_T	9	0	15	5
-chrM_6722_G_A	8	0	18	1
-chrM_3822_C_A	0	0	9	0
-chr7_148415475_C_T	0	0	31	0
-chrM_3054_G_A	6	9	0	0
-chrM_7066_C_A	0	0	1	0
-chr2_3576510_G_A	0	3	26	0

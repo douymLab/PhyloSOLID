@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # phylosolid/data_loader.py
 """
 Data loader for PhyloSOLID pipeline.

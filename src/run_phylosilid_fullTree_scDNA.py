@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Date: 2025/09/16
 # Update: 2025/10/13
 # Author: Qing
@@ -69,7 +71,7 @@ parser.add_argument("-s", "--sampleid", default="sampleid", type=str, help="The 
 parser.add_argument("-i", "--inputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/data", type=str, help="The inputpath contains the preprocessing results from raw posterior-reads data.")
 parser.add_argument("-o", "--outputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/results", type=str, help="The outputpath you want to save results.")
 parser.add_argument("-c", "--celltype_file", default=None, type=str, help="The celltype_file you should provide. If you can't generate this file, please set 'None'.")
-parser.add_argument("--features_file", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_dna_1465/test_command/treeinput/features_file.txt", type=str, help="The features_file you should provide. If you can't generate this file, please set 'None'.")
+parser.add_argument("--features_file", default=None, type=str, help="The features_file you should provide. If you can't generate this file, please set 'None'.")
 parser.add_argument("--is_predict_germ", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to predict germline mutations.")
 parser.add_argument("--is_detect_passtree_by_dp", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to run Dynamic programing step."),
 parser.add_argument("--is_filter_quality", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to filter mutations in scaffold steps by coverage quality.")
@@ -84,29 +86,6 @@ outputpath = args.outputpath
 celltype_file = args.celltype_file
 features_file = args.features_file
 
-# sampleid = "UMB1465"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_dna_1465/test_command/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_dna_1465/test_command/results"
-# celltype_file = None
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_dna_1465/test_command/treeinput/features_file.txt"
-
-# sampleid = "UMB4638"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_4638_MDA/phylo_benchmark/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_4638_MDA/phylo_benchmark/results"
-# celltype_file = None
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_4638_MDA/phylo_benchmark/treeinput/features_file.txt"
-
-# sampleid = "UMB4643"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_4643_MDA/phylo_benchmark/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_4643_MDA/phylo_benchmark/results_test"
-# celltype_file = None
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_4643_MDA/phylo_benchmark/treeinput/features_file.txt"
-
-# sampleid = "TNBC16"
-# inputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_TNBC16_MDA/phylo_benchmark/data"
-# outputpath = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_TNBC16_MDA/phylo_benchmark/results"
-# celltype_file = None
-# features_file = "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_TNBC16_MDA/phylo_benchmark/treeinput/features_file.txt"
 
 outputpath_classifier = os.path.join(outputpath, "classifier_filter")
 outputpath_germline = os.path.join(outputpath, "germline_filter")
