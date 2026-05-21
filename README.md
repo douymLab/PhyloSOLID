@@ -22,6 +22,14 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 
 
+## Release Notes
+
+*PhyloSOLID is actively maintained. Check the Release Notes below and GitHub Releases for the latest updates.*
+
+- 2026/02/27: Version 1.0.0 (**changelog**)  
+  This is the first public release of PhyloSOLID, rebuilt from the earlier PhyloMosaicGenie prototype.  
+  It provides a more streamlined genotyping and phylogenetic analysis workflow, with improved code structure and reproducibility.
+
 
 ## Installation
 
