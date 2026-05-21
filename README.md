@@ -3,8 +3,13 @@
 Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
 
 
-> **Important Note for Users:**
-> PhyloSOLID is under active development, especially during its preprint stage. The software and its associated resources are continuously being updated and improved. If you encounter any issues, have feature requests, or need guidance, **please do not hesitate to contact us**. We are committed to providing timely support and would greatly appreciate your feedback to make PhyloSOLID better for the entire community. You can reach us at the emails provided in the Contact section.
+> ⚡ **Important Note for Users:**
+> 
+> PhyloSOLID is under active development, especially during its preprint stage. The software and its associated resources are continuously being updated and improved.
+> 
+> Our current priority is optimizing the runtime efficiency of the core tree-building pipeline, particularly for large datasets with high mutation counts. We are actively addressing performance bottlenecks while maintaining full model accuracy and all constraints.
+> 
+> If you encounter any issues, have feature requests, or need guidance, **please do not hesitate to contact us**. We are committed to providing timely support and would greatly appreciate your feedback to make PhyloSOLID better for the entire community. You can reach us at the emails provided in the Contact section.
 
 
 ## Overview
