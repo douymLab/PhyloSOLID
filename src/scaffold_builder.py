@@ -30,6 +30,7 @@ Outputs:
 """
 
 import os
+import importlib.util
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -4365,8 +4366,22 @@ def WriteTfile(out_prefix, matrix, rownames, colnames, judge): # writes matrix o
         if is_cf:
             print("Current tree is conflict-free and output binary matrix and plot phylogenetic tree !")
             df_output.to_csv(out_prefix+".CFMatrix", sep="\t")
-            tree = scp.ul.to_tree(df_output)
-            scp.pl.clonal_tree(tree, output_file=out_prefix+".tree_scphylo.pdf")
+            if importlib.util.find_spec("pygraphviz") is None:
+                logger.warning(
+                    "Skipping scphylo tree plotting for %s because `pygraphviz` is not installed.",
+                    out_prefix,
+                )
+                return
+
+            try:
+                tree = scp.ul.to_tree(df_output)
+                scp.pl.clonal_tree(tree, output_file=out_prefix+".tree_scphylo.pdf")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to plot scphylo tree for %s: %s. Continuing without the PDF plot.",
+                    out_prefix,
+                    exc,
+                )
         else:
             print("Current tree is not conflict-free !")
     else:
