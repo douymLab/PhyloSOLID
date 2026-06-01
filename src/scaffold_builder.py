@@ -38,6 +38,7 @@ import logging
 import copy
 import math
 import random
+import time
 from tqdm import tqdm
 from copy import deepcopy
 from itertools import combinations
@@ -68,6 +69,59 @@ except ImportError:
         community_louvain = None
 
 logger = logging.getLogger(__name__)
+
+
+def _should_emit_tree_diagnostics(active_logger):
+    return active_logger.isEnabledFor(logging.DEBUG)
+
+
+def _log_tree_diagnostics(active_logger, tree, message):
+    if _should_emit_tree_diagnostics(active_logger):
+        active_logger.debug(message)
+        print_tree(tree)
+
+
+def _log_timed_checkpoint(active_logger, stage_name, start_time, message):
+    elapsed = time.perf_counter() - start_time
+    active_logger.info(f"[TIMER] {stage_name}: {message} ({elapsed:.3f}s)")
+
+
+def _log_timed_end(active_logger, stage_name, start_time, summary=None):
+    elapsed = time.perf_counter() - start_time
+    if summary:
+        active_logger.info(f"[TIMER] END {stage_name}: {elapsed:.3f}s ({summary})")
+    else:
+        active_logger.info(f"[TIMER] END {stage_name}: {elapsed:.3f}s")
+
+
+def _log_mutation_progress(active_logger, stage_name, start_time, processed, total, current_mutation, placed, deferred):
+    if total <= 0:
+        return
+    interval = max(1, min(10, total))
+    if processed == 1 or processed == total or processed % interval == 0:
+        elapsed = time.perf_counter() - start_time
+        active_logger.info(
+            f"{stage_name} progress: {processed}/{total} mutations; "
+            f"placed={placed}, deferred={deferred}, current={current_mutation}, elapsed={elapsed:.3f}s"
+        )
+
+
+def _log_generic_progress(active_logger, stage_name, start_time, processed, total, current_label, unit):
+    if total <= 0:
+        return
+    interval = max(1, min(10, total))
+    if processed == 1 or processed == total or processed % interval == 0:
+        elapsed = time.perf_counter() - start_time
+        active_logger.info(
+            f"{stage_name} progress: {processed}/{total} {unit}; "
+            f"current={current_label}, elapsed={elapsed:.3f}s"
+        )
+
+
+def _clean_mutation_vector_against_conflicts(new_mut_vector, conflict_vector, index):
+    new_mut_bool = new_mut_vector.reindex(index, fill_value=0).astype(bool)
+    conflict_bool = conflict_vector.reindex(index, fill_value=0).astype(bool)
+    return (new_mut_bool & ~conflict_bool).astype(int)
 
 
 
@@ -423,7 +477,8 @@ def calculate_cv_for_subgrouping(df_reads_resolved, mutations, cv_threshold=6, l
         if cv <= cv_threshold:
             low_cv_mutations.append(mut)
     
-    print("=====> In this subgroup, low_cv_mutations:", len(low_cv_mutations))
+    if logger is not None:
+        logger.info(f"Low-CV mutations retained in subgroup: {len(low_cv_mutations)}")
     
     # --- Summary ---
     df_cv_stats = pd.DataFrame({
@@ -473,7 +528,7 @@ def compute_clone_conter(muts, corr_cache, n_shuffle=100):
                 remaining = next_remaining
     return clone_counter
 
-def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100):
+def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100, timer_label: Optional[str] = None, timer_logger=None):
     """
     Parameters
     ----------
@@ -491,47 +546,179 @@ def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100):
     pair_weights : dict
         {tuple(m1,m2): weight}  每个 mutation pair 的权重（只考虑长度≥2的 clone）
     """
-    clone_weights = defaultdict(float)  # 全局 clone 权重累加
-    
-    for ref in muts:
-        other_muts = [m for m in muts if m != ref]
+    active_logger = timer_logger or logger
+    stage_name = timer_label or f"ClonePairWeights_{len(muts)}muts"
+    stage_start = time.perf_counter()
+    active_logger.info(f"[TIMER] START {stage_name}")
+
+    n_mut = len(muts)
+    idx_to_mut = list(muts)
+    all_idx = np.arange(n_mut, dtype=np.int32)
+    lex_rank_by_idx = np.empty(n_mut, dtype=np.int32)
+    for rank, idx in enumerate(sorted(range(n_mut), key=idx_to_mut.__getitem__)):
+        lex_rank_by_idx[idx] = rank
+
+    neighbor_build_start = time.perf_counter()
+    corr_matrix = np.zeros((n_mut, n_mut), dtype=bool)
+    np.fill_diagonal(corr_matrix, True)
+    for i, ref in enumerate(muts):
+        for j in range(i + 1, n_mut):
+            other = muts[j]
+            is_corr = corr_cache.get((ref, other), corr_cache.get((other, ref), False))
+            corr_matrix[i, j] = is_corr
+            corr_matrix[j, i] = is_corr
+    other_idx_by_ref = [all_idx[all_idx != ref_idx] for ref_idx in range(n_mut)]
+    singletons_by_ref = [(ref_idx,) for ref_idx in range(n_mut)]
+    clone_pair_cache = {}
+    canonical_clone_cache = {}
+    _log_timed_end(
+        active_logger,
+        f"{stage_name}_NeighborLookup",
+        neighbor_build_start,
+        summary=f"mutations={n_mut}",
+    )
+
+    clone_weights_idx = defaultdict(float)  # 全局 clone 权重累加
+
+    ref_loop_start = time.perf_counter()
+    for ref_pos, ref_idx in enumerate(range(n_mut), start=1):
+        other_idx = other_idx_by_ref[ref_idx]
         ref_clone_counter = defaultdict(int)  # 记录当前 reference 下每个 clone 的计数
-        
+
         for _ in range(n_shuffle):
-            shuffled = list(np.random.permutation(other_muts))
-            remaining = [ref] + shuffled.copy()
-            
-            while remaining:
-                curr_ref = remaining[0]
-                current_clone = [curr_ref]
-                next_remaining = []
-                
-                for m in remaining[1:]:
-                    key1 = (curr_ref, m)
-                    key2 = (m, curr_ref)
-                    # 检查 corr_cache，避免 KeyError
-                    is_corr = corr_cache.get(key1, corr_cache.get(key2, False))
-                    if is_corr:
-                        current_clone.append(m)
-                    else:
-                        next_remaining.append(m)
-                
-                # 当前 shuffle 的 clone 计数
-                ref_clone_counter[tuple(sorted(current_clone))] += 1
-                remaining = next_remaining
-        
+            shuffled = np.random.permutation(other_idx)
+            remaining = np.empty(n_mut, dtype=np.int32)
+            remaining[0] = ref_idx
+            remaining[1:] = shuffled
+            remaining_len = n_mut
+
+            while remaining_len > 0:
+                curr_ref = int(remaining[0])
+                if remaining_len == 1:
+                    clone_key = singletons_by_ref[curr_ref]
+                    ref_clone_counter[clone_key] += 1
+                    break
+
+                tail = remaining[1:remaining_len]
+                corr_mask = corr_matrix[curr_ref, tail]
+                current_clone = np.concatenate((all_idx[curr_ref:curr_ref + 1], tail[corr_mask]))
+                if current_clone.size == 1:
+                    clone_key = singletons_by_ref[curr_ref]
+                else:
+                    raw_clone_key = tuple(int(x) for x in current_clone)
+                    clone_key = canonical_clone_cache.get(raw_clone_key)
+                    if clone_key is None:
+                        order = np.argsort(lex_rank_by_idx[current_clone], kind="stable")
+                        clone_key = tuple(int(x) for x in current_clone[order])
+                        canonical_clone_cache[raw_clone_key] = clone_key
+
+                ref_clone_counter[clone_key] += 1
+                next_remaining = tail[~corr_mask]
+                next_len = next_remaining.size
+                if next_len == 0:
+                    remaining_len = 0
+                else:
+                    remaining[:next_len] = next_remaining
+                    remaining_len = next_len
+
         # Step: normalize by n_shuffle → clone proportion for this reference
         for clone, count in ref_clone_counter.items():
-            clone_weights[clone] += count / n_shuffle  # 累加到全局
-    
+            clone_weights_idx[clone] += count / n_shuffle  # 累加到全局
+        _log_generic_progress(active_logger, stage_name, ref_loop_start, ref_pos, n_mut, idx_to_mut[ref_idx], "reference mutations")
+
+    _log_timed_checkpoint(active_logger, stage_name, stage_start, f"Accumulated clone weights for {n_mut} reference mutations")
+
     # Step: 计算 pair 权重，只考虑长度≥2的 clone
-    pair_weights = defaultdict(float)
-    for clone, weight in clone_weights.items():
+    pair_build_start = time.perf_counter()
+    pair_weights_idx = defaultdict(float)
+    for clone, weight in clone_weights_idx.items():
         if len(clone) > 1:
-            for m1, m2 in itertools.combinations(sorted(clone), 2):
-                pair_weights[(m1, m2)] += weight
-    
+            clone_pairs = clone_pair_cache.get(clone)
+            if clone_pairs is None:
+                clone_pairs = tuple(itertools.combinations(clone, 2))
+                clone_pair_cache[clone] = clone_pairs
+            for m1, m2 in clone_pairs:
+                pair_weights_idx[(m1, m2)] += weight
+
+    clone_weights = {
+        tuple(idx_to_mut[idx] for idx in clone): weight
+        for clone, weight in clone_weights_idx.items()
+    }
+    pair_weights = {
+        (idx_to_mut[m1], idx_to_mut[m2]): weight
+        for (m1, m2), weight in pair_weights_idx.items()
+    }
+
+    _log_timed_end(
+        active_logger,
+        f"{stage_name}_PairWeights",
+        pair_build_start,
+        summary=f"clones={len(clone_weights_idx)}, pairs={len(pair_weights_idx)}",
+    )
+    _log_timed_end(
+        active_logger,
+        stage_name,
+        stage_start,
+        summary=f"references={n_mut}, clones={len(clone_weights)}, pairs={len(pair_weights)}, shuffles={n_shuffle}",
+    )
+
     return clone_weights, pair_weights
+
+def _build_pairwise_correlation_cache_fast(I_S: pd.DataFrame, muts: List[str]):
+    I_numeric = I_S.loc[:, muts].apply(pd.to_numeric, errors="coerce")
+    values = I_numeric.to_numpy(copy=False)
+
+    ones = np.asarray(values == 1, dtype=np.int32, order="C")
+    zeros = np.asarray(values == 0, dtype=np.int32, order="C")
+
+    n11 = ones.T @ ones
+    n10 = ones.T @ zeros
+    n01 = zeros.T @ ones
+
+    mutant_cell_number = ones.sum(axis=0).astype(np.int32, copy=False)
+    covered_cell_number = (ones + zeros).sum(axis=0).astype(np.int32, copy=False)
+
+    denominator = n11 + n10 + n01
+    jaccard = np.divide(
+        n11,
+        denominator,
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=denominator > 0,
+    )
+
+    f_forward = np.divide(
+        n11,
+        mutant_cell_number[:, None],
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=mutant_cell_number[:, None] > 0,
+    )
+    f_reverse = np.divide(
+        n11,
+        mutant_cell_number[None, :],
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=mutant_cell_number[None, :] > 0,
+    )
+
+    corr_matrix = (n11 >= 1) & (
+        (jaccard >= 0.08) |
+        ((jaccard > 0) & (jaccard < 0.08) & (np.maximum(f_forward, f_reverse) >= 0.5))
+    )
+    np.fill_diagonal(corr_matrix, True)
+
+    corr_cache = {}
+    for i, mut_i in enumerate(muts):
+        row = corr_matrix[i]
+        for j, mut_j in enumerate(muts):
+            corr_cache[(mut_i, mut_j)] = bool(row[j])
+
+    mutant_cell_fraction = np.divide(
+        mutant_cell_number,
+        covered_cell_number,
+        out=np.zeros_like(mutant_cell_number, dtype=np.float64),
+        where=covered_cell_number > 0,
+    )
+
+    return corr_cache, mutant_cell_number, mutant_cell_fraction
 
 from typing import List, Tuple, Dict
 from collections import defaultdict
@@ -539,7 +726,15 @@ import itertools
 import numpy as np
 import pandas as pd
 
-def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed: int = 42, cutoff_mcf_for_graph: float = 0.05, cutoff_mcn_for_graph: int = 5) -> Tuple[Dict[Tuple[str], float], Dict[Tuple[str,str], float]]:
+def get_correlation_graph_elements(
+    I_S: pd.DataFrame,
+    n_shuffle: int = 100,
+    seed: int = 42,
+    cutoff_mcf_for_graph: float = 0.05,
+    cutoff_mcn_for_graph: int = 5,
+    timer_label: Optional[str] = None,
+    timer_logger=None,
+) -> Tuple[Dict[Tuple[str], float], Dict[Tuple[str,str], float]]:
     """
     Compute clone_weights and pair_weights, filtering out low-support singleton mutations.
     
@@ -554,26 +749,36 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
         clone_weights: dict mapping clone tuples to weight
         pair_weights: dict mapping mutation pairs to weight
     """
+    active_logger = timer_logger or logger
     np.random.seed(seed)
     muts = list(I_S.columns)
     n_mut = len(muts)
+    stage_name = timer_label or f"CorrelationGraph_{n_mut}muts"
+    stage_start = time.perf_counter()
+    active_logger.info(f"[TIMER] START {stage_name}")
     
     # Step 1: precompute pairwise correlation cache
-    corr_cache = {}
-    for u, v in itertools.combinations(muts, 2):
-        corr = are_mutations_correlated(I_S, u, v)
-        corr_cache[(u, v)] = corr
-        corr_cache[(v, u)] = corr
-    
-    for m in muts:
-        corr_cache[(m, m)] = True
+    corr_cache, mutant_cell_number_arr, mutant_cell_fraction_arr = _build_pairwise_correlation_cache_fast(I_S, muts)
+    _log_timed_checkpoint(active_logger, stage_name, stage_start, f"Built pairwise correlation cache for {n_mut} mutations")
     
     # Step 2: compute clone weights and pair weights
-    clone_weights, pair_weights = compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=n_shuffle)
+    clone_weights, pair_weights = compute_clone_and_pair_weights(
+        muts,
+        corr_cache,
+        n_shuffle=n_shuffle,
+        timer_label=f"{stage_name}_ClonePairWeights",
+        timer_logger=active_logger,
+    )
+    _log_timed_checkpoint(
+        active_logger,
+        stage_name,
+        stage_start,
+        f"Computed clone/pair weights: clones={len(clone_weights)}, pairs={len(pair_weights)}",
+    )
     
     # Step 3: 计算每个 mutation 的突变 fraction 和突变细胞数
-    mutant_cell_fraction = {mut: I_S[mut].mean(skipna=True) for mut in muts}
-    mutant_cell_number = {mut: I_S[mut].sum(skipna=True) for mut in muts}
+    mutant_cell_fraction = dict(zip(muts, mutant_cell_fraction_arr))
+    mutant_cell_number = dict(zip(muts, mutant_cell_number_arr))
     
     # Step 4: 删除低支持 singleton mutations 对应的 clone
     count = 0
@@ -583,10 +788,16 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
             num = mutant_cell_number.get(mut, 0)
             if frac <= cutoff_mcf_for_graph or num <= cutoff_mcn_for_graph:  # scDNA 要再重新定义, 这里可能就不卡了
                 count +=1
-                print(f"Filter out singleton low-support mutation: {mut}, frac={frac:.3f}, num={num}")
+                active_logger.debug(f"Filter out singleton low-support mutation: {mut}, frac={frac:.3f}, num={num}")
                 clone_weights.pop((mut,), None)  # 删除这个 clone
     
-    print(f"The number of filtered singleton, low-support mutations is: {count}")
+    active_logger.info(f"Filtered singleton low-support mutations: {count}")
+    _log_timed_end(
+        active_logger,
+        stage_name,
+        stage_start,
+        summary=f"mutations={n_mut}, filtered_singletons={count}, clones={len(clone_weights)}, pairs={len(pair_weights)}",
+    )
     return clone_weights, pair_weights
 
 import matplotlib.pyplot as plt
@@ -788,131 +999,90 @@ def resolved_spots_by_immune_mutations(I_scaffold, immune_mutations, P_scaffold,
     
     # 找出在I_scaffold列中实际存在的immune mutations
     actual_immune_mutations = [mut for mut in immune_mutations if mut in I_scaffold.columns]
-    print(f"找到 {len(actual_immune_mutations)} 个immune mutations在数据中")
+    logger.info(f"Found {len(actual_immune_mutations)} immune mutations in scaffold data")
+    
+    # 没有immune mutation时，不需要做任何拆分
+    if not actual_immune_mutations:
+        logger.info("Skipping immune-mutation splitting because no immune mutations are present")
+        return (
+            I_scaffold.copy(),
+            P_scaffold.copy(),
+            V_scaffold.copy(),
+            A_scaffold.copy(),
+            C_scaffold.copy(),
+            df_reads_scaffold.copy(),
+            [],
+        )
     
     # 找出non-immune mutations (在I_scaffold中但不在immune_mutations中的列)
     non_immune_mutations = [col for col in I_scaffold.columns if col not in immune_mutations]
-    print(f"找到 {len(non_immune_mutations)} 个non-immune mutations")
+    logger.info(f"Found {len(non_immune_mutations)} non-immune mutations in scaffold data")
     
-    # 存储结果的列表
-    resolved_rows = []
+    I_numeric = I_scaffold.replace('<NA>', np.nan).apply(pd.to_numeric, errors='coerce')
+    positive_mask = I_numeric.gt(p_threshold).fillna(False)
+    immune_has_1 = positive_mask[actual_immune_mutations].any(axis=1)
+    non_immune_has_1 = positive_mask[non_immune_mutations].any(axis=1) if non_immune_mutations else pd.Series(False, index=I_scaffold.index)
+    split_mask = immune_has_1 & non_immune_has_1
+    spots_to_split = I_scaffold.index[split_mask].tolist()
+    
+    if not spots_to_split:
+        logger.info(f"Resolved immune-mutation splitting: original spots={len(I_scaffold)}, resolved spots={len(I_scaffold)}")
+        logger.info("Spots split by immune mutations: 0")
+        return (
+            I_scaffold.copy(),
+            P_scaffold.copy(),
+            V_scaffold.copy(),
+            A_scaffold.copy(),
+            C_scaffold.copy(),
+            df_reads_scaffold.copy(),
+            [],
+        )
+    
+    take_positions = []
     resolved_index = []
-    
-    P_resolved_rows = []
-    C_resolved_rows = []
-    V_resolved_rows = []
-    A_resolved_rows = []
-    df_reads_resolved_rows = []
-    
-    count = 0
-    spots_to_split = []  # 用于记录需要拆分的spot的ID
-    
-    # 遍历每一行(每个spot)
-    for spot_name, row in I_scaffold.iterrows():
-        # 将<NA>转换为NaN以便处理
-        I_row_clean = row.replace('<NA>', np.nan)
-        
-        # 对每个突变位点应用 p_threshold 判断
-        I_row_clean = I_row_clean.apply(lambda x: 1 if pd.notna(x) and x > p_threshold else np.nan)
-        
-        # 检查是否有immune mutations为1
-        immune_has_1 = False
-        if actual_immune_mutations:
-            immune_values = I_row_clean[actual_immune_mutations]
-            immune_has_1 = any(immune_values == 1)
-        
-        # 检查是否有non-immune mutations为1
-        non_immune_has_1 = False
-        if non_immune_mutations:
-            non_immune_values = I_row_clean[non_immune_mutations]
-            non_immune_has_1 = any(non_immune_values == 1)
-        
-        # 如果同时有immune和non-immune mutations为1，需要拆分
-        if immune_has_1 and non_immune_has_1:
-            count += 1
-            spots_to_split.append(spot_name)  # 记录需要拆分的spot
-            
-            # 创建immune版本的行
-            immune_row = row.copy()
-            # 将non-immune mutations设为NaN
-            immune_row[non_immune_mutations] = np.nan
-            resolved_rows.append(immune_row)
-            resolved_index.append(f"{spot_name}-immune")
-            
-            # 创建non-immune版本的行
-            non_immune_row = row.copy()
-            # 将immune mutations设为NaN
-            non_immune_row[actual_immune_mutations] = np.nan
-            resolved_rows.append(non_immune_row)
-            resolved_index.append(f"{spot_name}-non")
-            
-            # 同时处理 P_scaffold
-            immune_P_row = P_scaffold.loc[spot_name].copy()
-            immune_P_row[non_immune_mutations] = np.nan  # 将non-immune列设为NaN
-            P_resolved_rows.append(immune_P_row)
-            non_immune_P_row = P_scaffold.loc[spot_name].copy()
-            non_immune_P_row[actual_immune_mutations] = np.nan  # 将immune列设为NaN
-            P_resolved_rows.append(non_immune_P_row)
-            
-            # 更新V_scaffold
-            immune_M_row = V_scaffold.loc[spot_name].copy()
-            immune_M_row[non_immune_mutations] = np.nan
-            V_resolved_rows.append(immune_M_row)
-            non_immune_M_row = V_scaffold.loc[spot_name].copy()
-            non_immune_M_row[actual_immune_mutations] = np.nan
-            V_resolved_rows.append(non_immune_M_row)
-            
-            # 更新A_scaffold
-            immune_A_row = A_scaffold.loc[spot_name].copy()
-            immune_A_row[non_immune_mutations] = np.nan
-            A_resolved_rows.append(immune_A_row)
-            non_immune_A_row = A_scaffold.loc[spot_name].copy()
-            non_immune_A_row[actual_immune_mutations] = np.nan
-            A_resolved_rows.append(non_immune_A_row)
-            
-            # 更新C_scaffold
-            immune_C_row = C_scaffold.loc[spot_name].copy()
-            immune_C_row[non_immune_mutations] = np.nan
-            C_resolved_rows.append(immune_C_row)
-            non_immune_C_row = C_scaffold.loc[spot_name].copy()
-            non_immune_C_row[actual_immune_mutations] = np.nan
-            C_resolved_rows.append(non_immune_C_row)
-            
-            # 更新df_reads_scaffold
-            immune_df_reads_row = df_reads_scaffold.loc[spot_name].copy()
-            immune_df_reads_row[non_immune_mutations] = np.nan
-            df_reads_resolved_rows.append(immune_df_reads_row)
-            non_immune_df_reads_row = df_reads_scaffold.loc[spot_name].copy()
-            non_immune_df_reads_row[actual_immune_mutations] = np.nan
-            df_reads_resolved_rows.append(non_immune_df_reads_row)
-                
+    row_modes = []
+    split_flags = split_mask.to_numpy(dtype=bool)
+    for pos, (spot_name, needs_split) in enumerate(zip(I_scaffold.index, split_flags)):
+        if needs_split:
+            take_positions.extend([pos, pos])
+            resolved_index.extend([f"{spot_name}-immune", f"{spot_name}-non"])
+            row_modes.extend([1, 2])
         else:
-            # 不需要拆分，直接保留原行
-            resolved_rows.append(row)
+            take_positions.append(pos)
             resolved_index.append(spot_name)
-            
-            # 同时处理 P_scaffold
-            P_resolved_rows.append(P_scaffold.loc[spot_name])
-            V_resolved_rows.append(V_scaffold.loc[spot_name])
-            A_resolved_rows.append(A_scaffold.loc[spot_name])
-            C_resolved_rows.append(C_scaffold.loc[spot_name])
-            df_reads_resolved_rows.append(df_reads_scaffold.loc[spot_name])
+            row_modes.append(0)
     
-    # 创建新的DataFrame
-    I_resolved = pd.DataFrame(resolved_rows, index=resolved_index, columns=I_scaffold.columns)
-    P_resolved = pd.DataFrame(P_resolved_rows, index=resolved_index, columns=P_scaffold.columns)
-    V_resolved = pd.DataFrame(V_resolved_rows, index=resolved_index, columns=V_scaffold.columns)
-    A_resolved = pd.DataFrame(A_resolved_rows, index=resolved_index, columns=A_scaffold.columns)
-    C_resolved = pd.DataFrame(C_resolved_rows, index=resolved_index, columns=C_scaffold.columns)
-    # df_reads 要把 bulk 行加上
-    df_reads_resolved = pd.DataFrame(df_reads_resolved_rows, index=resolved_index, columns=df_reads_scaffold.columns)
-    bulk_row = df_reads_scaffold.loc['bulk']
-    df_reads_resolved_with_bulk = pd.concat([pd.DataFrame(bulk_row).T, df_reads_resolved])
-    df_reads_resolved_with_bulk.index = ['bulk'] + df_reads_resolved.index.tolist()
+    row_modes = np.asarray(row_modes, dtype=np.int8)
+    immune_row_positions = np.flatnonzero(row_modes == 1)
+    non_immune_row_positions = np.flatnonzero(row_modes == 2)
     
-    print(f"处理完成: 原始spot数 {len(I_scaffold)}, 处理后spot数 {len(I_resolved)}")
-    print(f"一共有 {count} 个需要被拆分的 spots")
-    # print(f"需要拆分的spots的ID: {spots_to_split}")  # 输出拆分的spot ID
+    def _expand_and_mask_frame(frame, include_bulk=False):
+        base_frame = frame
+        bulk_row = None
+        if include_bulk:
+            bulk_row = frame.loc[['bulk']].copy()
+            base_frame = frame.drop(index='bulk', errors='ignore').reindex(I_scaffold.index)
+        
+        expanded = base_frame.iloc[take_positions].copy()
+        expanded.index = resolved_index
+        if len(immune_row_positions) > 0 and non_immune_mutations:
+            expanded.iloc[immune_row_positions, expanded.columns.get_indexer(non_immune_mutations)] = np.nan
+        if len(non_immune_row_positions) > 0 and actual_immune_mutations:
+            expanded.iloc[non_immune_row_positions, expanded.columns.get_indexer(actual_immune_mutations)] = np.nan
+        
+        if include_bulk:
+            expanded = pd.concat([bulk_row, expanded], axis=0)
+        return expanded
+    
+    I_resolved = _expand_and_mask_frame(I_scaffold)
+    P_resolved = _expand_and_mask_frame(P_scaffold)
+    V_resolved = _expand_and_mask_frame(V_scaffold)
+    A_resolved = _expand_and_mask_frame(A_scaffold)
+    C_resolved = _expand_and_mask_frame(C_scaffold)
+    df_reads_resolved_with_bulk = _expand_and_mask_frame(df_reads_scaffold, include_bulk=True)
+    
+    logger.info(f"Resolved immune-mutation splitting: original spots={len(I_scaffold)}, resolved spots={len(I_resolved)}")
+    logger.info(f"Spots split by immune mutations: {len(spots_to_split)}")
     
     return I_resolved, P_resolved, V_resolved, A_resolved, C_resolved, df_reads_resolved_with_bulk, spots_to_split
 
@@ -1036,15 +1206,21 @@ def sort_I_hierarchical_freeze_ones_fixed(I_S, mutation_group):
     #   - n1: 出现 1 的 cell 数
     #   - n0: 出现 0 的 cell 数
     #   - mcf: 突变在 cell 中的“支持度”
-    mut_info = []
-    for mut in selected_muts:
-        grp = mutation_group[mut]
-        col = I_S[mut]
-        n1 = (col == 1).fillna(False).sum()
-        n0 = (col == 0).fillna(False).sum()
-        mcf = n1 / (n1 + n0) if (n1 + n0) > 0 else -1.0
-        mut_info.append({"mutation": mut, "group": grp, "mcf": mcf})
-    mut_df = pd.DataFrame(mut_info)
+    I_selected = I_S.loc[:, selected_muts]
+    n1 = I_selected.eq(1).sum(axis=0)
+    n0 = I_selected.eq(0).sum(axis=0)
+    support = n1 + n0
+    mcf = pd.Series(
+        np.where(support.to_numpy() > 0, n1.to_numpy() / support.to_numpy(), -1.0),
+        index=selected_muts,
+    )
+    mut_df = pd.DataFrame(
+        {
+            "mutation": selected_muts,
+            "group": [mutation_group[mut] for mut in selected_muts],
+            "mcf": mcf.reindex(selected_muts).to_numpy(),
+        }
+    )
     
     # Step 3: 按 group 升序、组内 mcf 降序对突变排序
     mut_df_sorted = mut_df.sort_values(
@@ -1055,40 +1231,38 @@ def sort_I_hierarchical_freeze_ones_fixed(I_S, mutation_group):
     # Step 4: 行排序（逐列冻结 1）
     #   - 遍历突变列
     #   - 每一列把值为 1 的 cell 提前（冻结），其余继续下一列判断
-    remaining = list(I_S.index)   # 初始剩余 cell（保持原始顺序）
-    final_order = []
-    
-    for mut in sorted_mutations:
-        ones, zeros, nas = [], [], []
-        col = I_S[mut]
-        for cell in remaining:
-            v = col.loc[cell]
-            if pd.isna(v):
-                nas.append(cell)
-            elif v == 1:
-                ones.append(cell)
-            else:
-                zeros.append(cell)
-        # 冻结 1（直接排到前面）
-        final_order.extend(ones)
-        # 剩余 cell 进入下一轮排序
-        remaining = zeros + nas
-    
+    order_idx = np.arange(len(I_S.index), dtype=np.int64)
+    remaining_idx = order_idx
+    frozen_parts = []
+    sorted_values = I_S.loc[:, sorted_mutations].to_numpy(copy=False)
+
+    for col_idx in range(sorted_values.shape[1]):
+        if remaining_idx.size == 0:
+            break
+        col_values = sorted_values[remaining_idx, col_idx]
+        one_mask = col_values == 1
+        if np.any(one_mask):
+            frozen_parts.append(remaining_idx[one_mask])
+        if np.all(one_mask):
+            remaining_idx = np.empty(0, dtype=np.int64)
+            break
+
+        unresolved_idx = remaining_idx[~one_mask]
+        unresolved_values = col_values[~one_mask]
+        zero_mask = unresolved_values == 0
+        na_mask = pd.isna(unresolved_values)
+        remaining_idx = np.concatenate((unresolved_idx[zero_mask], unresolved_idx[na_mask]))
+
     # Step 5: 把剩下的 cell 接到后面
-    final_order.extend(remaining)
-    
+    if frozen_parts:
+        final_order_idx = np.concatenate(frozen_parts + [remaining_idx])
+    else:
+        final_order_idx = remaining_idx
+    final_order = I_S.index.take(final_order_idx).tolist()
+
     # Step 6: 生成排序后的 DataFrame
     I_sorted = I_S.loc[final_order, sorted_mutations].copy()
-    
-    # Step 7: 验证排序是否正确（包括 NA 匹配）
-    orig_sub = I_S.loc[final_order, sorted_mutations]
-    mask_eq = orig_sub.eq(I_sorted)
-    mask_both_na = orig_sub.isna() & I_sorted.isna()
-    mask_ok = mask_eq.fillna(False) | mask_both_na
-    if not mask_ok.all().all():
-        bad = (~mask_ok).sum().sum()
-        raise RuntimeError(f"排序后有 {bad} 个 cell-mut 值不匹配（不应该发生）。")
-    
+
     # Step 8: 输出每个 group 对应的突变列表
     group_to_muts = mut_df_sorted.groupby("group")["mutation"].apply(list).to_dict()
     
@@ -1393,15 +1567,14 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     # -------------------
     # Step 3: 转换矩阵数值（NA → 2，用于单独上色）
     # -------------------
-    I_numeric = I_sorted.fillna(np.nan).apply(pd.to_numeric, errors="coerce")
-    I_plot = I_numeric.copy()
-    I_plot = I_plot.where(~I_plot.isna(), 2)  # 把 NA 填为 2
+    I_numeric = I_sorted.apply(pd.to_numeric, errors="coerce")
+    I_plot = I_numeric.fillna(2).to_numpy(copy=False)
     
     # -------------------
     # Step 4: 计算行/列突变数量统计（用于条形图）
     # -------------------
-    row_sums = I_numeric.sum(axis=1, skipna=True)  # 每个 cell 的突变数
-    col_sums = I_numeric.sum(axis=0, skipna=True)  # 每个突变被多少 cell 支持
+    row_sums = I_numeric.sum(axis=1, skipna=True).to_numpy()  # 每个 cell 的突变数
+    col_sums = I_numeric.sum(axis=0, skipna=True).to_numpy()  # 每个突变被多少 cell 支持
     
     # -------------------
     # Step 5: 布局 GridSpec
@@ -1431,15 +1604,21 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     bounds = [0, 0.5, 1.5, 2.5]
     norm = BoundaryNorm(bounds, cmap.N)
     
-    im = ax_heatmap.imshow(I_plot, aspect="auto", cmap=cmap,
-                           interpolation="nearest", norm=norm)
-    ax_heatmap.set_xlim(-0.5, I_plot.shape[1]-0.5)
-    ax_heatmap.set_ylim(I_plot.shape[0]-0.5, -0.5)
+    im = ax_heatmap.imshow(
+        I_plot,
+        aspect="auto",
+        cmap=cmap,
+        interpolation="nearest",
+        norm=norm,
+        rasterized=True,
+    )
+    ax_heatmap.set_xlim(-0.5, I_plot.shape[1] - 0.5)
+    ax_heatmap.set_ylim(I_plot.shape[0] - 0.5, -0.5)
     ax_heatmap.set_yticks([])
     
     # 设置横坐标 mutation 名称
-    ax_heatmap.set_xticks(range(len(I_plot.columns)))
-    ax_heatmap.set_xticklabels(I_plot.columns, rotation=90, fontsize=6, ha='center')
+    ax_heatmap.set_xticks(range(len(I_numeric.columns)))
+    ax_heatmap.set_xticklabels(I_numeric.columns, rotation=90, fontsize=6, ha='center')
     
     # -------------------
     # Step 7: 给横坐标 mutation label 上色（根据分组）
@@ -1459,8 +1638,15 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     # -------------------
     # Step 8: 列条形图（每个突变被多少 cell 支持）
     # -------------------
-    ax_col_bar.bar(range(len(col_sums)), col_sums.values,
-                   color="#7D2224", alpha=0.7, align="center")
+    col_bar_container = ax_col_bar.bar(
+        range(len(col_sums)),
+        col_sums,
+        color="#7D2224",
+        alpha=0.7,
+        align="center",
+    )
+    for patch in col_bar_container.patches:
+        patch.set_rasterized(True)
     ax_col_bar.set_xlim(ax_heatmap.get_xlim())
     ax_col_bar.set_xticks([])
     ax_col_bar.tick_params(axis="y", labelsize=8)
@@ -1469,8 +1655,15 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     # -------------------
     # Step 9: 行条形图（每个 cell 有多少突变）
     # -------------------
-    ax_row_bar.barh(range(len(row_sums)), row_sums.values,
-                    color="#7D2224", alpha=0.7, align="center")
+    row_bar_container = ax_row_bar.barh(
+        range(len(row_sums)),
+        row_sums,
+        color="#7D2224",
+        alpha=0.7,
+        align="center",
+    )
+    for patch in row_bar_container.patches:
+        patch.set_rasterized(True)
     ax_row_bar.set_ylim(ax_heatmap.get_ylim())
     ax_row_bar.set_yticks([])
     ax_row_bar.set_xlabel("#Cells", fontsize=10)
@@ -1484,8 +1677,13 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     unique_types = celltypes.cat.categories
     cmap_types = plt.cm.get_cmap("tab20", len(unique_types))
     
-    ax_celltype_bar.imshow(np.array(type_codes)[:, None], aspect="auto",
-                           cmap=cmap_types, origin="upper")
+    ax_celltype_bar.imshow(
+        np.asarray(type_codes)[:, None],
+        aspect="auto",
+        cmap=cmap_types,
+        origin="upper",
+        rasterized=True,
+    )
     ax_celltype_bar.set_xticks([])
     ax_celltype_bar.set_yticks([])
     
@@ -1523,11 +1721,10 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     # Step 12: 保存图像
     # -------------------
     plt.suptitle("Heatmap of Mutations with Cell Type Bar", fontsize=14, y=0.95)
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0)
+    plt.subplots_adjust(bottom=0.18, top=0.92)
     plt.savefig(pdf_file, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"保存完成: {pdf_file}")
+    logger.info(f"Saved scaffold heatmap to {pdf_file}")
 
 def select_founder_mutations(I_selected_and_sorted: pd.DataFrame, mutation_group: dict):
     """
@@ -2701,7 +2898,7 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -2716,7 +2913,7 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
     # 4. 找到所有相关路径上的节点，仅限于同一组的 clone 路径
     all_path_nodes = get_all_path_nodes_with_group_filter(intersection_nodes, tree_parent_dict, mutation_group, target_group)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut} in the same mutation group {target_group}")
+    logger.debug(f"Found {len(all_path_nodes)} path nodes for {new_mut} in the same mutation group {target_group}")
     
     # 5. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -2754,7 +2951,7 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
 
 
@@ -2767,7 +2964,7 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -2779,7 +2976,7 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
+    logger.debug(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
     # 4. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -2826,7 +3023,7 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     
     # 6. 筛选出 anchor 是 target_node 且 placement_type 是 new_leaf 的 position
     target_positions = [
@@ -2848,7 +3045,7 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -2860,7 +3057,7 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
+    logger.debug(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
     # 4. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -2907,7 +3104,7 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
 
 def filter_candidate_positions_from_target_node(candidate_positions, subtree_nodes):
@@ -3614,8 +3811,8 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 vec_conflicts |= M_current[conflict]
             
             # 正确的逻辑：现有节点的向量与清理后的new_mut合并
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            imputed_vec = (M_current[anchor] | new_mut_cleaned).astype(int)
+            new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
+            imputed_vec = (M_current[anchor].astype(bool) | new_mut_cleaned.astype(bool)).astype(int)
             N_nodes = N_nodes_beforeT + 1
             
         elif placement_type == 'new_leaf':
@@ -3637,7 +3834,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 vec_conflicts |= M_current[conflict]
             
             # 正确的逻辑：先排除所有冲突，再与parent交集
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
             imputed_vec = new_mut_cleaned.astype(int)
             N_nodes = N_nodes_beforeT + 2
             
@@ -3662,8 +3859,8 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 vec_conflicts |= M_current[conflict]
             
             # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            imputed_vec = (vec_child | new_mut_cleaned).astype(int)
+            new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
+            imputed_vec = (vec_child.astype(bool) | new_mut_cleaned.astype(bool)).astype(int)
             N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'new_parent_merge':
@@ -3691,8 +3888,8 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 vec_conflicts |= M_current[conflict]
             
             # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            imputed_vec = (vec_children | new_mut_cleaned).astype(int)
+            new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
+            imputed_vec = (vec_children.astype(bool) | new_mut_cleaned.astype(bool)).astype(int)
             merge_penalty = np.log(len(merge_children)) * 0.5
             N_nodes = N_nodes_beforeT + 2
             
@@ -3839,11 +4036,19 @@ def compute_bayesian_penalty_for_positions_scaffold(
         
         # 查找最小 penalty 并检查 imputed_vec 是否全为 0
         valid_results = []
+        zero_imputed_count = 0
         for idx, row in df_penalty.iterrows():
             if row['imputed_vec'].sum() == 0:
-                logger.info(f"Skipping position with all imputed_vec values as 0: {row['position']}")
+                zero_imputed_count += 1
                 continue
             valid_results.append(row)
+        
+        if zero_imputed_count > 0:
+            logger.debug(
+                "Mutation %s skipped %d candidate positions with all-zero imputed vectors",
+                new_mut,
+                zero_imputed_count,
+            )
         
         if not valid_results:
             logger.warning(f"No valid results (with non-zero imputed_vec) for mutation {new_mut}")
@@ -4239,7 +4444,7 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
             vec_conflicts |= M_current[conflict]
         
         # 正确的逻辑：先排除所有冲突，再与parent交集
-        new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+        new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
         imputed_vec = new_mut_cleaned.astype(int)
         
         # 添加新叶子节点
@@ -4267,8 +4472,8 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
             vec_conflicts |= M_current[conflict]
         
         # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-        new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-        imputed_vec = (vec_child | new_mut_cleaned).astype(int)
+        new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
+        imputed_vec = (vec_child.astype(bool) | new_mut_cleaned.astype(bool)).astype(int)
         
         # 在边上插入新节点
         new_node = TreeNode(new_mut)
@@ -4299,8 +4504,8 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
             vec_conflicts |= M_current[conflict]
         
         # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-        new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-        imputed_vec = (vec_children | new_mut_cleaned).astype(int)
+        new_mut_cleaned = _clean_mutation_vector_against_conflicts(new_mut_bin_vector, vec_conflicts, M_current.index)
+        imputed_vec = (vec_children.astype(bool) | new_mut_cleaned.astype(bool)).astype(int)
         
         # 创建新父节点并合并子节点
         new_parent = anchor_node.add_new_parent_for_children(children_nodes, new_mut)
@@ -4364,7 +4569,7 @@ def WriteTfile(out_prefix, matrix, rownames, colnames, judge): # writes matrix o
     is_cf = scp.ul.is_conflict_free_gusfield(df_output)
     if judge == "yes":
         if is_cf:
-            print("Current tree is conflict-free and output binary matrix and plot phylogenetic tree !")
+            logger.info(f"Exporting conflict-free matrix to {out_prefix}.CFMatrix")
             df_output.to_csv(out_prefix+".CFMatrix", sep="\t")
             if importlib.util.find_spec("pygraphviz") is None:
                 logger.warning(
@@ -4383,9 +4588,9 @@ def WriteTfile(out_prefix, matrix, rownames, colnames, judge): # writes matrix o
                     exc,
                 )
         else:
-            print("Current tree is not conflict-free !")
+            logger.warning("Current tree is not conflict-free for %s", out_prefix)
     else:
-        print("Only output binary matrix !")
+        logger.info(f"Exporting matrix without tree plotting to {out_prefix}.CFMatrix")
         df_output.to_csv(out_prefix+".CFMatrix", sep="\t")
 
 def find_flipping_spots(series_in_bin, series_phylogeny, condition_in_bin, condition_phylogeny):
@@ -4430,15 +4635,18 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
     """
     
     external_mutations = []
+    placed_mutations = 0
+    stage_name = "Step4_ReattachExternalScaffoldMuts"
+    stage_start = time.perf_counter()
+    logger.info(f"[TIMER] START {stage_name}")
     
-    for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
-        logger.info(f"Processing mutation: {new_mut}")
+    for idx, new_mut in enumerate(tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"), start=1):
         
         # 找到交集节点
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(T_current, I_attached, new_mut)
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
+            _log_mutation_progress(logger, stage_name, stage_start, idx, len(sorted_attached_mutations), new_mut, placed_mutations, len(external_mutations))
             continue
         
         # 使用优化方法获取候选位置
@@ -4448,7 +4656,7 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
         # 检查是否找到候选位置
         if len(refined_positions) == 0:
             external_mutations.append(new_mut)
-            logger.warning(f"Mutation {new_mut} added to external_mutations (no candidate positions found despite having intersection nodes)")
+            _log_mutation_progress(logger, stage_name, stage_start, idx, len(sorted_attached_mutations), new_mut, placed_mutations, len(external_mutations))
             continue
                 
         # 计算贝叶斯罚分并更新 M_current
@@ -4456,7 +4664,6 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
             new_mut, refined_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
             ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
         )
-        logger.info(f"The new_mut should be placed on position: {final_position['placement_type']}.")
         
         # 更新 M_current
         if final_position['placement_type'] == 'on_node':
@@ -4467,17 +4674,22 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
         
         # 更新 T_current
         T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
+        placed_mutations += 1
         
-        # 打印当前树的结构
-        logger.info(f"Updated tree after mutation {new_mut}:")
-        print_tree(T_current)
+        _log_tree_diagnostics(logger, T_current, f"Updated Step4 scaffold tree after mutation {new_mut}")
         
         # 检查冲突
-        if scp.ul.is_conflict_free_gusfield(M_current):
-            logger.info(f"Current M_current is conflict-free and shaped as: {M_current.shape}")
-        else:
+        if not scp.ul.is_conflict_free_gusfield(M_current):
             raise ValueError(f"Current M_current is conflict !!! Break!!!.")
+        
+        _log_mutation_progress(logger, stage_name, stage_start, idx, len(sorted_attached_mutations), new_mut, placed_mutations, len(external_mutations))
     
+    _log_timed_end(
+        logger,
+        stage_name,
+        stage_start,
+        summary=f"processed={len(sorted_attached_mutations)}, placed={placed_mutations}, deferred={len(external_mutations)}",
+    )
     return external_mutations, T_current, M_current
 
 
@@ -4601,9 +4813,7 @@ def process_subtree_mutations_to_specific_node(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
             
-            # 打印当前树结构
-            logger.info(f"Tree after adding {subtree_mut}:")
-            print_tree(T_current)
+            _log_tree_diagnostics(logger, T_current, f"Step4 subtree placement after mutation {subtree_mut}")
             
             # 检查冲突
             if not scp.ul.is_conflict_free_gusfield(M_current):
@@ -4667,8 +4877,7 @@ def process_subtree_mutations_to_specific_node(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 
-                logger.info(f"Updated tree after re-attaching mutation {subtree_mut}:")
-                print_tree(T_current)
+                _log_tree_diagnostics(logger, T_current, f"Step4 subtree re-attachment after mutation {subtree_mut}")
                 
                 if not scp.ul.is_conflict_free_gusfield(M_current):
                     logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
@@ -4719,8 +4928,7 @@ def process_subtree_mutations_to_specific_node(
         M_current[subtree_mut] = final_imputed_vec
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         
-        logger.info(f"Tree after adding singleton {subtree_mut}:")
-        print_tree(T_current)
+        _log_tree_diagnostics(logger, T_current, f"Step4 singleton subtree placement after mutation {subtree_mut}")
         
         if not scp.ul.is_conflict_free_gusfield(M_current):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
@@ -5127,6 +5335,9 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
     """
     logger.info("Performing sub-grouping within backbone groups...")
     logger.info(f"Using CV threshold: {params['cv_thresh']} for pre-subgrouping filtration")
+    subgroup_stage_name = "Step4_Subgrouping"
+    subgroup_stage_start = time.perf_counter()
+    logger.info(f"[TIMER] START {subgroup_stage_name}")
     
     # 存储最终的子分组结果
     mutation_subgroups = {}
@@ -5135,6 +5346,7 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
     all_cv_stats = []
     external_mutations = []
     high_cv_mutations = []  # 新增：存储高CV突变
+    subgroup_correlation_cache = {}
     
     df_cv_stats_within_subgroup = pd.DataFrame(columns=['cov_median', 'cov_CV', 'cov_mean', 'cov_std', 'pass_CV', 'group_id', 'backbone_mut'])
     
@@ -5142,8 +5354,40 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
     ω_NA = params['general_weight_NA'] if params['general_weight_NA'] else 0.001
     fnfp_ratio = params['fnfp_ratio']
     φ = params['phi']
+
+    def get_cached_subgroup_correlation(frame, timer_label):
+        cache_key = (
+            tuple(frame.columns),
+            frame.shape,
+            cutoff_mcf_for_graph,
+            cutoff_mcn_for_graph,
+        )
+        cached = subgroup_correlation_cache.get(cache_key)
+        if cached is not None:
+            logger.info(
+                "Reused cached correlation graph for %s (%d mutations, %d cells)",
+                timer_label,
+                frame.shape[1],
+                frame.shape[0],
+            )
+            return cached
+
+        result = get_correlation_graph_elements(
+            frame,
+            100,
+            42,
+            cutoff_mcf_for_graph,
+            cutoff_mcn_for_graph,
+            timer_label=timer_label,
+            timer_logger=logger,
+        )
+        subgroup_correlation_cache[cache_key] = result
+        return result
     
     for group_id, backbone_mut in backbones_of_group.items():
+        group_stage_name = f"Step4_Subgrouping_Group{group_id}"
+        group_stage_start = time.perf_counter()
+        logger.info(f"[TIMER] START {group_stage_name}")
         logger.info(f"Processing subgroup for backbone group {group_id} with backbone mutation {backbone_mut}")
         
         dir_subgroup = outputpath+"/backbone_clone_"+str(group_id)+"."+str(backbone_mut)
@@ -5158,22 +5402,25 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         df_reads_group = df_reads_resolved.loc[['bulk']+list(M_B[M_B[backbone_mut]==1].index), group_muts]
         
         if len(group_muts) < 1:
-            ### condition_0: 这个 backbone group 下只有一个 backbone mutation 没有其他的可挂突变
+            # condition_0: 这个 backbone group 下只有一个 backbone mutation 没有其他的可挂突变
             logger.info(f"Group {group_id} has no non-backbone mutations, skipping sub-grouping")
+            _log_timed_end(logger, group_stage_name, group_stage_start, summary="no non-backbone mutations")
             continue
         
         elif len(group_muts) == 1:
-            ### condition_1: 可能这下面只有一个突变就直接往上挂
+            # condition_1: 可能这下面只有一个突变就直接往上挂
             logger.info(f"Group {group_id} has only 1 non-backbone mutations, directly hang mutation to tree")
             
             # 首先检查这个突变的CV值
             single_mut = group_muts[0]
             cv_stats_single = calculate_cv_for_single_mutation(df_reads_group, single_mut, params['cv_thresh'], logger)
+            _log_timed_checkpoint(logger, group_stage_name, group_stage_start, "Computed CV statistics for single-mutation subgroup")
             
             # 如果CV值高于阈值，添加到high_cv_mutations
             if cv_stats_single['cov_CV'] > params['cv_thresh']:
                 logger.info(f"Single mutation {single_mut} has high CV ({cv_stats_single['cov_CV']:.3f}), adding to high_cv_mutations")
                 high_cv_mutations.append(single_mut)
+                _log_timed_end(logger, group_stage_name, group_stage_start, summary="single mutation filtered by CV")
                 continue  # 跳过挂树操作
             
             # 如果CV值正常，继续挂树
@@ -5195,6 +5442,8 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                 ω_NA, fnfp_ratio, φ, logger, root_mutations
             )            
             external_mutations.extend(external_mutations_temp)
+            _log_timed_checkpoint(logger, group_stage_name, group_stage_start, "Completed single-mutation subtree placement")
+            _log_timed_end(logger, group_stage_name, group_stage_start, summary="single mutation subgroup processed")
             continue
         
         logger.info(f"Group {group_id} has {len(group_muts)} non-backbone mutations for sub-grouping")
@@ -5202,6 +5451,7 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         # Step 1: 计算CV值并过滤
         logger.info(f"Calculating CV values for {len(group_muts)} mutations in group {group_id}")
         low_cv_mutations, cv_stats_group = calculate_cv_for_subgrouping(df_reads_group, group_muts, params['cv_thresh'], logger)
+        _log_timed_checkpoint(logger, group_stage_name, group_stage_start, f"Computed CV statistics for {len(group_muts)} mutations")
         
         # 新增：将高CV突变添加到high_cv_mutations列表
         high_cv_in_group = [mut for mut in group_muts if mut not in low_cv_mutations]
@@ -5242,6 +5492,7 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     ω_NA, fnfp_ratio, φ, logger, root_mutations
                 )
                 external_mutations.extend(external_mutations_temp)
+            _log_timed_end(logger, group_stage_name, group_stage_start, summary="skipped subgrouping after CV filter")
             continue
         
         logger.info(f"Group {group_id}: {len(low_cv_mutations)}/{len(group_muts)} mutations passed CV filter, proceeding with sub-grouping")
@@ -5292,6 +5543,7 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     ω_NA, fnfp_ratio, φ, logger, root_mutations
                 )
                 external_mutations.extend(external_mutations_temp)
+            _log_timed_end(logger, group_stage_name, group_stage_start, summary="skipped subgrouping after quality filter")
             continue
         
         logger.info(f"Group {group_id}: {I_group_final.shape[1]} mutations available for Leiden sub-grouping")
@@ -5299,7 +5551,11 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         try:
             # Step 2: 计算突变间的相关性权重
             logger.info(f"Calculating correlation weights for group {group_id}...")
-            clone_weights_sub, pair_weights_sub = get_correlation_graph_elements(I_group_final, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph)
+            clone_weights_sub, pair_weights_sub = get_cached_subgroup_correlation(
+                I_group_final,
+                f"{group_stage_name}_CorrelationGraph",
+            )
+            _log_timed_checkpoint(logger, group_stage_name, group_stage_start, "Computed subgroup correlation graph")
             
             if not pair_weights_sub or len(pair_weights_sub) < 2:
                 ### condition_2: 可能有多个突变但是不足以执行 graph，就按照 maf 顺序往上挂
@@ -5338,16 +5594,21 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     ω_NA, fnfp_ratio, φ, logger, root_mutations
                 )
                 external_mutations.extend(external_mutations_temp)
+                _log_timed_end(logger, group_stage_name, group_stage_start, summary="community detection skipped due to insufficient graph")
                 continue
             
             else:
                 # Step 3: 使用Leiden算法进行子分组
                 logger.info(f"Performing Leiden sub-grouping for group {group_id}...")
+                leiden_group_start = time.perf_counter()
+                logger.info(f"[TIMER] START {group_stage_name}_Leiden")
                 mutation_subgroup, partition_sub, G_ig_sub = leiden_mutation_groups(
                     clone_weights_sub, pair_weights_sub, 
                     dir_subgroup + "/" + sampleid + f".group_{group_id}_subgraph.pdf", 
                     params['resolution_of_graph']
                 )
+                _log_timed_end(logger, f"{group_stage_name}_Leiden", leiden_group_start, summary=f"subgroups={len(set(mutation_subgroup.values()))}")
+                _log_timed_checkpoint(logger, group_stage_name, group_stage_start, "Completed subgroup Leiden partition")
                 external_mutations_outgroup = [i for i in valid_mutations if i not in list(mutation_subgroup.keys())]
                 external_mutations.extend(external_mutations_outgroup)
                 
@@ -5409,7 +5670,10 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     I_group_dehub = I_group_final.drop(columns=hub_mutations, errors='ignore').copy()
                     
                     if I_group_dehub.shape[1] >= 2:
-                        clone_weights_dehub, pair_weights_dehub = get_correlation_graph_elements(I_group_dehub, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph)
+                        clone_weights_dehub, pair_weights_dehub = get_cached_subgroup_correlation(
+                            I_group_dehub,
+                            f"{group_stage_name}_DehubCorrelationGraph",
+                        )
                         
                         if pair_weights_dehub and len(pair_weights_dehub) >= 2:
                             mutation_dehubgroup, partition_dehub, G_ig_dehub = leiden_mutation_groups(
@@ -5455,7 +5719,10 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                             I_group_maxsub = I_group_final[sorted_parallel_groups[max_key]].copy()
                             
                             if I_group_maxsub.shape[1] >= 2:
-                                clone_weights_maxsub, pair_weights_maxsub = get_correlation_graph_elements(I_group_maxsub, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph)
+                                clone_weights_maxsub, pair_weights_maxsub = get_cached_subgroup_correlation(
+                                    I_group_maxsub,
+                                    f"{group_stage_name}_MaxSubCorrelationGraph",
+                                )
                                 
                                 if pair_weights_maxsub and len(pair_weights_maxsub) >= 2:
                                     mutation_maxsubgroup, partition_maxsub, G_ig_maxsub = leiden_mutation_groups(
@@ -5564,6 +5831,7 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     ω_NA, fnfp_ratio, φ, logger, root_mutations
                 )
                 external_mutations.extend(external_mutations_temp)
+        _log_timed_end(logger, group_stage_name, group_stage_start, summary=f"mutations={len(group_muts)}, passed_cv={len(low_cv_mutations)}")
     
     # 合并所有CV统计数据
     cv_stats_all = pd.concat(all_cv_stats, axis=0) if all_cv_stats else pd.DataFrame()
@@ -5619,6 +5887,13 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
     logger.info(f"High CV mutations (excluded from analysis): {len(high_cv_mutations)}")
     if high_cv_mutations:
         logger.info(f"High CV mutations list: {high_cv_mutations}")
+    
+    _log_timed_end(
+        logger,
+        subgroup_stage_name,
+        subgroup_stage_start,
+        summary=f"groups={len(backbones_of_group)}, hierarchy_mutations={len(complete_mutation_hierarchy)}, external={len(external_mutations)}",
+    )
     
     # 修改返回语句，添加high_cv_mutations
     return complete_mutation_hierarchy, subgroup_backbone_mutations, subgroup_details, df_cv_stats_within_subgroup, T_current, M_current, root_mutations, external_mutations, high_cv_mutations
@@ -5692,6 +5967,7 @@ def build_scaffold_tree(
     
     # Set up logger
     logger = logging.getLogger(__name__)
+    step4_start = time.perf_counter()
     
     # ------------------------------
     # Step 1: Check Celltype Data
@@ -5720,6 +5996,7 @@ def build_scaffold_tree(
     else:
         P_sub, V_sub, A_sub, C_sub, I_sub = P_somatic.copy(), V_somatic.copy(), A_somatic.copy(), C_somatic.copy(), I_somatic.copy()
         scaffold_mutations = list(I_somatic.columns)
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Completed scaffold mutation filtering")
     
     # ------------------------------
     # Step 4: Create Final Scaffold Matrices
@@ -5746,6 +6023,7 @@ def build_scaffold_tree(
     final_cleaned_I_somatic_resolved = final_cleaned_I_somatic_resolved.loc[(final_cleaned_I_somatic_resolved == 1).any(axis=1)]
     final_cleaned_I_somatic_resolved_withNA3 = final_cleaned_I_somatic_resolved.replace({np.nan: 3}).astype(int)
     final_cleaned_I_somatic_resolved_withNA3.to_csv(os.path.join(outputpath, "final_cleaned_I_somatic_resolved_withNA3.txt"), sep="\t")
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Resolved immune-mutation splits")
     
     # ------------------------------
     # Step 6: Mutation Grouping with Leiden Algorithm
@@ -5758,13 +6036,42 @@ def build_scaffold_tree(
         cutoff_mcf_for_graph = 0
         cutoff_mcn_for_graph = 0
     
-    clone_weights, pair_weights = get_correlation_graph_elements(I_resolved, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph)
+    clone_weights, pair_weights = get_correlation_graph_elements(
+        I_resolved,
+        100,
+        42,
+        cutoff_mcf_for_graph,
+        cutoff_mcn_for_graph,
+        timer_label="Step4_MainMutationGrouping_CorrelationGraph",
+        timer_logger=logger,
+    )
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Computed main mutation-group correlation graph")
+    leiden_start = time.perf_counter()
+    logger.info("[TIMER] START Step4_MainMutationGrouping_Leiden")
     mutation_group, partition, G_ig = leiden_mutation_groups(clone_weights, pair_weights, outputpath + "/" + sampleid + ".graph_for_mut_grouping.pdf", params['resolution_of_graph'])
+    _log_timed_end(logger, "Step4_MainMutationGrouping_Leiden", leiden_start, summary=f"groups={len(set(mutation_group.values()))}")
     group_mutations = list(mutation_group.keys())
+    sort_after_leiden_start = time.perf_counter()
+    logger.info("[TIMER] START Step4_MainMutationGrouping_RowSort")
     I_selected_and_sorted, mut_df_sorted, group_to_muts, final_order = sort_I_hierarchical_freeze_ones_fixed(I_resolved, mutation_group)
+    _log_timed_end(
+        logger,
+        "Step4_MainMutationGrouping_RowSort",
+        sort_after_leiden_start,
+        summary=f"cells={I_selected_and_sorted.shape[0]}, mutations={I_selected_and_sorted.shape[1]}",
+    )
     df_celltype_sub = df_celltype[df_celltype['barcode'].isin(I_selected_and_sorted.index)].copy()
+    heatmap_after_leiden_start = time.perf_counter()
+    logger.info("[TIMER] START Step4_MainMutationGrouping_Heatmap")
     plot_heatmap_with_celltype_by_your_sorting(I_selected_and_sorted, df_celltype_sub, mutation_group, list(mut_df_sorted['mutation']), os.path.join(outputpath, sampleid+".heatmap_with_celltype_right_in_I_selected_and_sorted_after_graph_grouping.pdf"))
-    logger.info(f"Total mutation groups: {len(mutation_group)}")
+    _log_timed_end(
+        logger,
+        "Step4_MainMutationGrouping_Heatmap",
+        heatmap_after_leiden_start,
+        summary=f"pdf={os.path.join(outputpath, sampleid + '.heatmap_with_celltype_right_in_I_selected_and_sorted_after_graph_grouping.pdf')}",
+    )
+    logger.info(f"Total mutation groups: {len(set(mutation_group.values()))}")
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Finished mutation grouping")
     
     # ------------------------------
     # Step 7: Select Backbone Mutations
@@ -5814,6 +6121,7 @@ def build_scaffold_tree(
     kept_cols = final_cleaned_M_B.columns
     final_cleaned_I_B_withNA3 = I_B_withNA3.loc[kept_rows, kept_cols]
     final_cleaned_I_B_withNA3.to_csv(os.path.join(dir_backbone, "final_cleaned_I_B_withNA3_for_circosPlot.txt"), sep="\t")
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Built backbone tree")
     
     # ------------------------------
     # Step 8: Sub-grouping within Backbone Groups
@@ -5868,6 +6176,7 @@ def build_scaffold_tree(
         cutoff_mcn_for_graph
     )
     complete_mutation_hierarchy, subgroup_backbone_mutations, subgroup_details, df_cv_stats_within_subgroup, T_current, M_current, root_mutations, external_mutations, high_cv_mutations = results_of_subgrouping
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Completed subgrouping and initial scaffold placement")
         
     # ------------------------------
     # Step 10: Calculate Penalty and Refine Placement
@@ -5891,6 +6200,7 @@ def build_scaffold_tree(
         )
     else:
         logger.info("There is no external scaffold mutations after first building.")
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Completed external scaffold-mutation reprocessing")
     
     # Final scaffold tree and matrix    
     T_scaffold = copy.deepcopy(T_current)
@@ -5899,9 +6209,8 @@ def build_scaffold_tree(
     mutations_on_T_scaffold = M_scaffold_initial.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_scaffold = split_merged_columns(M_scaffold_initial, mutations_on_T_scaffold)
     
-    logger.info("Final scaffold tree:")
-    print_tree(T_scaffold)
     logger.info(f"Final scaffold matrix shape: {M_scaffold.shape}")
+    _log_tree_diagnostics(logger, T_scaffold, "Final scaffold tree")
     
     # ------------------------------
     # Step 11: Output Results
@@ -5933,6 +6242,7 @@ def build_scaffold_tree(
     WriteTfile(os.path.join(dir_scaffold, "final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred"), 
                final_cleaned_M_scaffold, final_cleaned_M_scaffold.index.tolist(), final_cleaned_M_scaffold.columns.tolist(), judge="yes")
     final_cleaned_I_selected_withNA3.to_csv(os.path.join(dir_scaffold, "final_cleaned_I_scaffold_withNA3_for_circosPlot.txt"), sep="\t")
+    _log_timed_checkpoint(logger, "Step4_ScaffoldBuilder", step4_start, "Exported scaffold matrices")
     
     # ------------------------------
     # Step 12: Identify Flipping Spots
@@ -6015,6 +6325,7 @@ def build_scaffold_tree(
     
     # 直接返回字符串文本格式并且保存
     T_scaffold.save_to_file(os.path.join(dir_scaffold, 'T_scaffold.txt'))
+    _log_timed_end(logger, "Step4_ScaffoldBuilder", step4_start)
     
     return T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, checked_mutation_group, spots_to_split, list(checked_mutation_group.keys()), remained_mutations, high_cv_mutations
 

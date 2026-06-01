@@ -182,13 +182,16 @@ class StageTimer:
         self._starts[name] = time.perf_counter()
         self.logger.info(f"[TIMER] START {name}")
 
-    def end(self, name: str):
+    def end(self, name: str, summary: str = None):
         start = self._starts.get(name)
         if start is None:
             self.logger.warning(f"[TIMER] END called before START for {name}")
             return
         elapsed = time.perf_counter() - start
-        self.logger.info(f"[TIMER] END {name}: {elapsed:.3f}s")
+        if summary:
+            self.logger.info(f"[TIMER] END {name}: {elapsed:.3f}s ({summary})")
+        else:
+            self.logger.info(f"[TIMER] END {name}: {elapsed:.3f}s")
 
     def checkpoint(self, name: str, message: str):
         start = self._starts.get(name)
@@ -196,6 +199,25 @@ class StageTimer:
             return
         elapsed = time.perf_counter() - start
         self.logger.info(f"[TIMER] {name}: {message} ({elapsed:.3f}s)")
+
+
+def log_tree_debug(active_logger, tree, message: str):
+    if active_logger.isEnabledFor(logging.DEBUG):
+        active_logger.debug(message)
+        print_tree(tree)
+
+
+def _format_step6_state(T_current, M_current, root_mutations):
+    return (
+        f"tree_nodes={len(T_current.all_nodes())}, "
+        f"matrix={M_current.shape}, "
+        f"root_mutations={len(root_mutations)}"
+    )
+
+
+def log_list_debug(active_logger, label: str, values):
+    if active_logger.isEnabledFor(logging.DEBUG):
+        active_logger.debug(f"{label}: {values}")
 
 def main():
     import multiprocessing as mp
@@ -470,7 +492,7 @@ def main():
     # Step 4: Scaffold builder
     # ------------------------------
     logger.info("===== Step4: Construct scaffold tree ...")
-    stage_timer.start("Step4_ScaffoldBuilder")
+    stage_timer.start("Step4_Total")
 
     ##### Load Celltype Data
     if celltype_file is None or celltype_file == "None":
@@ -483,11 +505,8 @@ def main():
         df_celltype = pd.read_csv(celltype_file, sep="\t")
 
     df_celltype.to_csv(os.path.join(outputpath_scaffold, "df_celltype.txt"), sep="\t")
-    logger.info(f"Celltype data loaded: {df_celltype.shape[0]} cells")
-
 
     ##### Scaffold builder
-    logging.info("Running scaffold building ...")
     immune_mutations = ['chr14_105707803_C_A', 'chr14_106276422_A_G', 'chr14_106276454_C_G', 'chr22_22881588_G_A', 'chr22_22895482_G_A', 'chr22_22895504_C_A', 'chr22_22901226_C_G', 'chr22_22901169_G_C', 'chr22_22895709_C_G']
     results_of_scaffold = build_scaffold_tree(
         P_somatic = P_somatic, 
@@ -504,21 +523,39 @@ def main():
         df_celltype = df_celltype,
         immune_mutations = immune_mutations
     )
+    stage_timer.checkpoint("Step4_Total", "Completed build_scaffold_tree core builder")
 
 
     T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, mutation_group, spots_to_split, group_mutations, remained_mutations, high_cv_mutations = results_of_scaffold
     # scaffold_mutations = [i for i in initial_scaffold_mutations if i not in remained_mutations_by_scaffold_building]
     scaffold_mutations = list(M_scaffold.columns)
     non_scaffold_mutations = [i for i in somatic_mutations if i not in scaffold_mutations]
+    stage_timer.checkpoint(
+        "Step4_Total",
+        f"Derived scaffold mutation sets: scaffold={len(scaffold_mutations)}, non_scaffold={len(non_scaffold_mutations)}",
+    )
 
 
+    stage_timer.start("Step4_PostBuildCloneSummary")
     mutation_clones_for_scaffold = get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(T_scaffold, I_somatic)
+    stage_timer.checkpoint(
+        "Step4_PostBuildCloneSummary",
+        f"Built first-level scaffold clone map: clones={len(mutation_clones_for_scaffold)}",
+    )
     df_barcode_clones_for_scaffold = assign_clone_labels(M_scaffold, mutation_clones_for_scaffold)
+    stage_timer.checkpoint(
+        "Step4_PostBuildCloneSummary",
+        f"Assigned scaffold clone labels: rows={len(df_barcode_clones_for_scaffold)}",
+    )
 
     df_barcode_clones_for_scaffold.to_csv(os.path.join(outputpath_scaffold, "df_barcode_clones_from_phylo_tree.csv"), sep=',', index=False)
+    stage_timer.end(
+        "Step4_PostBuildCloneSummary",
+        summary=f"clones={len(mutation_clones_for_scaffold)}, labels={len(df_barcode_clones_for_scaffold)}",
+    )
 
 
-    print_tree(T_scaffold)
+    log_tree_debug(logger, T_scaffold, "Step4 scaffold tree")
     # └─ ROOT
     #   └─ chr17_7578893_G_T
     #     └─ chr8_80170791_C_T|chr7_20381814_G_T
@@ -557,7 +594,10 @@ def main():
     logging.info(f"The number of somatic_mutations is: {len(somatic_mutations)}")
     logging.info(f"The number of scaffold_mutations is: {len(scaffold_mutations)}")
     logging.info(f"The number of non_scaffold_mutations is: {len(non_scaffold_mutations)}")
-    stage_timer.end("Step4_ScaffoldBuilder")
+    stage_timer.end(
+        "Step4_Total",
+        summary=f"scaffold={len(scaffold_mutations)}, non_scaffold={len(non_scaffold_mutations)}, clones={len(mutation_clones_for_scaffold)}",
+    )
 
 
 
@@ -659,6 +699,7 @@ def main():
     all_nodes_in_T_scaffold = T_scaffold.all_names_no_root()
     M_current = merge_mutations(M_current_each_mut, all_nodes_in_T_scaffold)
     M_current.insert(0, 'ROOT', 1)
+    stage_timer.checkpoint("Step6_FullResolvedTree", f"Initialized full-tree state ({_format_step6_state(T_current, M_current, [])})")
 
     # 计算罚分时的 NA 权重设置
     ω_NA = params['general_weight_NA'] if params['general_weight_NA'] else 0.001
@@ -692,6 +733,10 @@ def main():
         root_mutations=root_mutations  # 可选，如果已有根突变列表
     )
     logging.info(f"The number of external_mutations_of_attached_on_scaffold is: {len(external_mutations_of_attached_on_scaffold)}")
+    stage_timer.checkpoint(
+        "Step6_1_FirstAttach",
+        f"Completed initial attach: attached={len(sorted_attached_mutations)}, external={len(external_mutations_of_attached_on_scaffold)}",
+    )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -701,7 +746,10 @@ def main():
     final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
     final_cleaned_M_test.shape
     # (1184, 34)
-    stage_timer.end("Step6_1_FirstAttach")
+    stage_timer.end(
+        "Step6_1_FirstAttach",
+        summary=f"attached={len(sorted_attached_mutations)}, external={len(external_mutations_of_attached_on_scaffold)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -715,7 +763,8 @@ def main():
     ##### external_mutations_of_attached_on_scaffold
     len(external_mutations_of_attached_on_scaffold)
     # 11
-    print(external_mutations_of_attached_on_scaffold)
+    logger.info(f"Step6.2 external mutations to reattach: {len(external_mutations_of_attached_on_scaffold)}")
+    log_list_debug(logger, "Step6.2 external mutations from first attach", external_mutations_of_attached_on_scaffold)
     # ['chr11_47268814_C_A', 'chr22_22895482_G_A', 'chr2_55866672_T_A', 'chr15_64953013_C_T', 'chr22_34670933_A_T', 'chr9_114311431_A_T', 'chr1_5862839_A_T', 'chr12_6451607_T_C', 'chr14_105707803_C_A', 'chr16_69117490_C_T', 'chr22_50526071_G_A']
 
     ##### 主处理流程，把第一次挂树没挂上的 external_mutations 重新挂一遍
@@ -732,6 +781,10 @@ def main():
         logger=logger,
         root_mutations=root_mutations  # 可选，如果已有根突变列表
     )
+    stage_timer.checkpoint(
+        "Step6_2_ReattachExternal",
+        f"Retried external mutations: input={len(sorted_external_mutations_of_attached_on_scaffold)}, remaining={len(final_external_mutations_of_attached_on_scaffold)}",
+    )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -741,7 +794,10 @@ def main():
     final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
     final_cleaned_M_test.shape
     # (1184, 34)
-    stage_timer.end("Step6_2_ReattachExternal")
+    stage_timer.end(
+        "Step6_2_ReattachExternal",
+        summary=f"input={len(sorted_external_mutations_of_attached_on_scaffold)}, remaining={len(final_external_mutations_of_attached_on_scaffold)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -761,6 +817,7 @@ def main():
 
 
     final_external_mutations = []
+    subtree_groups = []
     if len(external_mutations) > 0:
     
         sorted_external_mutations = [i for i in I_attached.columns if i in external_mutations]
@@ -776,6 +833,10 @@ def main():
             logger=logger,
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
+        stage_timer.checkpoint(
+            "Step6_3_ProcessExternalSubtrees",
+            f"Processed second-pass external mutations: input={len(sorted_external_mutations)}, remaining={len(final_external_mutations)}",
+        )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -785,9 +846,6 @@ def main():
     final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
     final_cleaned_M_test.shape
     # (1184, 34)
-    stage_timer.end("Step6_3_ProcessExternalSubtrees")
-
-
     ##### 最后还没挂上的突变只能上 ROOT 了
     logging.info(f"The number of final_external_mutations is: {len(final_external_mutations)}")
 
@@ -809,6 +867,10 @@ def main():
             φ=φ,
             logger=logger,
             root_mutations=root_mutations
+        )
+        stage_timer.checkpoint(
+            "Step6_3_ProcessExternalSubtrees",
+            f"Built external subtrees: groups={len(subtree_groups)}, remained={len(remained_mutations)}",
         )
 
     T_test = copy.deepcopy(T_current)
@@ -847,6 +909,10 @@ def main():
             logger=logger,
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
+        stage_timer.checkpoint(
+            "Step6_4_FinalRemainReattach",
+            f"Retried remained mutations: input={len(sorted_remained_mutations)}, final_remaining={len(final_remained_mutations)}",
+        )
 
     logging.info(f"The number of final_remained_mutations is: {len(final_remained_mutations)}")
 
@@ -858,10 +924,13 @@ def main():
     final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
     final_cleaned_M_test.shape
     # (1184, 34)
-    stage_timer.end("Step6_4_FinalRemainReattach")
+    stage_timer.end(
+        "Step6_4_FinalRemainReattach",
+        summary=f"input={len(remained_mutations)}, final_remaining={len(final_remained_mutations)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
-    print(T_current)
+    log_tree_debug(logger, T_current, "Step6 tree after Step6.4")
     # └─ ROOT
     #   └─ chr17_7578893_G_T
     #     └─ chr8_80170791_C_T|chr7_20381814_G_T
@@ -919,6 +988,10 @@ def main():
     M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone, mutations_on_T_current_fpratio_within_subclone)
 
     df_fp_ratio_fpratio_within_subclone, fp_mutations_dict_for_out_subclone_muts_fpratio_within_subclone, fp_mutations_dict_for_in_subclone_muts_fpratio_within_subclone = calculate_fp_ratios_within_subclone(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone, I_attached, mutation_clones_for_subclone)
+    stage_timer.checkpoint(
+        "Step6_5_SubcloneFpRatio",
+        f"Computed within-subclone FP ratios: mutations={len(df_fp_ratio_fpratio_within_subclone)}, clones={len(mutation_clones_for_subclone)}",
+    )
     df_fp_ratio_fpratio_within_subclone
     #              identifier  ... ratio_fp_mutations_for_in_subclone_muts
     # 0   chr10_104003258_C_T  ...                                0.000000
@@ -962,10 +1035,8 @@ def main():
     # 筛选导致 fp 高的位点
     rehanged_mutations_by_fpratio_within_subclone = df_fp_ratio_fpratio_within_subclone[df_fp_ratio_fpratio_within_subclone['fp_ratio_within_subclone_for_in_subclone_muts'] >= fp_ratio_cutoff_within_subclone]['identifier'].tolist()
     rehanged_mutations_by_fpratio_within_subclone_but_backbone = [i for i in rehanged_mutations_by_fpratio_within_subclone if i not in list(set(expanded_mutations_of_current_backbone_nodes+scaffold_mutations))]
-    print(len(rehanged_mutations_by_fpratio_within_subclone_but_backbone))
-    # 0
-    print(rehanged_mutations_by_fpratio_within_subclone_but_backbone)
-    # []
+    logger.info(f"Step6.5 candidate rehang mutations: {len(rehanged_mutations_by_fpratio_within_subclone_but_backbone)}")
+    log_list_debug(logger, "Step6.5 candidate rehang mutations", rehanged_mutations_by_fpratio_within_subclone_but_backbone)
 
     # 获取 fp_ratio>=0.1 的位点之间在树上的关系
     ordered_branch_groups_for_rehanged_mutations_by_fpratio_within_subclone_but_backbone = find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist(T_current, rehanged_mutations_by_fpratio_within_subclone_but_backbone)
@@ -1023,6 +1094,10 @@ def main():
     sorted_fp_mutations_fpratio_within_subclone = [i for i in I_attached.columns if i in fp_mutations_fpratio_within_subclone_qc]
     sorted_daughters_to_leaf_mutations_fpratio_within_subclone = [i for i in I_attached.columns if i in daughters_to_leaf_mutations_fpratio_within_subclone_qc]
     sorted_rehanged_mutations_all_fpratio_within_subclone = sorted_fp_mutations_fpratio_within_subclone + sorted_daughters_to_leaf_mutations_fpratio_within_subclone
+    stage_timer.checkpoint(
+        "Step6_5_SubcloneFpRatio",
+        f"Selected within-subclone rehang candidates: primary={len(sorted_fp_mutations_fpratio_within_subclone)}, daughters={len(sorted_daughters_to_leaf_mutations_fpratio_within_subclone)}, total={len(sorted_rehanged_mutations_all_fpratio_within_subclone)}",
+    )
 
     # reversed_sorted_fp_mutations_fpratio_within_subclone = [i for i in IRank_mutations_reversed if i in fp_mutations_fpratio_within_subclone_qc]
     # reversed_sorted_daughters_to_leaf_mutations_fpratio_within_subclone = [i for i in IRank_mutations_reversed if i in daughters_to_leaf_mutations_fpratio_within_subclone_qc]
@@ -1035,7 +1110,7 @@ def main():
     if len(sorted_rehanged_mutations_all_fpratio_within_subclone) > 0:
     
         T_removed_fpratio_within_subclone, M_removed_fpratio_within_subclone = remove_mutations_from_tree_and_matrix(T_checkpoint_fpratio_within_subclone, M_checkpoint_fpratio_within_subclone, sorted_rehanged_mutations_all_fpratio_within_subclone)
-        print_tree(T_removed_fpratio_within_subclone)
+        log_tree_debug(logger, T_removed_fpratio_within_subclone, "Step6.5 tree after removing candidate mutations")
         logger.info(f"The shape of removed_tree to be refined is : {M_removed_fpratio_within_subclone.shape}")    
     
         T_current = copy.deepcopy(T_removed_fpratio_within_subclone)
@@ -1105,6 +1180,10 @@ def main():
         )
 
     logging.info(f"The number of final_external_mutations_fpratio_within_subclone is: {len(final_external_mutations_fpratio_within_subclone)}")
+    stage_timer.checkpoint(
+        "Step6_5_SubcloneFpRatio",
+        f"Reattached within-subclone candidates: external_after_retry={len(final_external_mutations_fpratio_within_subclone)}",
+    )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -1171,7 +1250,10 @@ def main():
         on='identifier', 
         suffixes=('.1', '.2')
     )
-    stage_timer.end("Step6_5_SubcloneFpRatio")
+    stage_timer.end(
+        "Step6_5_SubcloneFpRatio",
+        summary=f"candidates={len(sorted_rehanged_mutations_all_fpratio_within_subclone)}, external={len(final_external_mutations_fpratio_within_subclone)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -1194,6 +1276,10 @@ def main():
     M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree, mutations_on_T_current_fpfnratio_across_tree)
 
     df_fp_ratio_and_fn_ratio_fpfnratio_across_tree, fp_mutations_dict_fpfnratio_across_tree = calculate_fp_fn_ratios_across_tree(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree, I_attached)
+    stage_timer.checkpoint(
+        "Step6_6_TreewideFpFnRatio",
+        f"Computed treewide FP/FN ratios: mutations={len(df_fp_ratio_and_fn_ratio_fpfnratio_across_tree)}",
+    )
     df_fp_ratio_and_fn_ratio_fpfnratio_across_tree
     #              identifier  fp_ratio  fn_ratio
     # 0     chr17_7578893_G_T  0.362069  0.760684
@@ -1238,10 +1324,8 @@ def main():
     ##### 筛选导致 fp 高的位点并处理
     rehanged_fp_mutations_by_fpfnratio_across_tree = df_fp_ratio_and_fn_ratio_fpfnratio_across_tree[df_fp_ratio_and_fn_ratio_fpfnratio_across_tree['fp_ratio'] >= fp_ratio_cutoff_across_tree]['identifier'].tolist()
     rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone = [i for i in rehanged_fp_mutations_by_fpfnratio_across_tree if i not in list(set(expanded_mutations_of_current_backbone_nodes+scaffold_mutations))]
-    print(len(rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone))
-    # 0
-    print(rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone)
-    # []
+    logger.info(f"Step6.6 FP candidate rehang mutations: {len(rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone)}")
+    log_list_debug(logger, "Step6.6 FP candidate rehang mutations", rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone)
 
     # 获取 fp_ratio>=0.2 的位点之间在树上的关系
     ordered_branch_groups_for_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone = find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist(T_current, rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone)
@@ -1305,7 +1389,7 @@ def main():
     if len(sorted_rehanged_mutations_all_fpfnratio_across_tree) > 0:
     
         T_removed_fpfnratio_across_tree, M_removed_fpfnratio_across_tree = remove_mutations_from_tree_and_matrix(T_checkpoint_fpfnratio_across_tree, M_checkpoint_fpfnratio_across_tree, sorted_rehanged_mutations_all_fpfnratio_across_tree)
-        print_tree(T_removed_fpfnratio_across_tree)
+        log_tree_debug(logger, T_removed_fpfnratio_across_tree, "Step6.6 tree after removing FP candidates")
         logger.info(f"The shape of removed_tree to be refined is : {M_removed_fpfnratio_across_tree.shape}")    
     
         T_current = copy.deepcopy(T_removed_fpfnratio_across_tree)
@@ -1357,6 +1441,10 @@ def main():
 
     rehanged_fn_mutations_by_fpfnratio_across_tree = df_fp_ratio_and_fn_ratio_fpfnratio_across_tree[df_fp_ratio_and_fn_ratio_fpfnratio_across_tree['fn_ratio'] >= fn_ratio_cutoff_across_tree]['identifier'].tolist()
     sorted_fn_mutations_fpfnratio_across_tree = [i for i in I_attached.columns if i in rehanged_fn_mutations_by_fpfnratio_across_tree]
+    stage_timer.checkpoint(
+        "Step6_6_TreewideFpFnRatio",
+        f"Selected treewide FP/FN rehang candidates: fp={len(sorted_fp_mutations_fpfnratio_across_tree)}, fp_daughters={len(sorted_daughters_to_leaf_mutations_fpfnratio_across_tree)}, fn={len(sorted_fn_mutations_fpfnratio_across_tree)}",
+    )
     len(sorted_fn_mutations_fpfnratio_across_tree)
     # 0
     sorted_fn_mutations_fpfnratio_across_tree
@@ -1366,7 +1454,7 @@ def main():
     if len(rehanged_fn_mutations_by_fpfnratio_across_tree) > 0:
     
         T_removed_fpfnratio_across_tree, M_removed_fpfnratio_across_tree = remove_mutations_from_tree_and_matrix(T_checkpoint_fpfnratio_across_tree, M_checkpoint_fpfnratio_across_tree, rehanged_fn_mutations_by_fpfnratio_across_tree)
-        print_tree(T_removed_fpfnratio_across_tree)
+        log_tree_debug(logger, T_removed_fpfnratio_across_tree, "Step6.6 tree after removing FN candidates")
         logger.info(f"The shape of removed_tree to be refined is : {M_removed_fpfnratio_across_tree.shape}")    
     
         T_current = copy.deepcopy(T_removed_fpfnratio_across_tree)
@@ -1415,6 +1503,10 @@ def main():
         )
 
     logging.info(f"The number of final_external_mutations_fpfnratio_across_tree is: {len(final_external_mutations_fpfnratio_across_tree)}")
+    stage_timer.checkpoint(
+        "Step6_6_TreewideFpFnRatio",
+        f"Reattached treewide FP/FN candidates: external_after_retry={len(final_external_mutations_fpfnratio_across_tree)}",
+    )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -1485,7 +1577,10 @@ def main():
                          how='left')       # 以 df_fp_ratio_fpratio_within_subclone_v2 为基准，缺失的列填充为 NaN
 
     # combined_df_fp_ratios_within_subclone_and_fpfn_ratios_across_tree.to_csv(os.path.join(outputpath_full, "combined_df_fp_ratios_within_subclone_and_fpfn_ratios_across_tree.csv"), sep=",")
-    stage_timer.end("Step6_6_TreewideFpFnRatio")
+    stage_timer.end(
+        "Step6_6_TreewideFpFnRatio",
+        summary=f"fp_candidates={len(sorted_fp_mutations_fpfnratio_across_tree)}, fn_candidates={len(sorted_fn_mutations_fpfnratio_across_tree)}, external={len(final_external_mutations_fpfnratio_across_tree)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -1509,6 +1604,10 @@ def main():
     M_for_fp_ratio_persitefp = split_merged_columns(M_for_fp_ratio_persitefp, mutations_on_T_current_persitefp)
 
     df_fp_ratio_persitefp = calculate_fp_ratios_persite_within_subclone(M_for_fp_ratio_persitefp, I_attached, mutation_clones_for_persitefp)
+    stage_timer.checkpoint(
+        "Step6_7_PerSiteSubcloneFpRatio",
+        f"Computed per-site FP ratios: mutations={len(df_fp_ratio_persitefp)}, clones={len(mutation_clones_for_persitefp)}",
+    )
     df_fp_ratio_persitefp
     #              identifier subclone_representative  ...  total_ones_in_subclone  subclone_size
     # 0     chr17_7578893_G_T       chr17_7578893_G_T  ...                     241              9
@@ -1555,14 +1654,14 @@ def main():
     ##### 筛选自身 fp 高的位点并处理
     rehanged_mutations_by_persitefp = df_fp_ratio_persitefp[df_fp_ratio_persitefp['fp_ratio_persite'] >= fp_ratio_persite_cutoff]['identifier'].tolist()
     rehanged_mutations_by_persitefp_but_backbone = [i for i in rehanged_mutations_by_persitefp if i not in list(set(expanded_mutations_of_current_backbone_nodes+scaffold_mutations))]
-    print(len(rehanged_mutations_by_persitefp_but_backbone))
-    # 0
-    print(rehanged_mutations_by_persitefp_but_backbone)
-    # []
-    for m in rehanged_mutations_by_persitefp_but_backbone:
-        print(m)
-        print(count_list(I_attached[m]))
-        print(count_conditions(I_attached[m], M_current[[col for col in M_current.columns if m in col][0]]))
+    logger.info(f"Step6.7 per-site FP candidate rehang mutations: {len(rehanged_mutations_by_persitefp_but_backbone)}")
+    log_list_debug(logger, "Step6.7 per-site FP candidate rehang mutations", rehanged_mutations_by_persitefp_but_backbone)
+    if logger.isEnabledFor(logging.DEBUG):
+        for m in rehanged_mutations_by_persitefp_but_backbone:
+            logger.debug(
+                f"{m}: counts={count_list(I_attached[m])}, "
+                f"conditions={count_conditions(I_attached[m], M_current[[col for col in M_current.columns if m in col][0]])}"
+            )
 
     # chr15_50499489_A_G
     # {0.0: 252, 'NA': 839, 1.0: 34}
@@ -1570,12 +1669,16 @@ def main():
 
 
     sorted_rehanged_mutations_by_persitefp_but_backbone = [i for i in I_attached.columns if i in rehanged_mutations_by_persitefp_but_backbone]
+    stage_timer.checkpoint(
+        "Step6_7_PerSiteSubcloneFpRatio",
+        f"Selected per-site FP rehang candidates: total={len(sorted_rehanged_mutations_by_persitefp_but_backbone)}",
+    )
 
     external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone = []
     if len(sorted_rehanged_mutations_by_persitefp_but_backbone) > 0:
     
         T_removed_fp_ratio_persitefp, M_removed_fp_ratio_persitefp = remove_mutations_from_tree_and_matrix(T_checkpoint_fp_ratio_persitefp, M_checkpoint_fp_ratio_persitefp, sorted_rehanged_mutations_by_persitefp_but_backbone)
-        print_tree(T_removed_fp_ratio_persitefp)
+        log_tree_debug(logger, T_removed_fp_ratio_persitefp, "Step6.7 tree after removing per-site FP candidates")
         logger.info(f"The shape of removed_tree to be refined is : {M_removed_fp_ratio_persitefp.shape}")    
     
         T_current = copy.deepcopy(T_removed_fp_ratio_persitefp)
@@ -1617,6 +1720,10 @@ def main():
         )
 
     logging.info(f"The number of final_external_mutations_fp_ratio_persitefp is: {len(final_external_mutations_fp_ratio_persitefp)}")
+    stage_timer.checkpoint(
+        "Step6_7_PerSiteSubcloneFpRatio",
+        f"Reattached per-site FP candidates: external_after_retry={len(final_external_mutations_fp_ratio_persitefp)}",
+    )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -1627,10 +1734,12 @@ def main():
     final_cleaned_M_test.shape
     # (1178, 29)
 
-    for m in rehanged_mutations_by_persitefp_but_backbone:
-        print(m)
-        print(count_list(I_attached[m]))
-        print(count_conditions(I_attached[m], M_current[[col for col in M_current.columns if m in col][0]]))
+    if logger.isEnabledFor(logging.DEBUG):
+        for m in rehanged_mutations_by_persitefp_but_backbone:
+            logger.debug(
+                f"{m}: updated_counts={count_list(I_attached[m])}, "
+                f"updated_conditions={count_conditions(I_attached[m], M_current[[col for col in M_current.columns if m in col][0]])}"
+            )
 
 
 
@@ -1735,7 +1844,10 @@ def main():
 
 
     final_combined_df_fp_ratios_within_subclone_and_fpfn_ratios_across_tree_and_persite_fp_ratio.to_csv(os.path.join(outputpath_full, "final_combined_df_fp_ratios_within_subclone_and_fpfn_ratios_across_tree_and_persite_fp_ratio.csv"), sep=",")
-    stage_timer.end("Step6_7_PerSiteSubcloneFpRatio")
+    stage_timer.end(
+        "Step6_7_PerSiteSubcloneFpRatio",
+        summary=f"candidates={len(sorted_rehanged_mutations_by_persitefp_but_backbone)}, external={len(final_external_mutations_fp_ratio_persitefp)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -1755,6 +1867,10 @@ def main():
 
 
     df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation = calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_checkpoint_outgroup, M_checkpoint_outgroup, I_attached)
+    stage_timer.checkpoint(
+        "Step6_9_ParentMutationReattach",
+        f"Computed parent-retention metrics: mutations={len(df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation)}",
+    )
     df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation.shape
     # (34, 10)
 
@@ -1774,10 +1890,12 @@ def main():
             (df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation['intersection_cell_ratio_on_mutation'] <= intersection_cell_ratio_on_mutation_cutoff)))]['mutation'].tolist()
 
     outgroup_mutations_but_backbone = [i for i in outgroup_mutations if i not in list(set(expanded_mutations_of_current_backbone_nodes))]
-    print(len(outgroup_mutations_but_backbone))
-    # 9
-    print(outgroup_mutations_but_backbone)
-    # ['chr8_80170791_C_T', 'chr4_122860726_G_T', 'chr15_50499489_A_G', 'chr17_43766282_C_A', 'chr5_128188419_C_A', 'chr7_20381814_G_T', 'chr5_128171668_G_C', 'chr11_83165726_G_C', 'chr1_171541779_G_T']
+    logger.info(f"Step6.9 outgroup mutations to reattach: {len(outgroup_mutations_but_backbone)}")
+    log_list_debug(logger, "Step6.9 outgroup mutations to reattach", outgroup_mutations_but_backbone)
+    stage_timer.checkpoint(
+        "Step6_9_ParentMutationReattach",
+        f"Selected outgroup rehang candidates: total={len(outgroup_mutations_but_backbone)}",
+    )
 
     if outgroup_mutations_but_backbone:
         # 找到这些突变的子突变们
@@ -1799,7 +1917,7 @@ def main():
         if len(sorted_rehanged_mutations_all_outgroup) > 0:
         
             T_removed_outgroup, M_removed_outgroup = remove_mutations_from_tree_and_matrix(T_checkpoint_outgroup, M_checkpoint_outgroup, sorted_rehanged_mutations_all_outgroup)
-            print_tree(T_removed_outgroup)
+            log_tree_debug(logger, T_removed_outgroup, "Step6.9 tree after removing outgroup candidates")
             M_removed_outgroup_modified = process_matrices_by_removed_some_mutations_from_tree(M_removed_outgroup, I_attached)[1]
         
             logger.info(f"The shape of removed_tree to be refined is : {M_removed_outgroup.shape}")    
@@ -1880,7 +1998,10 @@ def main():
     M_test = split_merged_columns(M_test, mutations_on_T_test)
     final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
     final_cleaned_M_test.shape
-    stage_timer.end("Step6_9_ParentMutationReattach")
+    stage_timer.end(
+        "Step6_9_ParentMutationReattach",
+        summary=f"candidates={len(outgroup_mutations_but_backbone)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -1900,6 +2021,10 @@ def main():
 
 
     df_intersection_and_flipping_to_1_count_per_cell = calculate_intersection_and_flipping_to_1_count_per_cell(M_for_fp_ratio_and_fn_ratio_wireless_cells, I_attached)
+    stage_timer.checkpoint(
+        "Step6_10_RemoveUnsuitableCells",
+        f"Computed per-cell intersection/flip metrics: cells={len(df_intersection_and_flipping_to_1_count_per_cell)}",
+    )
     df_intersection_and_flipping_to_1_count_per_cell
     #                          intersection_count  ...  flipping_to_1_count
     # cell                                         ...                     
@@ -1949,9 +2074,11 @@ def main():
 
     M_current = M_current.drop(to_be_removed_cells, errors='ignore')
 
-    print(M_current.shape)
-    # (1021, 34)
-    stage_timer.end("Step6_10_RemoveUnsuitableCells")
+    logger.info(f"Step6.10 matrix shape after removing unsuitable cells: {M_current.shape}")
+    stage_timer.end(
+        "Step6_10_RemoveUnsuitableCells",
+        summary=f"removed_cells={len(to_be_removed_cells)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
 
 
 
@@ -1973,6 +2100,10 @@ def main():
 
     # 计算
     df_fp_ratio_per_mutation_cross_all_cells, df_fp_ratio_per_cell_cross_all_muts, overall_metrics, fp_mutations_dict_cross_all_cells = calculate_comprehensive_fp_metrics(M_for_artifact_and_doublet, I_attached.loc[M_checkpoint_artifact_and_doublet.index])
+    stage_timer.checkpoint(
+        "Step6_8_GlobalFpRatioAndDoublets",
+        f"Computed global FP metrics: mutations={len(df_fp_ratio_per_mutation_cross_all_cells)}, cells={len(df_fp_ratio_per_cell_cross_all_muts)}",
+    )
 
     df_fp_ratio_per_mutation_cross_all_cells.to_csv(os.path.join(outputpath_full, "df_fp_ratio_per_mutation_cross_all_cells.csv"), sep=",")
     df_fp_ratio_per_cell_cross_all_muts.to_csv(os.path.join(outputpath_full, "df_fp_ratio_per_cell_cross_all_muts.csv"), sep=",")
@@ -2041,10 +2172,12 @@ def main():
     # rehanged_fp_mutations_cross_all_cells = df_fp_ratio_per_mutation_cross_all_cells[df_fp_ratio_per_mutation_cross_all_cells['fp_cells_ratio_per_mutation'] >= fp_ratio_per_mutation_cross_all_cells_cutoff]['identifier'].tolist()
     rehanged_fp_mutations_cross_all_cells = df_fp_ratio_per_mutation_cross_all_cells[(df_fp_ratio_per_mutation_cross_all_cells['fp_cells_ratio_per_mutation'] >= fp_ratio_per_mutation_cross_all_cells_cutoff) & (df_fp_ratio_per_mutation_cross_all_cells['fp_cells_count'] >= fp_count_per_mutation_cross_all_cells_cutoff)]['identifier'].tolist()
     rehanged_fp_mutations_cross_all_cells_but_backbone = [i for i in rehanged_fp_mutations_cross_all_cells if i not in list(set(expanded_mutations_of_current_backbone_nodes+scaffold_mutations))]
-    print(len(rehanged_fp_mutations_cross_all_cells_but_backbone))
-    # 3
-    print(rehanged_fp_mutations_cross_all_cells_but_backbone)
-    # ['chr3_197511839_C_T', 'chr11_105044420_G_A', 'chr20_58360500_A_T']
+    logger.info(f"Step6.8 global FP candidate rehang mutations: {len(rehanged_fp_mutations_cross_all_cells_but_backbone)}")
+    log_list_debug(logger, "Step6.8 global FP candidate rehang mutations", rehanged_fp_mutations_cross_all_cells_but_backbone)
+    stage_timer.checkpoint(
+        "Step6_8_GlobalFpRatioAndDoublets",
+        f"Selected global FP rebuild candidates: primary={len(rehanged_fp_mutations_cross_all_cells_but_backbone)}",
+    )
 
     # 获取 fp_ratio>=0.4 的位点之间在树上的关系
     ordered_branch_groups_for_rehanged_fp_mutations_cross_all_cells_but_backbone = find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist(T_current, rehanged_fp_mutations_cross_all_cells_but_backbone)
@@ -2108,7 +2241,7 @@ def main():
     if len(remove_mutations_for_rebuild) > 0:
     
         T_removed_cross_all_cells, M_removed_cross_all_cells = remove_mutations_from_tree_and_matrix(T_checkpoint_artifact_and_doublet, M_checkpoint_artifact_and_doublet, remove_mutations_for_rebuild)
-        print_tree(T_removed_cross_all_cells)
+        log_tree_debug(logger, T_removed_cross_all_cells, "Step6.8 tree after removing global FP candidates")
         logger.info(f"The shape of removed_tree to be refined is : {M_removed_cross_all_cells.shape}")    
     
         T_current = copy.deepcopy(T_removed_cross_all_cells)
@@ -2152,10 +2285,12 @@ def main():
 
     M_current = M_current.drop(to_be_removed_cells, errors='ignore')
 
-    print(M_current.shape)
-    # (1021, 34)
-    stage_timer.end("Step6_8_GlobalFpRatioAndDoublets")
-    stage_timer.end("Step6_FullResolvedTree")
+    logger.info(f"Step6.8 matrix shape after removing likely doublets: {M_current.shape}")
+    stage_timer.end(
+        "Step6_8_GlobalFpRatioAndDoublets",
+        summary=f"rebuild_mutations={len(remove_mutations_for_rebuild)}, removed_cells={len(to_be_removed_cells)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
+    stage_timer.end("Step6_FullResolvedTree", summary=_format_step6_state(T_current, M_current, root_mutations))
 
 
 
@@ -2186,7 +2321,7 @@ def main():
     M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
 
     logger.info("Final scaffold tree:")
-    print_tree(T_full)
+    log_tree_debug(logger, T_full, "Final full-resolved tree")
     # └─ ROOT
     #   └─ chr17_7578893_G_T
     #     └─ chr21_46323662_C_T|chr16_497748_G_T
@@ -2349,16 +2484,15 @@ def main():
     df_flip_counts_tree.to_csv(os.path.join(phylo_dir, "df_flipping_count_for_each_mut.txt"), sep="\t", index=True)
 
 
-    print(df_total_flipping_count.iloc[0,:])
-    # total_flipping_False_Negative      203
-    # total_flipping_False_Positive       66
-    # total_flipping_NA_to_0           25211
-    # total_flipping_NA_to_1             719
-    # Name: 0, dtype: int64
+    logger.info(
+        "Flip stats summary: "
+        f"FN={df_total_flipping_count.at[0, 'total_flipping_False_Negative']}, "
+        f"FP={df_total_flipping_count.at[0, 'total_flipping_False_Positive']}, "
+        f"NA->0={df_total_flipping_count.at[0, 'total_flipping_NA_to_0']}, "
+        f"NA->1={df_total_flipping_count.at[0, 'total_flipping_NA_to_1']}"
+    )
 
     logger.info(f"The shape of final_cleaned_M_full.shape: {final_cleaned_M_full.shape}")
-    print(final_cleaned_M_full.shape)
-    # (1061, 34)
     stage_timer.end("Step7_3_FlipStats")
 
 
@@ -2415,7 +2549,6 @@ def main():
     ##### Time #####
     finish_time = time.perf_counter()
     stage_timer.end("MainPipeline")
-    print("Program finished in {:.4f} seconds".format(finish_time-start_time))
 
 
 
@@ -2423,3 +2556,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    stage_timer.end(
+        "Step6_3_ProcessExternalSubtrees",
+        summary=f"external={len(external_mutations)}, subtree_groups={len(subtree_groups)}, remained={len(remained_mutations)}, {_format_step6_state(T_current, M_current, root_mutations)}",
+    )
