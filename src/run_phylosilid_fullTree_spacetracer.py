@@ -1661,7 +1661,7 @@ final_combined_df_fp_ratios_within_subclone_and_fpfn_ratios_across_tree_and_pers
 # -----------------------------
 # Step 6.8 计算 parent muts 中的 intersection/FN_flip per mutations，最后找到一些要重挂的突变
 # -----------------------------
-logger.info("===== Step6.9: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some mutations that need to be reattached ...")
+logger.info("===== Step6.8: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some mutations that need to be reattached ...")
 
 T_checkpoint_outgroup = copy.deepcopy(T_current)
 M_checkpoint_outgroup = M_current.copy()
@@ -1804,7 +1804,7 @@ final_cleaned_M_test.shape
 # -----------------------------
 # Step 6.9 计算 parent muts 中的 intersection/FN_flip per mutations，最后找到一些找不到合适的突变的可以删除的 cells
 # -----------------------------
-logger.info("===== Step6.10: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some cells that cannot find suitable mutations and can be deleted ...")
+logger.info("===== Step6.9: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some cells that cannot find suitable mutations and can be deleted ...")
 
 T_checkpoint_wireless_cells = copy.deepcopy(T_current)
 M_checkpoint_wireless_cells = M_current.copy()
@@ -1874,7 +1874,7 @@ print(M_current.shape)
 # -----------------------------
 # Step 6.10 计算 cross all cells 的 fp_ratio_per_mutation 和 cross all mutations 的 fp_ratio_per_cell，鉴定并去掉 artifact mutations 和 doublet cells
 # -----------------------------
-logger.info("===== Step6.8: Caculate fp_ratio_per_mutation_cross_all_cells and fp_ratio_per_cell_cross_all_muts ...")
+logger.info("===== Step6.10: Caculate fp_ratio_per_mutation_cross_all_cells and fp_ratio_per_cell_cross_all_muts ...")
 
 ##### 计算 T_current 中每一个 mutations 的 fp_ratio_per_mutation_cross_all_cells 和 fp_ratio_per_cell_cross_all_muts
 T_checkpoint_artifact_and_doublet = copy.deepcopy(T_current)
