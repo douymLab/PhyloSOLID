@@ -1463,7 +1463,7 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     ax_col_bar.set_xlim(ax_heatmap.get_xlim())
     ax_col_bar.set_xticks([])
     ax_col_bar.tick_params(axis="y", labelsize=8)
-    ax_col_bar.set_ylabel("#Mutations", fontsize=10)
+    ax_col_bar.set_ylabel("#Cells", fontsize=10)
     
     # -------------------
     # Step 9: 行条形图（每个 cell 有多少突变）
@@ -1472,7 +1472,7 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
                     color="#7D2224", alpha=0.7, align="center")
     ax_row_bar.set_ylim(ax_heatmap.get_ylim())
     ax_row_bar.set_yticks([])
-    ax_row_bar.set_xlabel("#Cells", fontsize=10)
+    ax_row_bar.set_xlabel("#Mutations", fontsize=10)
     ax_row_bar.invert_xaxis()
     
     # -------------------

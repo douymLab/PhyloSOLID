@@ -527,19 +527,23 @@ def handle_bam_file(bam_file,chrom,pos,ref,alt,run_type,outdir,bins,readLen=120)
                 {}
 
 
-def handel_identifier(bam_file,run_type,readLen,outdir,bins,prior,identifier):
-    # print("running",identifier)
+def handel_identifier(bam_file,run_type,readLen,outdir,bins,prior,unique_identifier):
+    # print("running",unique_identifier)
     current_directory = os.path.dirname(os.path.abspath(__file__))
     compare_pl_path=os.path.join(os.path.dirname(current_directory),"others/compare_files.pl")
-    chrom,pos,ref,alt=identifier.split("_")
+    
+    # 从 unique_identifier 中提取原始 identifier（去掉 _行号 后缀）
+    # 例如: "chr5_32600000_G_C_123" -> "chr5_32600000_G_C"
+    parts = unique_identifier.split('_')
+    # 最后一部分是行号，去掉它
+    original_identifier = '_'.join(parts[:-1])
+    chrom,pos,ref,alt = original_identifier.split("_")
     only_pos_identifier="\t".join([chrom,str(pos),chrom,str(pos)])
 
-    features = _global_features[identifier]
+    features = _global_features[unique_identifier]
+    # 将 features 中的 identifier 替换回原始值，用于输出
+    features['identifier'] = original_identifier
 
-    # columns = ['identifier','s1','p1','s2','p2','s3','p3','chi2_stat_read',
-    #             'chi2_p_read','chi2_stat_UMI','chi2_p_UMI','mean_distance_to_end',
-    #             'median_distance_to_end','mean_distance_to_end_remove_clip',
-    #             'median_distance_to_end_remove_clip']
     baseq_s,baseq_p,baseq_rbc, ref_baseq1b_s,ref_baseq1b_p,ref_baseq1b_rbc, alt_baseq1b_s,alt_baseq1b_p,alt_baseq1b_rbc, \
         querypos_s,querypos_p,querypos_rbc,leftpos_s,leftpos_p,leftpos_rbc, seqpos_s, seqpos_p, seqpos_rbc, \
         distance_to_end_s,distance_to_end_p,distance_to_end_rbc, UMI_end_s,UMI_end_p,UMI_end_rbc, \
@@ -678,30 +682,34 @@ def handel_identifier(bam_file,run_type,readLen,outdir,bins,prior,identifier):
 
         base_data['fref']=fref
         base_data['falt']=falt
-    # features = features.reset_index()
-    features_dict = features
-
-    merged_data = {**{'identifier': identifier},**features_dict, **base_data}
+    
+    # 使用原始 identifier 作为输出
+    merged_data = {**{'identifier': original_identifier}, **features, **base_data}
     # print(merged_data['multi_mapper_odds'])
     return result_dict, merged_data
-
 
 
 def main():
     # identifier_list=
     _global_features = None  # 占位符
     features=pd.read_csv(args.features,sep="\t")
-    features.index=features['identifier']
-    features_dict = features.to_dict(orient='index')  # 返回结构：{identifier: {col1: val1, ...}}
-    def init_worker(features):
+    
+    # 保存所有原始行（包括重复），按行号作为唯一标识
+    features['_original_idx'] = range(len(features))
+    features['_unique_id'] = features['identifier'] + '_' + features['_original_idx'].astype(str)
+    features.index = features['_unique_id']
+    
+    # 创建 features_dict，key 是 unique_id，value 是原始数据
+    features_dict = features.to_dict(orient='index')
+    
+    # identifier_list 使用 unique_id
+    identifier_list = features['_unique_id'].tolist()
+    
+    def init_worker(features_data):
         global _global_features
-        _global_features = features_dict
+        _global_features = features_data
 
-    # np.seterr(divide='raise')
-    identifier_list=features.index.tolist()
-    # out_file=os.path.join(outdir ,outname)
     import os
-    # 假设 outdir 和 outname 已经定义
     outname = args.outname
     outdir = args.outdir
     if os.path.isabs(outname):
@@ -713,12 +721,10 @@ def main():
     COLUMNS = []
     all_features = []
 
-    with multiprocessing.Pool(processes=args.thread, initializer=init_worker, initargs=(features,)) as pool, open(out_file, "w") as f:
+    with multiprocessing.Pool(processes=args.thread, initializer=init_worker, initargs=(features_dict,)) as pool, open(out_file, "w") as f:
         for result in pool.imap(partial_func, identifier_list, chunksize=10):
             if result: 
-                _, mutation_dict=result
-                # print(mutation_dict)
-                # all_features.append(result_dict)
+                _, mutation_dict = result
 
                 if mutation_dict is not None and mutation_dict!={}:
                     if COLUMNS!=[] or mutation_dict=={}:
@@ -727,22 +733,10 @@ def main():
                         COLUMNS=list(mutation_dict.keys())
                         pd.DataFrame(columns=COLUMNS).to_csv(f, header=True, index=False,sep='\t')
 
-                    chunk_df = pd.DataFrame([[i for i in mutation_dict.values()]], columns=COLUMNS)
+                    chunk_df = pd.DataFrame([[mutation_dict.get(col, "no") for col in COLUMNS]], columns=COLUMNS)
                     chunk_df.fillna("no").to_csv(f, header=False, mode="a", index=False,sep='\t')
             del result
             gc.collect()
-
-    # with open(os.path.join(args.outdir, args.outname + ".pkl"), "wb") as pf:
-    #     pickle.dump(all_features, pf)
-
-
-
-# args.features="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/pre-classifier/scRNA/traning_data/features_manual/P4_normal.manual_addLabeling_addSampleid.identifier.feature.txt"
-# thread=4
-# outdir="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/pre-classifier/scRNA/traning_data/features_patched"
-# outname="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/pre-classifier/scRNA/traning_data/features_random1w/P4_normal.random1w_patched.feature.txt"
-# readLen=98
-# bam="/storage/douyanmeiLab/yangzhirui/01.Data_download/06.skin/04.Analysis/01.cellranger_hg38/P4_normal/outs/possorted_genome_bam.bam"
 
 
 
