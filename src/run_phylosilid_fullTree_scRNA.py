@@ -1877,7 +1877,10 @@ mutations_on_T_current_artifact_and_doublet = M_for_artifact_and_doublet.columns
 M_for_artifact_and_doublet = split_merged_columns(M_for_artifact_and_doublet, mutations_on_T_current_artifact_and_doublet)
 
 # 计算
-df_fp_ratio_per_mutation_cross_all_cells, df_fp_ratio_per_cell_cross_all_muts, overall_metrics, fp_mutations_dict_cross_all_cells = calculate_comprehensive_fp_metrics(M_for_artifact_and_doublet, I_attached.loc[M_checkpoint_artifact_and_doublet.index])
+df_fp_ratio_per_mutation_cross_all_cells, df_fp_ratio_per_cell_cross_all_muts, overall_metrics, fp_mutations_dict_cross_all_cells = calculate_comprehensive_fp_metrics(
+    M_for_artifact_and_doublet, 
+    I_attached.loc[M_checkpoint_artifact_and_doublet.index, M_for_artifact_and_doublet.columns]  # 同时筛选行和列
+)
 
 df_fp_ratio_per_mutation_cross_all_cells.to_csv(os.path.join(outputpath_full, "df_fp_ratio_per_mutation_cross_all_cells.csv"), sep=",")
 df_fp_ratio_per_cell_cross_all_muts.to_csv(os.path.join(outputpath_full, "df_fp_ratio_per_cell_cross_all_muts.csv"), sep=",")
