@@ -112,6 +112,7 @@ cp config/paths.yaml.template config/paths.yaml
 ```
 
 Edit `config/paths.yaml` to set the correct paths for:
+- Conda environment (Python interpreter and environment path)
 - ANNOVAR installation directory
 - Reference files (genome FASTA, GFF3, etc.)
 - Paths to the extracted resource files
@@ -119,6 +120,11 @@ Edit `config/paths.yaml` to set the correct paths for:
 Example `config/paths.yaml` configuration:
 
 ```yaml
+# Conda environment (required for Python scripts)
+conda:
+  python: "/path/to/phylosolid_env/bin/python"  # Path to conda Python interpreter
+  env_path: "/path/to/phylosolid_env"           # Path to conda environment
+
 # ANNOVAR configuration
 annovar:
   script_dir: "/path/to/software/annovar"      # Directory containing annotate_variation.pl
@@ -127,10 +133,11 @@ annovar:
 
 # Reference files (paths to extracted files)
 reference:
-  genome_fasta: "/path/to/resource/genome.fa"                              # Extracted from genome.fa.gz
-  gff3_file: "/path/to/resource/wgEncodeGencodeExonSupportV44.sort.bed"    # Extracted from wgEncodeGencodeExonSupportV44.sort.bed.gz
-  mappability_file: "/path/to/resource/k24.umap.bedgraph"                  # Extracted from k24.umap.bedgraph.gz (use k100.umap.bedgraph if needed)
-  gnomad_file: "/path/to/resource/hg38_gnomad312_genome_only_af_all.txt"   # Extracted from hg38_gnomad312_genome_only_af_all.txt.gz
+  genome_fasta: "/path/to/resource/genome.fa"
+  gff3_file: "/path/to/resource/wgEncodeGencodeExonSupportV44.sort.bed"
+  mappability_file: "/path/to/resource/k24.umap.bedgraph"
+  gnomad_file: "/path/to/resource/hg38_gnomad312_genome_only_af_all.txt"
+  rna_editing_file: "/path/to/resource/COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed"
 ```
 
 ### Step 5: Run the installation script
