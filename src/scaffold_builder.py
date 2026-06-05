@@ -1444,16 +1444,17 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     # Step 7: 给横坐标 mutation label 上色（根据分组）
     # -------------------
     unique_groups = sorted(set(mutation_group.values()))
-    cmap_groups = plt.cm.get_cmap("tab20", len(unique_groups))
-    group_colors = {g: cmap_groups(i) for i, g in enumerate(unique_groups)}
-    
-    for label in ax_heatmap.get_xticklabels():
-        mut_name = label.get_text()
-        if mut_name in mutation_group:
-            group_id = mutation_group[mut_name]
-            label.set_color(group_colors.get(group_id, 'black'))
-        else:
-            label.set_color('black')
+    if len(unique_groups) > 0:  # 【修复】确保有分组
+        cmap_groups = plt.cm.get_cmap("tab20", len(unique_groups))
+        group_colors = {g: cmap_groups(i) for i, g in enumerate(unique_groups)}
+        
+        for label in ax_heatmap.get_xticklabels():
+            mut_name = label.get_text()
+            if mut_name in mutation_group:
+                group_id = mutation_group[mut_name]
+                label.set_color(group_colors.get(group_id, 'black'))
+            else:
+                label.set_color('black')
     
     # -------------------
     # Step 8: 列条形图（每个突变被多少 cell 支持）
@@ -1481,10 +1482,17 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     celltypes = df_celltype["cell_type"].astype("category")
     type_codes = celltypes.cat.codes
     unique_types = celltypes.cat.categories
-    cmap_types = plt.cm.get_cmap("tab20", len(unique_types))
     
-    ax_celltype_bar.imshow(np.array(type_codes)[:, None], aspect="auto",
-                           cmap=cmap_types, origin="upper")
+    # 【修复】处理 cell type 为空的情况
+    if len(unique_types) > 0:
+        cmap_types = plt.cm.get_cmap("tab20", len(unique_types))
+        ax_celltype_bar.imshow(np.array(type_codes)[:, None], aspect="auto",
+                               cmap=cmap_types, origin="upper")
+    else:
+        # 如果没有 cell type，用灰色填充
+        print("Warning: No unique cell types found, using gray fill")
+        ax_celltype_bar.imshow(np.zeros((len(type_codes), 1)), aspect="auto",
+                               cmap="gray", origin="upper")
     ax_celltype_bar.set_xticks([])
     ax_celltype_bar.set_yticks([])
     
@@ -1502,28 +1510,35 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
                bbox_to_anchor=(0.5, -0.03), frameon=False, fontsize=9,
                title="Mutation Values", title_fontsize=10)
     
-    # cell type legend
-    celltype_handles = [Patch(facecolor=cmap_types(i), label=label) 
-                        for i, label in enumerate(unique_types)]
-    fig.legend(handles=celltype_handles, loc="lower center",
-               ncol=min(len(unique_types), 5),
-               bbox_to_anchor=(0.5, -0.12), frameon=False, fontsize=9,
-               title="Cell Types", title_fontsize=10)
+    # 【修复】cell type legend - 只在有数据时添加
+    if len(unique_types) > 0:
+        celltype_handles = [Patch(facecolor=cmap_types(i), label=label) 
+                            for i, label in enumerate(unique_types)]
+        fig.legend(handles=celltype_handles, loc="lower center",
+                   ncol=min(len(unique_types), 5),
+                   bbox_to_anchor=(0.5, -0.12), frameon=False, fontsize=9,
+                   title="Cell Types", title_fontsize=10)
+    else:
+        print("Warning: No cell types found, skipping cell type legend")
     
-    # mutation group legend
-    group_handles = [Patch(facecolor=color, label=f'Group {group_id}')
-                     for group_id, color in group_colors.items()]
-    fig.legend(handles=group_handles, loc="lower center",
-               ncol=min(len(group_handles), 5),
-               bbox_to_anchor=(0.5, -0.20), frameon=False, fontsize=9,
-               title="Mutation Groups", title_fontsize=10)
+    # 【修复】mutation group legend - 只在有分组时添加
+    if len(unique_groups) > 0:
+        group_handles = [Patch(facecolor=color, label=f'Group {group_id}')
+                         for group_id, color in group_colors.items()]
+        fig.legend(handles=group_handles, loc="lower center",
+                   ncol=min(len(group_handles), 5),
+                   bbox_to_anchor=(0.5, -0.20), frameon=False, fontsize=9,
+                   title="Mutation Groups", title_fontsize=10)
+    else:
+        print("Warning: No mutation groups found, skipping group legend")
     
     # -------------------
     # Step 12: 保存图像
     # -------------------
     plt.suptitle("Heatmap of Mutations with Cell Type Bar", fontsize=14, y=0.95)
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0)
+    # 【修复】动态调整底部空间，避免空 legend 造成空白过多
+    plt.subplots_adjust(bottom=0.1 if len(unique_types) > 0 else 0.05)
     plt.savefig(pdf_file, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"保存完成: {pdf_file}")
