@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh - One-click installation script for PhyloSOLID
+# install.sh - Install conda environment and dependencies only
 # Usage: bash install.sh
 
 set -e
@@ -21,12 +21,12 @@ if ! command -v mamba &> /dev/null; then
     fi
 else
     CONDA_CMD="mamba"
-    echo "[INFO] Using mamba (faster dependency resolution)"
+    echo "[INFO] Using mamba"
 fi
 
 # Step 1: Create conda environment
 echo ""
-echo "[Step 1/3] Creating Conda environment (may take 5-10 minutes)..."
+echo "[Step 1/2] Creating Conda environment..."
 $CONDA_CMD env create -f environment.yml
 
 # Get environment path
@@ -38,11 +38,11 @@ if [ ! -d "$ENV_PREFIX" ]; then
     exit 1
 fi
 
-echo "[INFO] Environment created successfully: $ENV_PREFIX"
+echo "[INFO] Environment created: $ENV_PREFIX"
 
 # Step 2: Install converTree R package
 echo ""
-echo "[Step 2/3] Installing converTree R package from GitHub..."
+echo "[Step 2/2] Installing converTree R package..."
 $ENV_PREFIX/bin/R -e "
 if (!require('converTree', quietly=TRUE)) {
     message('Installing converTree...')
@@ -50,48 +50,20 @@ if (!require('converTree', quietly=TRUE)) {
         install.packages('devtools', repos='https://cloud.r-project.org')
     }
     devtools::install_github('xiayh17/converTree', upgrade='never', quiet=FALSE)
-    message('[INFO] converTree installed successfully')
+    message('[INFO] converTree installed')
 } else {
-    message('[INFO] converTree already installed, skipping')
+    message('[INFO] converTree already installed')
 }
 "
 
-# Step 3: Verify installation
-echo ""
-echo "[Step 3/3] Verifying critical dependencies..."
-$ENV_PREFIX/bin/python -c "
-import sys
-packages = ['numpy', 'pandas', 'geopandas', 'vcfpy', 'scphylo', 'torch']
-failed = []
-for pkg in packages:
-    try:
-        __import__(pkg)
-        print(f'[OK] {pkg}')
-    except ImportError as e:
-        print(f'[FAIL] {pkg}: {e}')
-        failed.append(pkg)
-
-if failed:
-    print(f'\n[WARNING] Failed to import: {failed}')
-    print('You may need to manually install these packages')
-    sys.exit(1)
-else:
-    print('\n[OK] All core packages imported successfully')
-"
-
 echo ""
 echo "========================================="
-echo "Installation Complete"
+echo "Environment setup complete"
 echo "========================================="
 echo ""
-echo "Activate the environment:"
-echo "  conda activate $ENV_NAME"
-echo ""
-echo "Run the demo:"
-echo "  cd demo && bash run_demo.sh"
-echo ""
-echo "Troubleshooting:"
-echo "  1. Check your internet connection"
-echo "  2. Ensure you can access GitHub"
-echo "  3. If using a proxy, set HTTP_PROXY and HTTPS_PROXY"
+echo "Next steps:"
+echo "  1. Activate environment: conda activate $ENV_NAME"
+echo "  2. Configure config/paths.yaml with your paths"
+echo "  3. Install PhyloSOLID: pip install -e ."
+echo "  4. Verify installation: phylosolid check-annovar --config config/paths.yaml"
 echo "========================================="
