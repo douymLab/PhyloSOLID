@@ -3,7 +3,7 @@
 Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
 
 
-> ⚡ **Important Note for Users:**
+> **Important Note for Users:**
 > 
 > PhyloSOLID is under active development, especially during its preprint stage. The software and its associated resources are continuously being updated and improved.
 > 
@@ -21,7 +21,6 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 > PhyloSOLID is primarily developed and tested on Linux. We recommend running it on Linux or macOS systems. Windows users can use WSL (Windows Subsystem for Linux).
 
 
-
 ## Release Notes
 
 *PhyloSOLID is actively maintained. Check the Release Notes below and GitHub Releases for the latest updates.*
@@ -35,8 +34,7 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 ### Prerequisites
 
-- Python 3.7 or higher
-- R 4.0 or higher with required packages
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) (required)
 - samtools, bedtools
 - ANNOVAR (for variant annotation)
 
@@ -47,30 +45,20 @@ git clone https://github.com/douymLab/PhyloSOLID.git
 cd PhyloSOLID
 ```
 
-### Step 2: Install Python dependencies
-```bash
-pip install -r requirements.txt
-```
+### Step 2: Install ANNOVAR
 
-### Step 3: Install in development mode
-```bash
-pip install -e .
-```
-
-### Step 4: Install ANNOVAR
-
-##### PhyloSOLID uses ANNOVAR for variant annotation. You need to install it separately:
+PhyloSOLID uses ANNOVAR for variant annotation. You need to install it separately:
 
 1. Register and download ANNOVAR from the ANNOVAR Download Page (free for academic use).
 
 2. Install ANNOVAR:
-```
+```bash
 tar -xzvf annovar.latest.tar.gz -C /path/to/software/
 cd /path/to/software/annovar
 ```
 
 3. Download required databases (hg38 build):
-```
+```bash
 # Create humandb directory
 mkdir -p /path/to/software/annovar/humandb
 
@@ -82,17 +70,7 @@ mkdir -p /path/to/software/annovar/humandb
 ./annotate_variation.pl -downdb -buildver hg38 -webfrom annovar snp138 humandb/
 ```
 
-### Step 5: Configure paths
-##### Copy the template configuration file and update it with your paths:
-```
-cp config/paths.yaml.template config/paths.yaml
-```
-##### Edit config/paths.yaml to set the correct paths for:
-- ANNOVAR installation directory
-- Reference files (genome FASTA, GFF3, etc.)
-- Other external tools
-
-### Step 6: Resource Files
+### Step 3: Download and setup resource files
 
 All required resource files for running PhyloSOLID with the hg38 genome build are available on Figshare. **Due to their large total size (~8.85 GB), these files are not included in the GitHub repository and must be downloaded separately.**
 
@@ -109,12 +87,13 @@ The Figshare repository contains the following six compressed (`.gz`) files:
 | `hg38_gnomad312_genome_only_af_all.txt.gz` | Population allele frequencies from gnomAD v3.1.2 | 4.65 GB |
 | `COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz` | Curated RNA editing sites | 58.26 MB |
 
-##### Download and Setup Instructions
-1. Download all six `.gz` files from Figshare using the URL: https://figshare.com/s/2aee3e878688722e9c6f
-2. Place the downloaded files in a dedicated directory on your system (e.g., `/path/to/resource/`).
-3. Extract each file. You can do this one by one or with a simple loop in your terminal:
+**Download and Setup Instructions:**
 
-```
+1. Download all six `.gz` files from Figshare using the URL above
+2. Place the downloaded files in a dedicated directory on your system (e.g., `/path/to/resource/`)
+3. Extract each file:
+
+```bash
 # Navigate to your resource directory
 cd /path/to/resource/
 
@@ -124,10 +103,22 @@ for file in *.gz; do
 done
 ```
 
-4. Configure the paths to the extracted files in your config/paths.yaml file.
-Example config/paths.yaml configuration:
+### Step 4: Configure paths.yaml
 
+Copy the template configuration file and update it with your paths:
+
+```bash
+cp config/paths.yaml.template config/paths.yaml
 ```
+
+Edit `config/paths.yaml` to set the correct paths for:
+- ANNOVAR installation directory
+- Reference files (genome FASTA, GFF3, etc.)
+- Paths to the extracted resource files
+
+Example `config/paths.yaml` configuration:
+
+```yaml
 # ANNOVAR configuration
 annovar:
   script_dir: "/path/to/software/annovar"      # Directory containing annotate_variation.pl
@@ -140,10 +131,22 @@ reference:
   gff3_file: "/path/to/resource/wgEncodeGencodeExonSupportV44.sort.bed"    # Extracted from wgEncodeGencodeExonSupportV44.sort.bed.gz
   mappability_file: "/path/to/resource/k24.umap.bedgraph"                  # Extracted from k24.umap.bedgraph.gz (use k100.umap.bedgraph if needed)
   gnomad_file: "/path/to/resource/hg38_gnomad312_genome_only_af_all.txt"   # Extracted from hg38_gnomad312_genome_only_af_all.txt.gz
-  ```
-
-### Step 7: Verify installation
 ```
+
+### Step 5: Run the installation script
+
+```bash
+bash install.sh
+```
+
+This script will:
+- Create a conda environment with all Python/R dependencies
+- Install the converTree R package from GitHub
+- Install PhyloSOLID in development mode
+
+### Step 6: Verify installation
+
+```bash
 # Check if ANNOVAR is properly configured
 phylosolid check-annovar --config config/paths.yaml
 
@@ -158,7 +161,7 @@ cd demo
 
 For users who already have a binary mutation matrix, PhyloSOLID provides a direct mode that skips feature extraction and tree input generation:
 
-```
+```bash
 # Basic usage
 python -m cli.main binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -outputpath output_dir
 
@@ -166,11 +169,12 @@ python -m cli.main binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -out
 phylosolid binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -outputpath output_dir
 ```
 
-##### Input format (tab-separated):
+**Input format (tab-separated):**
 
 Rows: cells (first column contains cell barcodes/IDs)
 Columns: mutations (column headers are mutation IDs)
 Values: 1 (present), 0 (absent), NA (missing data)
+
 Example (matrix.txt):
 
 | cell_id | chr1_1000_A_G | chr2_2000_C_T | chr3_3000_G_A |
@@ -179,7 +183,7 @@ Example (matrix.txt):
 | Cell_2 | 0 | 1 | NA |
 | Cell_3 | 1 | 1 | 0 |
 
-##### Output:
+**Output:**
 ```
 output_dir/
 ├── phylo/
@@ -191,18 +195,19 @@ output_dir/
 └── ...
 ```
 
-
 ### scRNA-seq mode
-##### Basic usage:
-```
+
+**Basic usage:**
+```bash
 phylosolid --workdir ./results scrna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
     --barcode barcodes.txt
 ```
-##### With all options:
-```
+
+**With all options:**
+```bash
 phylosolid --workdir ./results scrna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
@@ -217,7 +222,8 @@ phylosolid --workdir ./results scrna \
 ```
 
 ### Running specific steps
-```
+
+```bash
 # Run only feature extraction
 phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps feature_extraction
 
@@ -229,13 +235,15 @@ phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps tree_buildin
 ```
 
 ### Parallel execution
-##### Run feature extraction and tree input in parallel:
-```
+
+```bash
+# Run feature extraction and tree input in parallel
 phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --parallel
 ```
 
 ### scDNA-seq mode
-```
+
+```bash
 phylosolid --workdir ./results scdna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
@@ -244,6 +252,7 @@ phylosolid --workdir ./results scdna \
 ```
 
 ### SpaceTracer mode (Skip feature extraction and classifier)
+
 SpaceTracer mode is designed for users who want to directly build trees without running feature extraction and the classifier step. This mode:
 
 - Skips the feature extraction step entirely
@@ -251,16 +260,17 @@ SpaceTracer mode is designed for users who want to directly build trees without 
 - Uses a dedicated tree building script
 - Accepts the same input parameters as scRNA mode
 
-##### Basic usage:
-```
+**Basic usage:**
+```bash
 phylosolid --workdir ./results spacetracer \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
     --barcode barcodes.txt
 ```
-##### With all options:
-```
+
+**With all options:**
+```bash
 phylosolid --workdir ./results spacetracer \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
@@ -273,10 +283,8 @@ phylosolid --workdir ./results spacetracer \
     --config config/paths.yaml
 ```
 
-
-
-
 ## Input File Formats
+
 ### Mutation list (mutations.txt)
 ```
 chr1_1000_A_G
@@ -284,7 +292,7 @@ chr1_2000_C_T
 chr2_3000_G_A
 chr3_4000_T_C
 ```
-Format: chromosome_position_reference_alt_gene
+Format: `chromosome_position_reference_alt_gene`
 
 ### Barcode file (barcodes.txt)
 ```
@@ -302,7 +310,9 @@ AAACCTGAGAAACCTA-1  Monocyte
 ```
 
 ## Output Structure
+
 After running, results are organized as:
+
 ```
 workdir/
 └── SAMPLE_ID/
@@ -324,21 +334,20 @@ workdir/
     └── pipeline_summary.yaml       # Pipeline execution summary
 ```
 
-
 ## Demo Example
 
-A complete demo with test data is available in the demo/ directory. Below are example commands using the provided test data:
+A complete demo with test data is available in the `demo/` directory:
 
-```
+```bash
 cd demo
 ./run_demo.sh
 ```
 
-##### Run individual steps with demo data
+### Run individual steps with demo data
 
-1. Feature extraction
+**1. Feature extraction**
 
-```
+```bash
 phylosolid --workdir demo/expected_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
@@ -349,8 +358,9 @@ phylosolid --workdir demo/expected_output scrna \
     --steps feature_extraction
 ```
 
-2. Tree input generation
-```
+**2. Tree input generation**
+
+```bash
 phylosolid --workdir demo/expected_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
@@ -360,8 +370,9 @@ phylosolid --workdir demo/expected_output scrna \
     --steps tree_input
 ```
 
-3. Tree building
-```
+**3. Tree building**
+
+```bash
 phylosolid --workdir demo/expected_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
@@ -371,8 +382,9 @@ phylosolid --workdir demo/expected_output scrna \
     --steps tree_building
 ```
 
-##### Complete pipeline with demo data
-```
+**Complete pipeline with demo data**
+
+```bash
 phylosolid --workdir demo/test_output scrna \
     --sample Org4S15D63 \
     --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
@@ -383,41 +395,51 @@ phylosolid --workdir demo/test_output scrna \
     --cellnum 155
 ```
 
+## Troubleshooting
 
-### Troubleshooting
+### Conda not found
+
+If you see "conda: command not found":
+
+1. Download and install Miniconda: https://docs.conda.io/en/latest/miniconda.html
+2. Or install Mambaforge: https://github.com/conda-forge/miniforge#mambaforge
+3. Restart your terminal after installation
 
 ### ANNOVAR not found
+
 If you see "ANNOVAR not found" error:
 
 1. Check that ANNOVAR is installed
 2. Verify the paths in config/paths.yaml
-3. Run phylosolid check-annovar to diagnose
+3. Run `phylosolid check-annovar` to diagnose
 
 ### Reference files not found
+
 If you see errors about missing reference files:
 
-1. Download the resource files package from Figshare using the URL: https://figshare.com/s/2aee3e878688722e9c6f
+1. Download the resource files package from Figshare using the URL above
 2. Ensure files are extracted to the correct location
 3. Verify paths in config/paths.yaml point to the extracted files
 4. Check file permissions (ensure files are readable)
 
 ### Read length mismatch
+
 If you see warnings about read length:
 
 1. Check your BAM file's actual read length:
-```
+```bash
 samtools view your.bam | head -n1 | awk '{print length($10)}'
 ```
-2. Use the --read-len parameter to specify the correct value
+2. Use the `--read-len` parameter to specify the correct value
 
 ### Permission denied errors
+
 Ensure scripts are executable:
-```
+```bash
 chmod +x scripts/scrna/**/*.sh
 chmod +x scripts/scrna/**/*.py
 chmod +x scripts/scrna/**/*.R
 ```
-
 
 ## Citation
 
@@ -443,16 +465,12 @@ purposes upon request.
 PhyloSOLID uses several third-party tools and libraries:
 - **ANNOVAR**: Users need to install ANNOVAR separately (free for academic use, registration required)
 - **R packages**: Various R packages under GPL/MIT licenses
-- **Python packages**: See requirements.txt for details
+- **Python packages**: See environment.yml for details
 
 Please respect the licenses of these dependencies when using PhyloSOLID.
-
 
 ## Contact
 
 For questions and support, please contact:  
 Qing Yang: yangqing@westlake.edu.cn  
-Yanmei Dou: yanmeidou@westlake.edu.cn  
-
-
-
+Yanmei Dou: yanmeidou@westlake.edu.cn
