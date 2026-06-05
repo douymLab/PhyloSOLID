@@ -122,14 +122,14 @@ Example `config/paths.yaml` configuration:
 ```yaml
 # Conda environment (required for Python scripts)
 conda:
-  python: "/path/to/phylosolid_env/bin/python"  # Path to conda Python interpreter
-  env_path: "/path/to/phylosolid_env"           # Path to conda environment
+  python: "/path/to/phylosolid_env/bin/python"
+  env_path: "/path/to/phylosolid_env"
 
 # ANNOVAR configuration
 annovar:
-  script_dir: "/path/to/software/annovar"      # Directory containing annotate_variation.pl
-  humandb: "/path/to/software/annovar/humandb" # Directory with downloaded databases
-  build: "hg38"                                # Genome build (hg38/hg19)
+  script_dir: "/path/to/software/annovar"
+  humandb: "/path/to/software/annovar/humandb"
+  build: "hg38"
 
 # Reference files (paths to extracted files)
 reference:
@@ -140,7 +140,7 @@ reference:
   rna_editing_file: "/path/to/resource/COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed"
 ```
 
-### Step 5: Run the installation script
+### Step 5: Run the environment installation script
 
 ```bash
 bash install.sh
@@ -149,9 +149,15 @@ bash install.sh
 This script will:
 - Create a conda environment with all Python/R dependencies
 - Install the converTree R package from GitHub
-- Install PhyloSOLID in development mode
 
-### Step 6: Verify installation
+### Step 6: Install PhyloSOLID
+
+```bash
+conda activate phylosolid_env
+pip install -e .
+```
+
+### Step 7: Verify installation
 
 ```bash
 # Check if ANNOVAR is properly configured
