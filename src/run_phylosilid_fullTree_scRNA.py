@@ -34,6 +34,16 @@ import numpy as np
 from tqdm import tqdm
 from copy import deepcopy
 
+# Force a non-interactive matplotlib backend for batch pipeline runs.
+os.environ.setdefault("MPLBACKEND", "Agg")
+try:
+    import matplotlib
+
+    matplotlib.use(os.environ["MPLBACKEND"], force=True)
+    matplotlib.interactive(False)
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 from src.data_loader import load_all
@@ -218,6 +228,34 @@ def _format_step6_state(T_current, M_current, root_mutations):
 def log_list_debug(active_logger, label: str, values):
     if active_logger.isEnabledFor(logging.DEBUG):
         active_logger.debug(f"{label}: {values}")
+
+
+def reindex_with_truncated_log(
+    df: pd.DataFrame,
+    target_rows,
+    target_cols,
+    fill_value,
+    active_logger,
+    context_label: str,
+    sample_limit: int = 5,
+) -> pd.DataFrame:
+    missing_rows = pd.Index(target_rows).difference(df.index)
+    missing_cols = pd.Index(target_cols).difference(df.columns)
+    if len(missing_rows) > 0:
+        active_logger.warning(
+            "%s skipped %d missing rows during export alignment; sample=%s",
+            context_label,
+            len(missing_rows),
+            list(missing_rows[:sample_limit]),
+        )
+    if len(missing_cols) > 0:
+        active_logger.warning(
+            "%s skipped %d missing columns during export alignment; sample=%s",
+            context_label,
+            len(missing_cols),
+            list(missing_cols[:sample_limit]),
+        )
+    return df.reindex(index=target_rows, columns=target_cols, fill_value=fill_value)
 
 def main():
     import multiprocessing as mp
@@ -631,6 +669,13 @@ def main():
         logging.info("Skip running dynamic programming ...")
         passtree_mutations = all_mutations
     stage_timer.end("Step5_DP")
+    logger.info(
+        "Step5 mutation summary: scaffold=%d, passtree=%d, onecell=%d, unpassed=%d",
+        len(scaffold_mutations),
+        len(passtree_mutations),
+        len(onecell_mutations) if 'onecell_mutations' in locals() else 0,
+        len(uppasstree_mutations) if 'uppasstree_mutations' in locals() else 0,
+    )
 
 
 
@@ -654,6 +699,12 @@ def main():
 
     attached_mutations = [i for i in passtree_mutations if i not in scaffold_mutations and i not in removed_germline_mutations and i not in removed_artifact_mutations]
     logging.info(f"The number of attached_mutations is: {len(attached_mutations)}")
+    logger.info(
+        "Step6 input mutation samples: scaffold=%s passtree=%s attached=%s",
+        scaffold_mutations[:10],
+        passtree_mutations[:10],
+        attached_mutations[:10],
+    )
     # 2025-10-15 18:26:45,114 [INFO] The number of attached_mutations is: 53
 
     I_attached_selected = I[scaffold_mutations + attached_mutations]
@@ -987,7 +1038,13 @@ def main():
     mutations_on_T_current_fpratio_within_subclone = M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone, mutations_on_T_current_fpratio_within_subclone)
 
-    df_fp_ratio_fpratio_within_subclone, fp_mutations_dict_for_out_subclone_muts_fpratio_within_subclone, fp_mutations_dict_for_in_subclone_muts_fpratio_within_subclone = calculate_fp_ratios_within_subclone(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone, I_attached, mutation_clones_for_subclone)
+    df_fp_ratio_fpratio_within_subclone, fp_mutations_dict_for_out_subclone_muts_fpratio_within_subclone, fp_mutations_dict_for_in_subclone_muts_fpratio_within_subclone = calculate_fp_ratios_within_subclone(
+        M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone,
+        I_attached,
+        mutation_clones_for_subclone,
+        active_logger=logger,
+        stage_name="Step6_5_SubcloneFpRatio",
+    )
     stage_timer.checkpoint(
         "Step6_5_SubcloneFpRatio",
         f"Computed within-subclone FP ratios: mutations={len(df_fp_ratio_fpratio_within_subclone)}, clones={len(mutation_clones_for_subclone)}",
@@ -1275,7 +1332,12 @@ def main():
     mutations_on_T_current_fpfnratio_across_tree = M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree, mutations_on_T_current_fpfnratio_across_tree)
 
-    df_fp_ratio_and_fn_ratio_fpfnratio_across_tree, fp_mutations_dict_fpfnratio_across_tree = calculate_fp_fn_ratios_across_tree(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree, I_attached)
+    df_fp_ratio_and_fn_ratio_fpfnratio_across_tree, fp_mutations_dict_fpfnratio_across_tree = calculate_fp_fn_ratios_across_tree(
+        M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree,
+        I_attached,
+        active_logger=logger,
+        stage_name="Step6_6_TreewideFpFnRatio",
+    )
     stage_timer.checkpoint(
         "Step6_6_TreewideFpFnRatio",
         f"Computed treewide FP/FN ratios: mutations={len(df_fp_ratio_and_fn_ratio_fpfnratio_across_tree)}",
@@ -1528,7 +1590,12 @@ def main():
     mutations_on_T_current_fpfnratio_across_tree_v2 = M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, mutations_on_T_current_fpfnratio_across_tree_v2)
 
-    df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, fp_mutations_dict_fpfnratio_across_tree_v2 = calculate_fp_fn_ratios_across_tree(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, I_attached)
+    df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, fp_mutations_dict_fpfnratio_across_tree_v2 = calculate_fp_fn_ratios_across_tree(
+        M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2,
+        I_attached,
+        active_logger=logger,
+        stage_name="Step6_6_TreewideFpFnRatio",
+    )
     df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2
     #              identifier  fp_ratio  fn_ratio
     # 0     chr17_7578893_G_T  0.362069  0.760684
@@ -1603,7 +1670,13 @@ def main():
     mutations_on_T_current_persitefp = M_for_fp_ratio_persitefp.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_for_fp_ratio_persitefp = split_merged_columns(M_for_fp_ratio_persitefp, mutations_on_T_current_persitefp)
 
-    df_fp_ratio_persitefp = calculate_fp_ratios_persite_within_subclone(M_for_fp_ratio_persitefp, I_attached, mutation_clones_for_persitefp)
+    df_fp_ratio_persitefp = calculate_fp_ratios_persite_within_subclone(
+        M_for_fp_ratio_persitefp,
+        I_attached,
+        mutation_clones_for_persitefp,
+        active_logger=logger,
+        stage_name="Step6_7_PerSiteSubcloneFpRatio",
+    )
     stage_timer.checkpoint(
         "Step6_7_PerSiteSubcloneFpRatio",
         f"Computed per-site FP ratios: mutations={len(df_fp_ratio_persitefp)}, clones={len(mutation_clones_for_persitefp)}",
@@ -1756,7 +1829,13 @@ def main():
     mutations_on_T_current_persitefp = M_for_fp_ratio_persitefp_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_for_fp_ratio_persitefp_v2 = split_merged_columns(M_for_fp_ratio_persitefp_v2, mutations_on_T_current_persitefp)
 
-    df_fp_ratio_persitefp_v2 = calculate_fp_ratios_persite_within_subclone(M_for_fp_ratio_persitefp_v2, I_attached, mutation_clones_for_persitefp_v2)
+    df_fp_ratio_persitefp_v2 = calculate_fp_ratios_persite_within_subclone(
+        M_for_fp_ratio_persitefp_v2,
+        I_attached,
+        mutation_clones_for_persitefp_v2,
+        active_logger=logger,
+        stage_name="Step6_7_PerSiteSubcloneFpRatio",
+    )
     df_fp_ratio_persitefp_v2
     #              identifier subclone_representative  ...  total_ones_in_subclone  subclone_size
     # 0     chr17_7578893_G_T       chr17_7578893_G_T  ...                     241              9
@@ -2099,7 +2178,12 @@ def main():
     M_for_artifact_and_doublet = split_merged_columns(M_for_artifact_and_doublet, mutations_on_T_current_artifact_and_doublet)
 
     # 计算
-    df_fp_ratio_per_mutation_cross_all_cells, df_fp_ratio_per_cell_cross_all_muts, overall_metrics, fp_mutations_dict_cross_all_cells = calculate_comprehensive_fp_metrics(M_for_artifact_and_doublet, I_attached.loc[M_checkpoint_artifact_and_doublet.index])
+    df_fp_ratio_per_mutation_cross_all_cells, df_fp_ratio_per_cell_cross_all_muts, overall_metrics, fp_mutations_dict_cross_all_cells = calculate_comprehensive_fp_metrics(
+        M_for_artifact_and_doublet,
+        I_attached,
+        active_logger=logger,
+        stage_name="Step6_8_GlobalFpRatioAndDoublets",
+    )
     stage_timer.checkpoint(
         "Step6_8_GlobalFpRatioAndDoublets",
         f"Computed global FP metrics: mutations={len(df_fp_ratio_per_mutation_cross_all_cells)}, cells={len(df_fp_ratio_per_cell_cross_all_muts)}",
@@ -2385,7 +2469,14 @@ def main():
     kept_cols = final_cleaned_M_full.columns
 
     # 从 I_full_withNA3 提取
-    final_cleaned_I_full_withNA3 = I_full_withNA3.loc[kept_rows, kept_cols]
+    final_cleaned_I_full_withNA3 = reindex_with_truncated_log(
+        I_full_withNA3,
+        kept_rows,
+        kept_cols,
+        fill_value=3,
+        active_logger=logger,
+        context_label="Step7_1_OutputResults",
+    )
 
     WriteTfile(os.path.join(phylo_dir, "final_cleaned_M_full_basedPivots.filtered_sites_inferred"), 
                final_cleaned_M_full, final_cleaned_M_full.index.tolist(), final_cleaned_M_full.columns.tolist(), judge="yes")
@@ -2549,6 +2640,10 @@ def main():
     ##### Time #####
     finish_time = time.perf_counter()
     stage_timer.end("MainPipeline")
+    logger.info(
+        "===== PIPELINE COMPLETED SUCCESSFULLY ===== elapsed=%.3fs",
+        finish_time - start_time,
+    )
 
 
 
@@ -2556,7 +2651,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    stage_timer.end(
-        "Step6_3_ProcessExternalSubtrees",
-        summary=f"external={len(external_mutations)}, subtree_groups={len(subtree_groups)}, remained={len(remained_mutations)}, {_format_step6_state(T_current, M_current, root_mutations)}",
-    )
