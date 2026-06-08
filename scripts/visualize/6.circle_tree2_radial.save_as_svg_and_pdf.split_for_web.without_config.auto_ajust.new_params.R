@@ -98,14 +98,14 @@ total_flipping_file <- str_c(inputpath, "/df_total_flipping_count.txt")
 # inputpath <- "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_P6_rep1.80true/mutation_integrator/test_100k/"
 # outputpath <- "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_P6_rep1.80true/mutation_integrator/test_100k/circos_plot"
 # annotation_file <- "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/spatial/tree_rebuttal_2508/annofile/P6_combined_annotation_file.txt"
-# tip_label_offset=10
-# tip_label_size=2.5
-# tip_point_size=0.5
-# heatmap_circos_width=0.3
-# heatmap_circos_offset=0.04
-# flipping_point_size=0.2
-# plot_height=12
-# plot_width=18
+tip_label_offset=10
+tip_label_size=2.5
+tip_point_size=0.5
+heatmap_circos_width=0.3
+heatmap_circos_offset=0.04
+flipping_point_size=0.2
+plot_height=12
+plot_width=18
 # inputfile <- str_c(inputpath, "/final_cleaned_I_full_withNA3_for_circosPlot.txt")
 # cffile <- str_c(inputpath, "/final_cleaned_M_lowR_basedPivots.filtered_sites_inferred.CFMatrix")
 # features_file <- str_c(inputpath, "/df_flipping_count_for_each_mut.txt")

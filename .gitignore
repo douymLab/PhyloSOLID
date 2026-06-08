@@ -1,60 +1,195 @@
-# Large binary files
+# ============================================
+# Python build artifacts and cache
+# ============================================
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.egg-info/
+eggs/
+.eggs/
+develop-eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.tgz
+
+# ============================================
+# Testing and coverage
+# ============================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.mypy_cache/
+*.cover
+.coverage.*
+nosetests.xml
+.pytest_cache/
+
+# ============================================
+# Jupyter notebooks (if any)
+# ============================================
+.ipynb_checkpoints/
+*.ipynb
+
+# ============================================
+# Conda environment (don't commit the actual environment)
+# ============================================
+/envs/
+/phylosolid_env/
+*.env
+environment.yaml  # but keep environment.yml
+
+# ============================================
+# Large binary data files (bioinformatics)
+# ============================================
 *.bam
 *.bam.bai
 *.bai
+*.cram
+*.crai
 *.fastq
 *.fq
 *.fastq.gz
 *.fq.gz
 *.vcf
 *.vcf.gz
+*.vcf.idx
+*.bcf
+*.bcf.csi
+*.sam
+*.bed
+*.gff
+*.gff3
+*.gtf
+*.bigwig
+*.bigbed
 
-# Output directories
+# ============================================
+# Compressed archives
+# ============================================
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# ============================================
+# Output directories (pipeline results)
+# ============================================
 /output/
 /work/
 /temp/
+logs/
 *.log
+*.log.*
 *_features/
 *_treeinput/
 *_tree_building/
 *_results/
+01_features/
+02_treeinput/
+03_tree_building/
 
-# Demo data (keep only small test files)
+# ============================================
+# Demo data (only keep small test files, exclude BAMs)
+# ============================================
 demo/input/*/01_rawdata/*.bam
 demo/input/*/01_rawdata/*.bam.bai
+demo/expected_output/*/01_features/
+demo/expected_output/*/02_treeinput/
+demo/expected_output/*/03_tree_building/
+!demo/expected_output/*/*.txt
+!demo/expected_output/*/*.csv
+!demo/expected_output/*/*.pdf
 
-# Config with local paths
+# ============================================
+# Configuration files (keep templates, ignore local paths)
+# ============================================
 config/paths.yaml
 !config/paths.yaml.template
+*.local.yaml
+*.secret.yaml
 
-# Python cache
-__pycache__/
-*.py[cod]
-*.so
-.Python
-
-# IDE
+# ============================================
+# IDE and editor files
+# ============================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.bak
+*.orig
+.editorconfig
+.sublime-*
+.project
+.pydevproject
+.settings/
 
-# OS files
+# ============================================
+# OS generated files
+# ============================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-*.pyc
-__pycache__/
-*.pyo
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.mypy_cache/
-__pycache__/
-*.pyc
-*.pyo
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================
+# R files (temporary)
+# ============================================
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.Rproj.user/
+
+# ============================================
+# Backup files
+# ============================================
+*.backup
+*.old
+*.orig
+*.rej
+
+# ============================================
+# Documentation build
+# ============================================
+docs/_build/
+docs/api/
+site/
+
+# ============================================
+# Docker (if using, keep the Dockerfile but ignore built images)
+# ============================================
+*.sif
+*.img
+docker-compose.override.yaml
+
+# ============================================
+# Misc
+# ============================================
+*.tmp
+*.temp
+*.cache
+.cache/
+.conda/
+.local/

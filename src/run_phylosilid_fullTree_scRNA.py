@@ -1236,11 +1236,11 @@ def main():
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
 
-    logging.info(f"The number of final_external_mutations_fpratio_within_subclone is: {len(final_external_mutations_fpratio_within_subclone)}")
-    stage_timer.checkpoint(
-        "Step6_5_SubcloneFpRatio",
-        f"Reattached within-subclone candidates: external_after_retry={len(final_external_mutations_fpratio_within_subclone)}",
-    )
+        logging.info(f"The number of final_external_mutations_fpratio_within_subclone is: {len(final_external_mutations_fpratio_within_subclone)}")
+        stage_timer.checkpoint(
+            "Step6_5_SubcloneFpRatio",
+            f"Reattached within-subclone candidates: external_after_retry={len(final_external_mutations_fpratio_within_subclone)}",
+        )
 
     T_test = copy.deepcopy(T_current)
     M_test = M_current.copy()
@@ -1394,9 +1394,11 @@ def main():
     earlist_mutation_of_ordered_branch_groups_for_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone = list(ordered_branch_groups_for_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone.keys())
 
     # 找到 fp_ratio>=0.2 的位点导致发生 fp 的 mutations
-    filtered_fp_mutations_dict_by_fpfnratio_across_tree = {mut: other_muts 
-        for mut, other_muts in fp_mutations_dict_fpfnratio_across_tree.items() 
-        if mut in rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone}
+    filtered_fp_mutations_dict_by_fpfnratio_across_tree = {
+        mut: other_muts
+        for mut, other_muts in fp_mutations_dict_fpfnratio_across_tree.items()
+        if mut in rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone
+    }
 
     # 找到 fp_ratio>=0.2 的位点的 daughter mutations
     nodes_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone = list(set([find_mutation_column(mutation, M_current.columns) for mutation in rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone]))

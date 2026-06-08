@@ -129,52 +129,52 @@ if [ $EXIT_CODE -ne 0 ]; then
     exit $EXIT_CODE
 fi
 
-################################################################
-# 2. Copy and convert results
-echo "##### Processing results"
+# ################################################################
+# # 2. Copy and convert results
+# echo "##### Processing results"
 
-# Create PhyloSOLID results directory
-mkdir -p ${OUTPUT_PATH}/PhyloSOLID
+# # Create PhyloSOLID results directory
+# mkdir -p ${OUTPUT_PATH}/PhyloSOLID
 
-# Try to copy CFMatrix from scaffold_builder (most likely location)
-CFMATRIX_SOURCE="${OUTPUT_PATH}/scaffold_builder/phylo_scaffold_tree/final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred.CFMatrix"
-CFMATRIX_DEST="${OUTPUT_PATH}/PhyloSOLID/cell_by_mut.CFMatrix"
+# # Try to copy CFMatrix from scaffold_builder (most likely location)
+# CFMATRIX_SOURCE="${OUTPUT_PATH}/scaffold_builder/phylo_scaffold_tree/final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred.CFMatrix"
+# CFMATRIX_DEST="${OUTPUT_PATH}/PhyloSOLID/cell_by_mut.CFMatrix"
 
-if [ -f "$CFMATRIX_SOURCE" ]; then
-    cp ${CFMATRIX_SOURCE} ${CFMATRIX_DEST}
-    echo "✓ CFMatrix copied from scaffold_builder"
-else
-    # Try alternative location
-    CFMATRIX_SOURCE="${OUTPUT_PATH}/mutation_integrator/phylo/final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix"
-    if [ -f "$CFMATRIX_SOURCE" ]; then
-        cp ${CFMATRIX_SOURCE} ${CFMATRIX_DEST}
-        echo "✓ CFMatrix copied from mutation_integrator"
-    else
-        echo "Warning: CFMatrix file not found in expected locations"
-    fi
-fi
+# if [ -f "$CFMATRIX_SOURCE" ]; then
+#     cp ${CFMATRIX_SOURCE} ${CFMATRIX_DEST}
+#     echo "✓ CFMatrix copied from scaffold_builder"
+# else
+#     # Try alternative location
+#     CFMATRIX_SOURCE="${OUTPUT_PATH}/mutation_integrator/phylo/final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix"
+#     if [ -f "$CFMATRIX_SOURCE" ]; then
+#         cp ${CFMATRIX_SOURCE} ${CFMATRIX_DEST}
+#         echo "✓ CFMatrix copied from mutation_integrator"
+#     else
+#         echo "Warning: CFMatrix file not found in expected locations"
+#     fi
+# fi
 
-# Convert tree format using R script
-CONVERT_SCRIPT="${SCRIPT_DIR}/convert_PhyloSOLID_tree.R"
-if [ -f "$CONVERT_SCRIPT" ]; then
-    if [ -f "$CFMATRIX_DEST" ]; then
-        Rscript ${CONVERT_SCRIPT} \
-            ${CFMATRIX_DEST} \
-            ${OUTPUT_PATH}/PhyloSOLID/celltree.newick
-        echo "✓ Tree format converted"
-    else
-        echo "Warning: CFMatrix not found, skipping tree conversion"
-    fi
-else
-    echo "Warning: convert_PhyloSOLID_tree.R not found at ${CONVERT_SCRIPT}"
-fi
+# # Convert tree format using R script
+# CONVERT_SCRIPT="${SCRIPT_DIR}/convert_PhyloSOLID_tree.R"
+# if [ -f "$CONVERT_SCRIPT" ]; then
+#     if [ -f "$CFMATRIX_DEST" ]; then
+#         Rscript ${CONVERT_SCRIPT} \
+#             ${CFMATRIX_DEST} \
+#             ${OUTPUT_PATH}/PhyloSOLID/celltree.newick
+#         echo "✓ Tree format converted"
+#     else
+#         echo "Warning: CFMatrix not found, skipping tree conversion"
+#     fi
+# else
+#     echo "Warning: convert_PhyloSOLID_tree.R not found at ${CONVERT_SCRIPT}"
+# fi
 
-# Check final tree file
-if [ -f "${OUTPUT_PATH}/PhyloSOLID/celltree.newick" ]; then
-    echo "✓ Tree file created: ${OUTPUT_PATH}/PhyloSOLID/celltree.newick"
-else
-    echo "Warning: Tree file not created"
-fi
+# # Check final tree file
+# if [ -f "${OUTPUT_PATH}/PhyloSOLID/celltree.newick" ]; then
+#     echo "✓ Tree file created: ${OUTPUT_PATH}/PhyloSOLID/celltree.newick"
+# else
+#     echo "Warning: Tree file not created"
+# fi
 
 echo "===== Tree building completed ====="
 
