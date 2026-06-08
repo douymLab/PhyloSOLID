@@ -1934,7 +1934,7 @@ def main():
     # -----------------------------
     # Step 6.8 计算 parent muts 中的 intersection/FN_flip per mutations，最后找到一些要重挂的突变
     # -----------------------------
-    logger.info("===== Step6.9: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some mutations that need to be reattached ...")
+    logger.info("===== Step6.8: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some mutations that need to be reattached ...")
     stage_timer.start("Step6_9_ParentMutationReattach")
 
     T_checkpoint_outgroup = copy.deepcopy(T_current)
@@ -1969,8 +1969,8 @@ def main():
             (df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation['intersection_cell_ratio_on_mutation'] <= intersection_cell_ratio_on_mutation_cutoff)))]['mutation'].tolist()
 
     outgroup_mutations_but_backbone = [i for i in outgroup_mutations if i not in list(set(expanded_mutations_of_current_backbone_nodes))]
-    logger.info(f"Step6.9 outgroup mutations to reattach: {len(outgroup_mutations_but_backbone)}")
-    log_list_debug(logger, "Step6.9 outgroup mutations to reattach", outgroup_mutations_but_backbone)
+    logger.info(f"Step6.8 outgroup mutations to reattach: {len(outgroup_mutations_but_backbone)}")
+    log_list_debug(logger, "Step6.8 outgroup mutations to reattach", outgroup_mutations_but_backbone)
     stage_timer.checkpoint(
         "Step6_9_ParentMutationReattach",
         f"Selected outgroup rehang candidates: total={len(outgroup_mutations_but_backbone)}",
@@ -1996,7 +1996,7 @@ def main():
         if len(sorted_rehanged_mutations_all_outgroup) > 0:
         
             T_removed_outgroup, M_removed_outgroup = remove_mutations_from_tree_and_matrix(T_checkpoint_outgroup, M_checkpoint_outgroup, sorted_rehanged_mutations_all_outgroup)
-            log_tree_debug(logger, T_removed_outgroup, "Step6.9 tree after removing outgroup candidates")
+            log_tree_debug(logger, T_removed_outgroup, "Step6.8 tree after removing outgroup candidates")
             M_removed_outgroup_modified = process_matrices_by_removed_some_mutations_from_tree(M_removed_outgroup, I_attached)[1]
         
             logger.info(f"The shape of removed_tree to be refined is : {M_removed_outgroup.shape}")    
@@ -2088,7 +2088,7 @@ def main():
     # -----------------------------
     # Step 6.9 计算 parent muts 中的 intersection/FN_flip per mutations，最后找到一些找不到合适的突变的可以删除的 cells
     # -----------------------------
-    logger.info("===== Step6.10: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some cells that cannot find suitable mutations and can be deleted ...")
+    logger.info("===== Step6.9: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some cells that cannot find suitable mutations and can be deleted ...")
     stage_timer.start("Step6_10_RemoveUnsuitableCells")
 
     T_checkpoint_wireless_cells = copy.deepcopy(T_current)
@@ -2153,7 +2153,7 @@ def main():
 
     M_current = M_current.drop(to_be_removed_cells, errors='ignore')
 
-    logger.info(f"Step6.10 matrix shape after removing unsuitable cells: {M_current.shape}")
+    logger.info(f"Step6.9 matrix shape after removing unsuitable cells: {M_current.shape}")
     stage_timer.end(
         "Step6_10_RemoveUnsuitableCells",
         summary=f"removed_cells={len(to_be_removed_cells)}, {_format_step6_state(T_current, M_current, root_mutations)}",
@@ -2166,7 +2166,7 @@ def main():
     # -----------------------------
     # Step 6.10 计算 cross all cells 的 fp_ratio_per_mutation 和 cross all mutations 的 fp_ratio_per_cell，鉴定并去掉 artifact mutations 和 doublet cells
     # -----------------------------
-    logger.info("===== Step6.8: Caculate fp_ratio_per_mutation_cross_all_cells and fp_ratio_per_cell_cross_all_muts ...")
+    logger.info("===== Step6.10: Caculate fp_ratio_per_mutation_cross_all_cells and fp_ratio_per_cell_cross_all_muts ...")
     stage_timer.start("Step6_8_GlobalFpRatioAndDoublets")
 
     ##### 计算 T_current 中每一个 mutations 的 fp_ratio_per_mutation_cross_all_cells 和 fp_ratio_per_cell_cross_all_muts
@@ -2256,8 +2256,8 @@ def main():
     # rehanged_fp_mutations_cross_all_cells = df_fp_ratio_per_mutation_cross_all_cells[df_fp_ratio_per_mutation_cross_all_cells['fp_cells_ratio_per_mutation'] >= fp_ratio_per_mutation_cross_all_cells_cutoff]['identifier'].tolist()
     rehanged_fp_mutations_cross_all_cells = df_fp_ratio_per_mutation_cross_all_cells[(df_fp_ratio_per_mutation_cross_all_cells['fp_cells_ratio_per_mutation'] >= fp_ratio_per_mutation_cross_all_cells_cutoff) & (df_fp_ratio_per_mutation_cross_all_cells['fp_cells_count'] >= fp_count_per_mutation_cross_all_cells_cutoff)]['identifier'].tolist()
     rehanged_fp_mutations_cross_all_cells_but_backbone = [i for i in rehanged_fp_mutations_cross_all_cells if i not in list(set(expanded_mutations_of_current_backbone_nodes+scaffold_mutations))]
-    logger.info(f"Step6.8 global FP candidate rehang mutations: {len(rehanged_fp_mutations_cross_all_cells_but_backbone)}")
-    log_list_debug(logger, "Step6.8 global FP candidate rehang mutations", rehanged_fp_mutations_cross_all_cells_but_backbone)
+    logger.info(f"Step6.10 global FP candidate rehang mutations: {len(rehanged_fp_mutations_cross_all_cells_but_backbone)}")
+    log_list_debug(logger, "Step6.10 global FP candidate rehang mutations", rehanged_fp_mutations_cross_all_cells_but_backbone)
     stage_timer.checkpoint(
         "Step6_8_GlobalFpRatioAndDoublets",
         f"Selected global FP rebuild candidates: primary={len(rehanged_fp_mutations_cross_all_cells_but_backbone)}",
@@ -2325,7 +2325,7 @@ def main():
     if len(remove_mutations_for_rebuild) > 0:
     
         T_removed_cross_all_cells, M_removed_cross_all_cells = remove_mutations_from_tree_and_matrix(T_checkpoint_artifact_and_doublet, M_checkpoint_artifact_and_doublet, remove_mutations_for_rebuild)
-        log_tree_debug(logger, T_removed_cross_all_cells, "Step6.8 tree after removing global FP candidates")
+        log_tree_debug(logger, T_removed_cross_all_cells, "Step6.10 tree after removing global FP candidates")
         logger.info(f"The shape of removed_tree to be refined is : {M_removed_cross_all_cells.shape}")    
     
         T_current = copy.deepcopy(T_removed_cross_all_cells)
@@ -2369,7 +2369,7 @@ def main():
 
     M_current = M_current.drop(to_be_removed_cells, errors='ignore')
 
-    logger.info(f"Step6.8 matrix shape after removing likely doublets: {M_current.shape}")
+    logger.info(f"Step6.10 matrix shape after removing likely doublets: {M_current.shape}")
     stage_timer.end(
         "Step6_8_GlobalFpRatioAndDoublets",
         summary=f"rebuild_mutations={len(remove_mutations_for_rebuild)}, removed_cells={len(to_be_removed_cells)}, {_format_step6_state(T_current, M_current, root_mutations)}",
