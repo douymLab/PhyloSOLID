@@ -924,6 +924,8 @@ def find_intersection_positions_within_tree_directly(
     matrix,
     min_overlap=1,
     intersection_nodes=None,
+    tree_parent_dict=None,
+    node_lookup=None,
 ):
     """
     基于交集分析的优化版本，直接找到相关位置
@@ -941,14 +943,16 @@ def find_intersection_positions_within_tree_directly(
         return []  # 没有交集，返回空列表
     
     # 2. 构建树的父子关系字典
-    tree_parent_dict = build_tree_parent_dict(T_current)
+    if tree_parent_dict is None:
+        tree_parent_dict = build_tree_parent_dict(T_current)
     
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes(intersection_nodes, tree_parent_dict)
     
     logger.debug(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
 
-    node_lookup = {node.name: node for node in T_current.traverse()}
+    if node_lookup is None:
+        node_lookup = {node.name: node for node in T_current.traverse()}
 
     # 4. 只在这些相关节点上生成候选位置
     candidate_positions = []
@@ -1165,7 +1169,17 @@ def build_parent_dict_from_candidates(candidate_positions):
     
 #     return intersect_muts
 
-def find_all_intersect_muts_from_tree_by_matrix(tree, matrix, target_mut, min_overlap=1, matrix_positive=None):
+def find_all_intersect_muts_from_tree_by_matrix(
+    tree,
+    matrix,
+    target_mut,
+    min_overlap=1,
+    matrix_positive=None,
+    matrix_positive_values=None,
+    matrix_positive_col_to_idx=None,
+    tree_nodes=None,
+    node_to_mutations=None,
+):
     """
     返回所有与 target_mut 在 matrix 中有至少 min_overlap 个细胞共同出现的树节点集合。
     """
@@ -1173,30 +1187,47 @@ def find_all_intersect_muts_from_tree_by_matrix(tree, matrix, target_mut, min_ov
     if target_mut not in matrix.columns:
         return intersect_nodes
 
-    if matrix_positive is None:
+    if matrix_positive is None and matrix_positive_values is None:
         matrix_positive = matrix.reindex(index=matrix.index).eq(1).fillna(False)
+    if matrix_positive_values is None:
+        matrix_positive_values = matrix_positive.to_numpy(dtype=bool, copy=False)
+    if matrix_positive_col_to_idx is None:
+        if matrix_positive is None:
+            matrix_positive_col_to_idx = {col: idx for idx, col in enumerate(matrix.columns)}
+        else:
+            matrix_positive_col_to_idx = {
+                col: idx for idx, col in enumerate(matrix_positive.columns)
+            }
 
-    target_positive = matrix_positive[target_mut]
+    target_idx = matrix_positive_col_to_idx.get(target_mut)
+    if target_idx is None:
+        return intersect_nodes
+
+    target_positive = matrix_positive_values[:, target_idx]
     if not bool(target_positive.any()):
         return intersect_nodes
 
-    overlap_counts = matrix_positive.loc[target_positive].sum(axis=0)
+    overlap_counts = matrix_positive_values[target_positive].sum(axis=0, dtype=np.int64)
     
     # 遍历所有节点（除 ROOT）
-    for node in tree.all_nodes():
-        if node.name == "ROOT":
+    nodes_to_scan = tree_nodes if tree_nodes is not None else tree.all_nodes()
+    for node in nodes_to_scan:
+        node_name = node.name if hasattr(node, "name") else node
+        if node_name == "ROOT":
             continue
         
         has_intersection = False
-        
+        mutations_on_node = node_to_mutations.get(node_name, ()) if node_to_mutations is not None else tuple(node_name.split("|"))
+
         # 检查节点中的每个突变是否与目标突变有交集
-        for mut in node.name.split("|"):
+        for mut in mutations_on_node:
             if mut == target_mut:
                 continue  # 跳过自身
             
-            if mut not in overlap_counts.index:
+            mut_idx = matrix_positive_col_to_idx.get(mut)
+            if mut_idx is None:
                 continue  # 确保突变存在于矩阵中
-            N11 = int(overlap_counts[mut])
+            N11 = int(overlap_counts[mut_idx])
             
             # 如果任何一个突变有足够的共现，就标记这个节点
             if N11 >= min_overlap:
@@ -1205,7 +1236,7 @@ def find_all_intersect_muts_from_tree_by_matrix(tree, matrix, target_mut, min_ov
         
         # 如果节点中有任何突变与目标突变有交集，就添加整个节点
         if has_intersection:
-            intersect_nodes.add(node.name)
+            intersect_nodes.add(node_name)
     
     return intersect_nodes
 
@@ -1518,7 +1549,7 @@ def select_best_clone(detailed_scores):
 
 def compute_bayesian_penalty_for_positions_consider_ROOT(
     new_mut, selected_positions, T_current, M_current, I_selected, P_selected, parent_dict, intersection_nodes, 
-    ω_NA=0.001, fnfp_ratio=0.1, φ=1
+    ω_NA=0.001, fnfp_ratio=0.1, φ=1, tree_children_cache=None, node_count=None
 ):
     import pandas as pd
     import numpy as np
@@ -1544,8 +1575,6 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
     i_selected_cache = {new_mut: new_mut_input_vector}
     i_selected_array_cache = {new_mut: new_mut_input_array}
     p_selected_cache = {new_mut: P_selected[new_mut]}
-    matrix_columns = M_current.columns
-    matrix_columns_set = set(matrix_columns)
 
     def get_m_current_bool(column_name):
         cached = m_current_bool_cache.get(column_name)
@@ -1603,10 +1632,11 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             full_chain_cache[anchor_name] = cached
         return cached
 
-    tree_children_cache = {
-        node.name: [child.name for child in node.children]
-        for node in T_current.traverse()
-    }
+    if tree_children_cache is None:
+        tree_children_cache = {
+            node.name: [child.name for child in node.children]
+            for node in T_current.traverse()
+        }
 
     def get_i_selected_vector(mutation):
         cached = i_selected_cache.get(mutation)
@@ -1634,7 +1664,7 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
     na_ratio = float(np.isnan(new_mut_input_array).mean())
     mut_ratio = float(np.nan_to_num(new_mut_input_array, nan=0.0).mean())
     mut_cells = set(matrix_index[new_mut_input_array == 1])
-    N_nodes_beforeT = len(T_current.all_nodes())
+    N_nodes_beforeT = node_count if node_count is not None else len(T_current.all_nodes())
     
     for idx, pos in enumerate(selected_positions):
         placement_type = pos['placement_type']
@@ -3236,12 +3266,56 @@ def get_mutation_clone_and_backbone_node_as_keys_by_first_level(root: TreeNode) 
     return clone_dict
 
 
+def _build_attach_tree_state(root: TreeNode) -> Dict[str, Any]:
+    """
+    为 Step6 挂树阶段构建一次性树状态缓存，减少单个 mutation 内的重复遍历。
+    """
+    traversed_nodes = list(root.traverse())
+    node_lookup = {}
+    tree_parent_dict = {}
+    tree_children_cache = {}
+    node_to_mutations = {}
+
+    for node in traversed_nodes:
+        node_lookup[node.name] = node
+        tree_children_cache[node.name] = [child.name for child in node.children]
+        node_to_mutations[node.name] = tuple(node.name.split("|")) if node.name != "ROOT" else ("ROOT",)
+        for child in node.children:
+            tree_parent_dict[child.name] = node.name
+
+    node_list_under_backbone_nodes = {}
+    mutation_list_under_backbone_nodes = {}
+    for child in root.children:
+        node_names = []
+        mutation_names = []
+        for node in child.traverse():
+            node_names.append(node.name)
+            mutation_names.extend(node_to_mutations[node.name])
+        node_list_under_backbone_nodes[child.name] = node_names
+        mutation_list_under_backbone_nodes[child.name] = mutation_names
+
+    return {
+        "tree_nodes": traversed_nodes,
+        "node_lookup": node_lookup,
+        "tree_parent_dict": tree_parent_dict,
+        "tree_children_cache": tree_children_cache,
+        "node_to_mutations": node_to_mutations,
+        "node_list_under_backbone_nodes": node_list_under_backbone_nodes,
+        "mutation_list_under_backbone_nodes": mutation_list_under_backbone_nodes,
+        "node_count": len(traversed_nodes),
+    }
+
+
 def calculate_intersection_counts_under_backbone_nodes(
     mutation_list_under_backbone_nodes,
     M_current,
     I_attached,
     new_mut,
     i_attached_positive=None,
+    i_attached_positive_values=None,
+    i_attached_positive_col_to_idx=None,
+    backbone_mutation_indices=None,
+    backbone_positive_masks=None,
 ):
     """
     计算new_mut与每个backbone node下mutation list的共现数量
@@ -3263,27 +3337,46 @@ def calculate_intersection_counts_under_backbone_nodes(
     intersection_counts = {}
     if i_attached_positive is None:
         i_attached_positive = I_attached.reindex(index=M_current.index).eq(1).fillna(False)
-    if new_mut not in i_attached_positive.columns:
+    if i_attached_positive_values is None:
+        i_attached_positive_values = i_attached_positive.to_numpy(dtype=bool, copy=False)
+    if i_attached_positive_col_to_idx is None:
+        i_attached_positive_col_to_idx = {
+            col: idx for idx, col in enumerate(i_attached_positive.columns)
+        }
+    new_mut_idx = i_attached_positive_col_to_idx.get(new_mut)
+    if new_mut_idx is None:
         raise ValueError(f"突变 {new_mut} 不在 I_attached 数据框中")
-    new_mut_positive_mask = i_attached_positive[new_mut]
+    new_mut_positive_mask = i_attached_positive_values[:, new_mut_idx]
     
     for backbone_node, mutation_list in mutation_list_under_backbone_nodes.items():
         if backbone_node not in M_current.columns:
             intersection_counts[backbone_node] = 0
             continue
 
-        backbone_positive_mask = M_current[backbone_node].fillna(0).astype(bool)
+        if backbone_positive_masks is not None and backbone_node in backbone_positive_masks:
+            backbone_positive_mask = backbone_positive_masks[backbone_node]
+        else:
+            backbone_positive_mask = _coerce_bool_array(M_current[backbone_node], M_current.index)
+
         selected_rows = backbone_positive_mask & new_mut_positive_mask
         if not bool(selected_rows.any()):
             intersection_counts[backbone_node] = 0
             continue
 
-        valid_mutations = [mutation for mutation in mutation_list if mutation in i_attached_positive.columns]
-        if not valid_mutations:
+        if backbone_mutation_indices is not None and backbone_node in backbone_mutation_indices:
+            valid_indices = backbone_mutation_indices[backbone_node]
+        else:
+            valid_indices = [
+                i_attached_positive_col_to_idx[mutation]
+                for mutation in mutation_list
+                if mutation in i_attached_positive_col_to_idx
+            ]
+
+        if not valid_indices:
             intersection_counts[backbone_node] = 0
             continue
 
-        total_intersection = int(i_attached_positive.loc[selected_rows, valid_mutations].to_numpy().sum())
+        total_intersection = int(i_attached_positive_values[selected_rows][:, valid_indices].sum())
         intersection_counts[backbone_node] = total_intersection
     
     return intersection_counts
@@ -3331,13 +3424,25 @@ def find_best_backbone_for_new_mutation(
     I_attached,
     new_mut,
     i_attached_positive=None,
+    i_attached_positive_values=None,
+    i_attached_positive_col_to_idx=None,
+    backbone_mutation_indices=None,
+    backbone_positive_masks=None,
 ):
     """
     完整函数：计算共现数量并找到最佳backbone node
     """
     # 第一步：计算共现数量
     intersection_counts = calculate_intersection_counts_under_backbone_nodes(
-        mutation_list_under_backbone_nodes, M_current, I_attached, new_mut, i_attached_positive=i_attached_positive
+        mutation_list_under_backbone_nodes,
+        M_current,
+        I_attached,
+        new_mut,
+        i_attached_positive=i_attached_positive,
+        i_attached_positive_values=i_attached_positive_values,
+        i_attached_positive_col_to_idx=i_attached_positive_col_to_idx,
+        backbone_mutation_indices=backbone_mutation_indices,
+        backbone_positive_masks=backbone_positive_masks,
     )
     
     # 第二步：找到最佳backbone node
@@ -4224,6 +4329,10 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
     logger.info(f"[TIMER] START {stage_name}")
     matrix_index = M_current.index
     i_attached_positive = I_attached.reindex(index=matrix_index).eq(1).fillna(False)
+    i_attached_positive_values = i_attached_positive.to_numpy(dtype=bool, copy=False)
+    i_attached_positive_col_to_idx = {
+        col: idx for idx, col in enumerate(i_attached_positive.columns)
+    }
     phase_totals = {
         "backbone_selection": 0.0,
         "intersection_scan": 0.0,
@@ -4232,23 +4341,49 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         "tree_update": 0.0,
         "conflict_check": 0.0,
     }
+
+    tree_state = None
+    tree_state_dirty = True
+
+    def ensure_tree_state():
+        nonlocal tree_state, tree_state_dirty
+        if tree_state is None or tree_state_dirty:
+            tree_state = _build_attach_tree_state(T_current)
+            backbone_positive_masks = {}
+            backbone_mutation_indices = {}
+            for backbone_node, mutation_list in tree_state["mutation_list_under_backbone_nodes"].items():
+                if backbone_node in M_current.columns:
+                    backbone_positive_masks[backbone_node] = _coerce_bool_array(
+                        M_current[backbone_node],
+                        matrix_index,
+                    )
+                backbone_mutation_indices[backbone_node] = [
+                    i_attached_positive_col_to_idx[mutation]
+                    for mutation in mutation_list
+                    if mutation in i_attached_positive_col_to_idx
+                ]
+            tree_state["backbone_positive_masks"] = backbone_positive_masks
+            tree_state["backbone_mutation_indices"] = backbone_mutation_indices
+            tree_state_dirty = False
+        return tree_state
     
     for idx, new_mut in enumerate(tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"), start=1):
-        
+        current_tree_state = ensure_tree_state()
+
         # 确定 new_mut 应该属于哪一个 backbone clone
         phase_start = time.perf_counter()
-        mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
-        node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-        # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-        # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
         best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
-            mutation_list_under_backbone_nodes,
+            current_tree_state["mutation_list_under_backbone_nodes"],
             M_current,
             I_attached,
             new_mut,
             i_attached_positive=i_attached_positive,
+            i_attached_positive_values=i_attached_positive_values,
+            i_attached_positive_col_to_idx=i_attached_positive_col_to_idx,
+            backbone_mutation_indices=current_tree_state["backbone_mutation_indices"],
+            backbone_positive_masks=current_tree_state["backbone_positive_masks"],
         )
-        assigned_nodes = node_list_under_backbone_nodes[best_backbone]
+        assigned_nodes = current_tree_state["node_list_under_backbone_nodes"].get(best_backbone, [])
         phase_totals["backbone_selection"] += time.perf_counter() - phase_start
         
         # 找到交集节点
@@ -4258,6 +4393,10 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             I_attached,
             new_mut,
             matrix_positive=i_attached_positive,
+            matrix_positive_values=i_attached_positive_values,
+            matrix_positive_col_to_idx=i_attached_positive_col_to_idx,
+            tree_nodes=current_tree_state["tree_nodes"],
+            node_to_mutations=current_tree_state["node_to_mutations"],
         )
         phase_totals["intersection_scan"] += time.perf_counter() - phase_start
         if len(intersection_nodes) == 0:
@@ -4273,6 +4412,8 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             I_attached,
             min_overlap=1,
             intersection_nodes=intersection_nodes,
+            tree_parent_dict=current_tree_state["tree_parent_dict"],
+            node_lookup=current_tree_state["node_lookup"],
         )
         parent_dict = build_parent_dict_from_candidates(potential_positions)
         selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
@@ -4286,7 +4427,11 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         phase_start = time.perf_counter()
         final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_consider_ROOT(
             new_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
-            ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
+            ω_NA=ω_NA,
+            fnfp_ratio=fnfp_ratio,
+            φ=φ,
+            tree_children_cache=current_tree_state["tree_children_cache"],
+            node_count=current_tree_state["node_count"],
         )
         phase_totals["position_scoring"] += time.perf_counter() - phase_start
         
@@ -4303,6 +4448,7 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             M_current[new_mut] = final_imputed_vec
             T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
         placed_mutations += 1
+        tree_state_dirty = True
         phase_totals["tree_update"] += time.perf_counter() - phase_start
         
         _log_tree_diagnostics(logger, T_current, f"Updated Step6 tree after mutation {new_mut}")

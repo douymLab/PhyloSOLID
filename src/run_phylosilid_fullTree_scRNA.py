@@ -227,35 +227,48 @@ def _format_step6_state(T_current, M_current, root_mutations):
 
 def log_list_debug(active_logger, label: str, values):
     if active_logger.isEnabledFor(logging.DEBUG):
-        active_logger.debug(f"{label}: {values}")
+        values = list(values)
+        sample = values[:20]
+        suffix = "" if len(values) <= 20 else f" ... (+{len(values) - 20} more)"
+        active_logger.debug(f"{label}: {sample}{suffix}")
 
 
 def reindex_with_truncated_log(
-    df: pd.DataFrame,
+    frame: pd.DataFrame,
     target_rows,
-    target_cols,
-    fill_value,
-    active_logger,
-    context_label: str,
-    sample_limit: int = 5,
-) -> pd.DataFrame:
-    missing_rows = pd.Index(target_rows).difference(df.index)
-    missing_cols = pd.Index(target_cols).difference(df.columns)
-    if len(missing_rows) > 0:
+    target_cols=None,
+    fill_value=np.nan,
+    active_logger=None,
+    context_label="Reindex",
+):
+    if active_logger is None:
+        active_logger = logger
+
+    missing_rows = [row for row in target_rows if row not in frame.index]
+    if missing_rows:
         active_logger.warning(
-            "%s skipped %d missing rows during export alignment; sample=%s",
+            "%s skipped %d rows missing from source; sample=%s",
             context_label,
             len(missing_rows),
-            list(missing_rows[:sample_limit]),
+            missing_rows[:5],
         )
-    if len(missing_cols) > 0:
-        active_logger.warning(
-            "%s skipped %d missing columns during export alignment; sample=%s",
-            context_label,
-            len(missing_cols),
-            list(missing_cols[:sample_limit]),
-        )
-    return df.reindex(index=target_rows, columns=target_cols, fill_value=fill_value)
+
+    result = frame.reindex(target_rows)
+
+    if target_cols is not None:
+        missing_cols = [col for col in target_cols if col not in result.columns]
+        if missing_cols:
+            active_logger.warning(
+                "%s skipped %d cols missing from source; sample=%s",
+                context_label,
+                len(missing_cols),
+                missing_cols[:5],
+            )
+        result = result.reindex(columns=target_cols)
+
+    if fill_value is not np.nan:
+        result = result.fillna(fill_value)
+    return result
 
 def main():
     import multiprocessing as mp
@@ -789,13 +802,15 @@ def main():
         f"Completed initial attach: attached={len(sorted_attached_mutations)}, external={len(external_mutations_of_attached_on_scaffold)}",
     )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
     stage_timer.end(
         "Step6_1_FirstAttach",
@@ -837,13 +852,15 @@ def main():
         f"Retried external mutations: input={len(sorted_external_mutations_of_attached_on_scaffold)}, remaining={len(final_external_mutations_of_attached_on_scaffold)}",
     )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
     stage_timer.end(
         "Step6_2_ReattachExternal",
@@ -889,13 +906,15 @@ def main():
             f"Processed second-pass external mutations: input={len(sorted_external_mutations)}, remaining={len(final_external_mutations)}",
         )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
     ##### 最后还没挂上的突变只能上 ROOT 了
     logging.info(f"The number of final_external_mutations is: {len(final_external_mutations)}")
@@ -924,13 +943,15 @@ def main():
             f"Built external subtrees: groups={len(subtree_groups)}, remained={len(remained_mutations)}",
         )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
 
 
@@ -967,13 +988,15 @@ def main():
 
     logging.info(f"The number of final_remained_mutations is: {len(final_remained_mutations)}")
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
     stage_timer.end(
         "Step6_4_FinalRemainReattach",
@@ -1203,13 +1226,15 @@ def main():
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
 
 
@@ -1236,19 +1261,21 @@ def main():
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
 
-        logging.info(f"The number of final_external_mutations_fpratio_within_subclone is: {len(final_external_mutations_fpratio_within_subclone)}")
-        stage_timer.checkpoint(
-            "Step6_5_SubcloneFpRatio",
-            f"Reattached within-subclone candidates: external_after_retry={len(final_external_mutations_fpratio_within_subclone)}",
-        )
+    logging.info(f"The number of final_external_mutations_fpratio_within_subclone is: {len(final_external_mutations_fpratio_within_subclone)}")
+    stage_timer.checkpoint(
+        "Step6_5_SubcloneFpRatio",
+        f"Reattached within-subclone candidates: external_after_retry={len(final_external_mutations_fpratio_within_subclone)}",
+    )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
 
 
@@ -1394,11 +1421,9 @@ def main():
     earlist_mutation_of_ordered_branch_groups_for_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone = list(ordered_branch_groups_for_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone.keys())
 
     # 找到 fp_ratio>=0.2 的位点导致发生 fp 的 mutations
-    filtered_fp_mutations_dict_by_fpfnratio_across_tree = {
-        mut: other_muts
-        for mut, other_muts in fp_mutations_dict_fpfnratio_across_tree.items()
-        if mut in rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone
-    }
+    filtered_fp_mutations_dict_by_fpfnratio_across_tree = {mut: other_muts 
+        for mut, other_muts in fp_mutations_dict_fpfnratio_across_tree.items() 
+        if mut in rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone}
 
     # 找到 fp_ratio>=0.2 的位点的 daughter mutations
     nodes_rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone = list(set([find_mutation_column(mutation, M_current.columns) for mutation in rehanged_fp_mutations_by_fpfnratio_across_tree_but_backbone]))
@@ -1489,13 +1514,15 @@ def main():
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
 
 
@@ -1572,13 +1599,15 @@ def main():
         f"Reattached treewide FP/FN candidates: external_after_retry={len(final_external_mutations_fpfnratio_across_tree)}",
     )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1184, 34)
 
 
@@ -1800,13 +1829,15 @@ def main():
         f"Reattached per-site FP candidates: external_after_retry={len(final_external_mutations_fp_ratio_persitefp)}",
     )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1178, 29)
 
     if logger.isEnabledFor(logging.DEBUG):
@@ -1937,7 +1968,7 @@ def main():
     # Step 6.8 计算 parent muts 中的 intersection/FN_flip per mutations，最后找到一些要重挂的突变
     # -----------------------------
     logger.info("===== Step6.8: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some mutations that need to be reattached ...")
-    stage_timer.start("Step6_9_ParentMutationReattach")
+    stage_timer.start("Step6_8_ParentMutationReattach")
 
     T_checkpoint_outgroup = copy.deepcopy(T_current)
     M_checkpoint_outgroup = M_current.copy()
@@ -1949,7 +1980,7 @@ def main():
 
     df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation = calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_checkpoint_outgroup, M_checkpoint_outgroup, I_attached)
     stage_timer.checkpoint(
-        "Step6_9_ParentMutationReattach",
+        "Step6_8_ParentMutationReattach",
         f"Computed parent-retention metrics: mutations={len(df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation)}",
     )
     df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation.shape
@@ -1974,7 +2005,7 @@ def main():
     logger.info(f"Step6.8 outgroup mutations to reattach: {len(outgroup_mutations_but_backbone)}")
     log_list_debug(logger, "Step6.8 outgroup mutations to reattach", outgroup_mutations_but_backbone)
     stage_timer.checkpoint(
-        "Step6_9_ParentMutationReattach",
+        "Step6_8_ParentMutationReattach",
         f"Selected outgroup rehang candidates: total={len(outgroup_mutations_but_backbone)}",
     )
 
@@ -2072,15 +2103,17 @@ def main():
                 root_mutations=root_mutations
             )
     
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     stage_timer.end(
-        "Step6_9_ParentMutationReattach",
+        "Step6_8_ParentMutationReattach",
         summary=f"candidates={len(outgroup_mutations_but_backbone)}, {_format_step6_state(T_current, M_current, root_mutations)}",
     )
 
@@ -2091,7 +2124,7 @@ def main():
     # Step 6.9 计算 parent muts 中的 intersection/FN_flip per mutations，最后找到一些找不到合适的突变的可以删除的 cells
     # -----------------------------
     logger.info("===== Step6.9: Calculate the intersection/FN_flip per mutation in the parent muts, and finally identify some cells that cannot find suitable mutations and can be deleted ...")
-    stage_timer.start("Step6_10_RemoveUnsuitableCells")
+    stage_timer.start("Step6_9_RemoveUnsuitableCells")
 
     T_checkpoint_wireless_cells = copy.deepcopy(T_current)
     M_checkpoint_wireless_cells = M_current.copy()
@@ -2103,7 +2136,7 @@ def main():
 
     df_intersection_and_flipping_to_1_count_per_cell = calculate_intersection_and_flipping_to_1_count_per_cell(M_for_fp_ratio_and_fn_ratio_wireless_cells, I_attached)
     stage_timer.checkpoint(
-        "Step6_10_RemoveUnsuitableCells",
+        "Step6_9_RemoveUnsuitableCells",
         f"Computed per-cell intersection/flip metrics: cells={len(df_intersection_and_flipping_to_1_count_per_cell)}",
     )
     df_intersection_and_flipping_to_1_count_per_cell
@@ -2157,7 +2190,7 @@ def main():
 
     logger.info(f"Step6.9 matrix shape after removing unsuitable cells: {M_current.shape}")
     stage_timer.end(
-        "Step6_10_RemoveUnsuitableCells",
+        "Step6_9_RemoveUnsuitableCells",
         summary=f"removed_cells={len(to_be_removed_cells)}, {_format_step6_state(T_current, M_current, root_mutations)}",
     )
 
@@ -2169,7 +2202,7 @@ def main():
     # Step 6.10 计算 cross all cells 的 fp_ratio_per_mutation 和 cross all mutations 的 fp_ratio_per_cell，鉴定并去掉 artifact mutations 和 doublet cells
     # -----------------------------
     logger.info("===== Step6.10: Caculate fp_ratio_per_mutation_cross_all_cells and fp_ratio_per_cell_cross_all_muts ...")
-    stage_timer.start("Step6_8_GlobalFpRatioAndDoublets")
+    stage_timer.start("Step6_10_GlobalFpRatioAndDoublets")
 
     ##### 计算 T_current 中每一个 mutations 的 fp_ratio_per_mutation_cross_all_cells 和 fp_ratio_per_cell_cross_all_muts
     T_checkpoint_artifact_and_doublet = copy.deepcopy(T_current)
@@ -2184,10 +2217,10 @@ def main():
         M_for_artifact_and_doublet,
         I_attached,
         active_logger=logger,
-        stage_name="Step6_8_GlobalFpRatioAndDoublets",
+        stage_name="Step6_10_GlobalFpRatioAndDoublets",
     )
     stage_timer.checkpoint(
-        "Step6_8_GlobalFpRatioAndDoublets",
+        "Step6_10_GlobalFpRatioAndDoublets",
         f"Computed global FP metrics: mutations={len(df_fp_ratio_per_mutation_cross_all_cells)}, cells={len(df_fp_ratio_per_cell_cross_all_muts)}",
     )
 
@@ -2261,7 +2294,7 @@ def main():
     logger.info(f"Step6.10 global FP candidate rehang mutations: {len(rehanged_fp_mutations_cross_all_cells_but_backbone)}")
     log_list_debug(logger, "Step6.10 global FP candidate rehang mutations", rehanged_fp_mutations_cross_all_cells_but_backbone)
     stage_timer.checkpoint(
-        "Step6_8_GlobalFpRatioAndDoublets",
+        "Step6_10_GlobalFpRatioAndDoublets",
         f"Selected global FP rebuild candidates: primary={len(rehanged_fp_mutations_cross_all_cells_but_backbone)}",
     )
 
@@ -2348,13 +2381,15 @@ def main():
             root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
 
-    T_test = copy.deepcopy(T_current)
-    M_test = M_current.copy()
-    M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_test = split_merged_columns(M_test, mutations_on_T_test)
-    final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-    final_cleaned_M_test.shape
+    # Debug-only snapshot block kept for troubleshooting reference.
+    # Disabled by default to avoid repeated split_merged_columns overhead in Step6.
+    # T_test = copy.deepcopy(T_current)
+    # M_test = M_current.copy()
+    # M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+    # mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    # M_test = split_merged_columns(M_test, mutations_on_T_test)
+    # final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+    # final_cleaned_M_test.shape
     # (1253, 93)
 
 
@@ -2373,7 +2408,7 @@ def main():
 
     logger.info(f"Step6.10 matrix shape after removing likely doublets: {M_current.shape}")
     stage_timer.end(
-        "Step6_8_GlobalFpRatioAndDoublets",
+        "Step6_10_GlobalFpRatioAndDoublets",
         summary=f"rebuild_mutations={len(remove_mutations_for_rebuild)}, removed_cells={len(to_be_removed_cells)}, {_format_step6_state(T_current, M_current, root_mutations)}",
     )
     stage_timer.end("Step6_FullResolvedTree", summary=_format_step6_state(T_current, M_current, root_mutations))
@@ -2470,15 +2505,15 @@ def main():
     kept_rows = final_cleaned_M_full.index
     kept_cols = final_cleaned_M_full.columns
 
-    # 从 I_full_withNA3 提取
+    # 从 I_full_withNA3 提取；使用 reindex 避免直接抛出超长 missing-index 异常日志
     final_cleaned_I_full_withNA3 = reindex_with_truncated_log(
         I_full_withNA3,
         kept_rows,
         kept_cols,
         fill_value=3,
         active_logger=logger,
-        context_label="Step7_1_OutputResults",
-    )
+        context_label="Step7.1 final_cleaned_I_full_withNA3",
+    ).astype(int, copy=False)
 
     WriteTfile(os.path.join(phylo_dir, "final_cleaned_M_full_basedPivots.filtered_sites_inferred"), 
                final_cleaned_M_full, final_cleaned_M_full.index.tolist(), final_cleaned_M_full.columns.tolist(), judge="yes")
@@ -2487,7 +2522,14 @@ def main():
 
     # ##### Output binary matrix with NA=0
     # I_full_withNA0 = I_attached.replace({np.nan: 0}).astype(int)
-    # final_cleaned_I_full_withNA0 = I_full_withNA0.loc[kept_rows, kept_cols]
+    # final_cleaned_I_full_withNA0 = reindex_with_truncated_log(
+    #     I_full_withNA0,
+    #     kept_rows,
+    #     kept_cols,
+    #     fill_value=0,
+    #     active_logger=logger,
+    #     context_label="Step7.1 final_cleaned_I_full_withNA0",
+    # ).astype(int, copy=False)
     # final_cleaned_I_full_withNA0.to_csv(os.path.join(phylo_dir, "final_cleaned_I_full_withNA0_for_other_methods.txt"), sep="\t")
     stage_timer.end("Step7_1_OutputResults")
 
@@ -2642,10 +2684,6 @@ def main():
     ##### Time #####
     finish_time = time.perf_counter()
     stage_timer.end("MainPipeline")
-    logger.info(
-        "===== PIPELINE COMPLETED SUCCESSFULLY ===== elapsed=%.3fs",
-        finish_time - start_time,
-    )
 
 
 

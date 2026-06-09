@@ -563,29 +563,29 @@ def calculate_cv_for_subgrouping(df_reads_resolved, mutations, cv_threshold=6, l
     """
     
     reads_matrix_withoutNAcells, _, reads_matrix_withNAcells = _prepare_total_read_derived_frames(df_reads_resolved)
-    low_cv_mutations = []
-    median_dict = {}
-    cv_dict = {}
-    mean_dict = {}
-    std_dict = {}
-    for mut in mutations:
-        values_for_median = reads_matrix_withoutNAcells[mut].dropna() if mut in reads_matrix_withoutNAcells else []
-        values_for_cv = reads_matrix_withNAcells[mut].dropna()
-        # median
-        if len(values_for_median) == 0:
-            median_dict[mut] = np.nan
-            continue
-        median_val = np.median(values_for_median)
-        median_dict[mut] = median_val
-        # cv
-        mean_val = np.mean(values_for_cv)
-        std_val = np.std(values_for_cv)
-        cv = std_val / mean_val if mean_val > 0 else np.inf
-        cv_dict[mut] = cv
-        mean_dict[mut] = mean_val
-        std_dict[mut] = std_val
-        if cv <= cv_threshold:
-            low_cv_mutations.append(mut)
+    valid_mutations = [mut for mut in mutations if mut in reads_matrix_withNAcells.columns]
+
+    if valid_mutations:
+        without_na_subset = reads_matrix_withoutNAcells.reindex(columns=valid_mutations)
+        with_na_subset = reads_matrix_withNAcells.reindex(columns=valid_mutations)
+
+        median_series = without_na_subset.median(axis=0, skipna=True)
+        mean_series = with_na_subset.mean(axis=0, skipna=True)
+        std_series = with_na_subset.std(axis=0, skipna=True, ddof=0)
+        cv_series = std_series.divide(mean_series).where(mean_series > 0, np.inf)
+        pass_cv_series = median_series.notna() & cv_series.le(cv_threshold)
+    else:
+        median_series = pd.Series(dtype=float)
+        mean_series = pd.Series(dtype=float)
+        std_series = pd.Series(dtype=float)
+        cv_series = pd.Series(dtype=float)
+        pass_cv_series = pd.Series(dtype=bool)
+
+    median_dict = {mut: median_series.get(mut, np.nan) for mut in mutations}
+    cv_dict = {mut: cv_series.get(mut, np.nan) for mut in mutations}
+    mean_dict = {mut: mean_series.get(mut, np.nan) for mut in mutations}
+    std_dict = {mut: std_series.get(mut, np.nan) for mut in mutations}
+    low_cv_mutations = [mut for mut in mutations if bool(pass_cv_series.get(mut, False))]
     
     if logger is not None:
         logger.info(f"Low-CV mutations retained in subgroup: {len(low_cv_mutations)}")
@@ -638,14 +638,14 @@ def compute_clone_conter(muts, corr_cache, n_shuffle=100):
                 remaining = next_remaining
     return clone_counter
 
-def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100, timer_label: Optional[str] = None, timer_logger=None):
+def compute_clone_and_pair_weights(muts, corr_matrix, n_shuffle=100, timer_label: Optional[str] = None, timer_logger=None):
     """
     Parameters
     ----------
     muts : list of str
         所有 mutation ID
-    corr_cache : dict
-        {(mut1, mut2): True/False}  两两 mutation 是否 correlated
+    corr_matrix : np.ndarray
+        布尔相关矩阵，shape=(n_mut, n_mut)
     n_shuffle : int
         每个 mutation 的 shuffle 次数
     
@@ -669,14 +669,6 @@ def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100, timer_label:
         lex_rank_by_idx[idx] = rank
 
     neighbor_build_start = time.perf_counter()
-    corr_matrix = np.zeros((n_mut, n_mut), dtype=bool)
-    np.fill_diagonal(corr_matrix, True)
-    for i, ref in enumerate(muts):
-        for j in range(i + 1, n_mut):
-            other = muts[j]
-            is_corr = corr_cache.get((ref, other), corr_cache.get((other, ref), False))
-            corr_matrix[i, j] = is_corr
-            corr_matrix[j, i] = is_corr
     other_idx_by_ref = [all_idx[all_idx != ref_idx] for ref_idx in range(n_mut)]
     singletons_by_ref = [(ref_idx,) for ref_idx in range(n_mut)]
     clone_pair_cache = {}
@@ -815,12 +807,6 @@ def _build_pairwise_correlation_cache_fast(I_S: pd.DataFrame, muts: List[str]):
     )
     np.fill_diagonal(corr_matrix, True)
 
-    corr_cache = {}
-    for i, mut_i in enumerate(muts):
-        row = corr_matrix[i]
-        for j, mut_j in enumerate(muts):
-            corr_cache[(mut_i, mut_j)] = bool(row[j])
-
     mutant_cell_fraction = np.divide(
         mutant_cell_number,
         covered_cell_number,
@@ -828,7 +814,7 @@ def _build_pairwise_correlation_cache_fast(I_S: pd.DataFrame, muts: List[str]):
         where=covered_cell_number > 0,
     )
 
-    return corr_cache, mutant_cell_number, mutant_cell_fraction
+    return corr_matrix, mutant_cell_number, mutant_cell_fraction
 
 from typing import List, Tuple, Dict
 from collections import defaultdict
@@ -868,13 +854,13 @@ def get_correlation_graph_elements(
     active_logger.info(f"[TIMER] START {stage_name}")
     
     # Step 1: precompute pairwise correlation cache
-    corr_cache, mutant_cell_number_arr, mutant_cell_fraction_arr = _build_pairwise_correlation_cache_fast(I_S, muts)
+    corr_matrix, mutant_cell_number_arr, mutant_cell_fraction_arr = _build_pairwise_correlation_cache_fast(I_S, muts)
     _log_timed_checkpoint(active_logger, stage_name, stage_start, f"Built pairwise correlation cache for {n_mut} mutations")
     
     # Step 2: compute clone weights and pair weights
     clone_weights, pair_weights = compute_clone_and_pair_weights(
         muts,
-        corr_cache,
+        corr_matrix,
         n_shuffle=n_shuffle,
         timer_label=f"{stage_name}_ClonePairWeights",
         timer_logger=active_logger,
@@ -2981,19 +2967,20 @@ def split_merged_columns(merged_matrix: pd.DataFrame, mut_list: list):
     """
     根据mut_list拆分合并的列
     """
+    mut_to_merged_col = {}
+    for merged_col in merged_matrix.columns:
+        for mut in merged_col.split("|"):
+            mut_to_merged_col.setdefault(mut, merged_col)
+
     out = {}
+    missing_template = pd.Series([pd.NA] * len(merged_matrix), index=merged_matrix.index)
     for mut in mut_list:
-        # 找到包含该mutation的合并列
-        found = False
-        for merged_col in merged_matrix.columns:
-            if mut in merged_col.split("|"):
-                out[mut] = merged_matrix[merged_col].copy()
-                found = True
-                break
-        if not found:
-            # 如果没找到，创建全NA列
-            out[mut] = pd.Series([pd.NA] * len(merged_matrix), index=merged_matrix.index)
-    
+        merged_col = mut_to_merged_col.get(mut)
+        if merged_col is None:
+            out[mut] = missing_template
+        else:
+            out[mut] = merged_matrix[merged_col]
+
     return pd.DataFrame(out, index=merged_matrix.index)[mut_list]
 
 # # 测试数据
