@@ -423,6 +423,7 @@ remotes::install_github("TsingYang1112/PhyloSOLIDvis", dependencies = TRUE)
 After running the PhyloSOLID pipeline, use the following command to generate the circos plot:
 
 ```r
+library(ggplot2)
 library(PhyloSOLIDvis)
 
 plot_circos(
