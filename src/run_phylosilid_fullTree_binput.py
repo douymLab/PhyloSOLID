@@ -69,7 +69,7 @@ import argparse
 from argparse import ArgumentParser
 parser = argparse.ArgumentParser()
 
-parser.add_argument("-s", "--sampleid", default="sampleid", type=str, help="The sampleid you can set and check.")
+parser.add_argument("-s", "--sampleid", default="", type=str, help="The sampleid you can set and check.")
 parser.add_argument("-o", "--outputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/results", type=str, help="The outputpath you want to save results.")
 parser.add_argument("-i", "--inputfile", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/wenxuan/tree_vita_20260313/version3/str_info_cleaned_add_empty_new.tsv", type=str, help="The input file is formatted as a binary matrix, where rows represent cells and columns represent mutations.")
 

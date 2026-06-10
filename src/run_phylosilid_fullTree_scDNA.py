@@ -67,7 +67,7 @@ import argparse
 from argparse import ArgumentParser
 parser = argparse.ArgumentParser()
 
-parser.add_argument("-s", "--sampleid", default="sampleid", type=str, help="The sampleid you can set and check.")
+parser.add_argument("-s", "--sampleid", default="", type=str, help="The sampleid you can set and check.")
 parser.add_argument("-i", "--inputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/data", type=str, help="The inputpath contains the preprocessing results from raw posterior-reads data.")
 parser.add_argument("-o", "--outputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/results", type=str, help="The outputpath you want to save results.")
 parser.add_argument("-c", "--celltype_file", default=None, type=str, help="The celltype_file you should provide. If you can't generate this file, please set 'None'.")
