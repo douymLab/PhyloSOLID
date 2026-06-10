@@ -231,7 +231,8 @@ logger.info(f"Celltype data loaded: {df_celltype.shape[0]} cells")
 
 ##### Scaffold builder
 logging.info("Running scaffold building ...")
-immune_mutations = ['chr14_105707803_C_A', 'chr14_106276422_A_G', 'chr14_106276454_C_G', 'chr22_22881588_G_A', 'chr22_22895482_G_A', 'chr22_22895504_C_A', 'chr22_22901226_C_G', 'chr22_22901169_G_C', 'chr22_22895709_C_G']
+# immune_mutations = ['chr14_105707803_C_A', 'chr14_106276422_A_G', 'chr14_106276454_C_G', 'chr22_22881588_G_A', 'chr22_22895482_G_A', 'chr22_22895504_C_A', 'chr22_22901226_C_G', 'chr22_22901169_G_C', 'chr22_22895709_C_G']
+immune_mutations = []
 results_of_scaffold = build_scaffold_tree(
     P_somatic = P_somatic, 
     V_somatic = V_somatic, 
