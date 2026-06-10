@@ -408,6 +408,50 @@ phylosolid --workdir demo/test_output scrna \
     --cellnum 155
 ```
 
+## Visualization
+
+PhyloSOLID provides a dedicated R package **PhyloSOLIDvis** for generating publication-ready circular (circos-style) phylogenetic tree visualizations based on the pipeline outputs.
+
+### Installation
+
+```r
+remotes::install_github("TsingYang1112/PhyloSOLIDvis", dependencies = TRUE)
+```
+
+### Usage
+
+After running the PhyloSOLID pipeline, use the following command to generate the circos plot:
+
+```r
+library(PhyloSOLIDvis)
+
+plot_circos(
+  inputpath = "path/to/PhyloSOLID/output/",
+  outputpath = "path/to/figures/",
+  annotation_file = "path/to/annotations.txt"
+)
+```
+
+The function will create:
+- Main circular tree plot (SVG/PDF)
+- Separate legend files for annotations and flipping counts
+- Sorted mutation matrix and heatmap metadata
+
+### Interactive inspection
+
+After generating the circos plot and its associated output files, you can upload the results to the **interactive inspection platform** for manual review and quality control:
+
+👉 **http://10.28.0.22:32300/home**
+
+Upload the following files to the platform:
+- Main circos plot (SVG/PDF)
+- Sorted CF matrix (`sorted_cf_matrix.txt`)
+- Heatmap metadata (`ordered_metadata_for_heatmap.txt`)
+- Tree structure data (`CNVtree_data_clone_order_tree.rds`)
+
+For detailed documentation of the visualization package, visit:  
+[https://github.com/TsingYang1112/PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)
+
 ## Troubleshooting
 
 ### Conda not found
@@ -458,7 +502,7 @@ chmod +x scripts/scrna/**/*.R
 
 If you use PhyloSOLID in your research, please cite:
 
-    1. Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
+1. Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
 
 ## License
 
