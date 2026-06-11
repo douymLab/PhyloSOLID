@@ -16,6 +16,12 @@ Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
 
 PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from single-cell sequencing data. It supports both scRNA-seq and scDNA-seq modes, with features for mutation filtering, tree construction, and visualization.
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/douymLab/PhyloSOLID/main/images/1figure_plot.png" alt="PhyloSOLID workflow overview" width="800">
+  <br>
+  <em>Figure 1: Overview of the PhyloSOLID pipeline</em>
+</div>
+
 
 > **System Requirements:**
 > PhyloSOLID is primarily developed and tested on Linux. We recommend running it on Linux or macOS systems. Windows users can use WSL (Windows Subsystem for Linux).
