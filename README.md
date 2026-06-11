@@ -410,11 +410,22 @@ library(ggplot2)
 library(PhyloSOLIDvis)
 
 plot_circos(
-  inputpath = "path/to/PhyloSOLID/output/",
-  outputpath = "path/to/figures/",
+  inputpath = "path/to/workdir/sampleid/03_tree_building/mutation_integrator/phylo/",
+  outputpath = "path/to/circos_plot/",
   annotation_file = "path/to/annotations.txt"
 )
 ```
+
+**Important Notes for Users:**
+
+1. **Input path specification**: The `inputpath` must point to the exact subdirectory where PhyloSOLID writes the phylogenetic output:
+   - Format: `{workdir}/{sampleid}/03_tree_building/mutation_integrator/phylo/`
+   - Example: If your `--workdir` is `./results` and `--sample` is `Org4S15D63`, the correct path would be `./results/Org4S15D63/03_tree_building/mutation_integrator/phylo/`
+   - This directory contains the final `cell_by_mut.CFMatrix` and `celltree.newick` files required for visualization
+
+2. **Required packages**: Both `ggplot2` and `PhyloSOLIDvis` must be loaded before calling `plot_circos()`:
+   - `ggplot2` is a dependency of PhyloSOLIDvis but needs to be explicitly loaded
+   - Always include `library(ggplot2)` before `library(PhyloSOLIDvis)`
 
 The function will create:
 - Main circular tree plot (SVG/PDF)
@@ -435,6 +446,7 @@ Upload the following files to the platform:
 
 For detailed documentation of the visualization package, visit:  
 [https://github.com/TsingYang1112/PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)
+
 
 ## Troubleshooting
 
