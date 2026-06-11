@@ -216,22 +216,9 @@ phylosolid --workdir ./results scrna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
-    --barcode barcodes.txt
-```
-
-**With all options:**
-```bash
-phylosolid --workdir ./results scrna \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam sample.bam \
     --barcode barcodes.txt \
-    --metadata metadata.txt \
-    --read-len 100 \
-    --cellnum 155 \
-    --threads 8 \
-    --workdir ./results \
-    --config config/paths.yaml
+    --read-len num_read-len \
+    --cellnum num_cellnum
 ```
 
 ### Running specific steps
@@ -261,7 +248,9 @@ phylosolid --workdir ./results scdna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
-    --barcode barcodes.txt
+    --barcode barcodes.txt \
+    --read-len num_read-len \
+    --cellnum num_cellnum
 ```
 
 ### SpaceTracer mode (Skip feature extraction and classifier)
@@ -279,21 +268,9 @@ phylosolid --workdir ./results spacetracer \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
-    --barcode barcodes.txt
-```
-
-**With all options:**
-```bash
-phylosolid --workdir ./results spacetracer \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam sample.bam \
     --barcode barcodes.txt \
-    --metadata metadata.txt \
-    --read-len 100 \
-    --cellnum 155 \
-    --threads 8 \
-    --config config/paths.yaml
+    --read-len num_read-len \
+    --cellnum num_cellnum
 ```
 
 ## Input File Formats
