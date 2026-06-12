@@ -227,7 +227,7 @@ phylosolid --workdir ./results scrna \
     --cellnum num_cellnum
 ```
 
-### Running specific steps
+**Running specific steps:**
 
 ```bash
 # Run only feature extraction
@@ -240,7 +240,7 @@ phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps tree_input
 phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps tree_building
 ```
 
-### Parallel execution
+**Parallel execution:**
 
 ```bash
 # Run feature extraction and tree input in parallel
@@ -396,7 +396,7 @@ phylosolid --workdir demo/test_output scrna \
 PhyloSOLID provides a dedicated R package **PhyloSOLIDvis** for generating publication-ready circular (circos-style) phylogenetic tree visualizations.
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/TsingYang1112/PhyloSOLIDvis/main/inst/demo_circos.png" alt="Example circos plot from PhyloSOLIDvis" width="800">
+  <img src="https://raw.githubusercontent.com/TsingYang1112/PhyloSOLIDvis/master/inst/demo_circos.png" alt="Example circos plot from PhyloSOLIDvis" width="800">
   <br>
   <em>Figure 2: Example circos plot generated from PhyloSOLID output (351 cells, 17 mutations)</em>
 </div>
