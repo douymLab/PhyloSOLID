@@ -1,6 +1,6 @@
 # PhyloSOLID
 
-Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
+**Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)**
 
 
 > **Important Note for Users:**
@@ -393,17 +393,24 @@ phylosolid --workdir demo/test_output scrna \
 
 ## Visualization
 
-PhyloSOLID provides a dedicated R package **PhyloSOLIDvis** for generating publication-ready circular (circos-style) phylogenetic tree visualizations based on the pipeline outputs.
+PhyloSOLID provides a dedicated R package **PhyloSOLIDvis** for generating publication-ready circular (circos-style) phylogenetic tree visualizations.
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/TsingYang1112/PhyloSOLIDvis/main/inst/demo_circos.png" alt="Example circos plot from PhyloSOLIDvis" width="800">
+  <br>
+  <em>Figure 2: Example circos plot generated from PhyloSOLID output (351 cells, 17 mutations)</em>
+</div>
 
 ### Installation
 
 ```r
+# Install from GitHub (recommended)
 remotes::install_github("TsingYang1112/PhyloSOLIDvis", dependencies = TRUE)
 ```
 
-### Usage
+### Basic Usage
 
-After running the PhyloSOLID pipeline, use the following command to generate the circos plot:
+> **⚠️ Important Note:** `ggplot2` must be loaded **before** `PhyloSOLIDvis` to avoid namespace conflicts.
 
 ```r
 library(ggplot2)
@@ -411,42 +418,124 @@ library(PhyloSOLIDvis)
 
 plot_circos(
   inputpath = "path/to/workdir/sampleid/03_tree_building/mutation_integrator/phylo/",
-  outputpath = "path/to/circos_plot/",
+  outputpath = "path/to/output/directory/",
   annotation_file = "path/to/annotations.txt"
 )
 ```
 
-**Important Notes for Users:**
+### Locating the correct input directory
 
-1. **Input path specification**: The `inputpath` must point to the exact subdirectory where PhyloSOLID writes the phylogenetic output:
-   - Format: `{workdir}/{sampleid}/03_tree_building/mutation_integrator/phylo/`
-   - Example: If your `--workdir` is `./results` and `--sample` is `Org4S15D63`, the correct path would be `./results/Org4S15D63/03_tree_building/mutation_integrator/phylo/`
-   - This directory contains the final `cell_by_mut.CFMatrix` and `celltree.newick` files required for visualization
+After running the PhyloSOLID pipeline with `--workdir ./results` and `--sample SAMPLE_ID`, the required files are located in:
 
-2. **Required packages**: Both `ggplot2` and `PhyloSOLIDvis` must be loaded before calling `plot_circos()`:
-   - `ggplot2` is a dependency of PhyloSOLIDvis but needs to be explicitly loaded
-   - Always include `library(ggplot2)` before `library(PhyloSOLIDvis)`
+```
+workdir/
+└── SAMPLE_ID/
+    └── 03_tree_building/
+        └── mutation_integrator/
+            └── phylo/
+                ├── final_cleaned_I_full_withNA3_for_circosPlot.txt   # Input genotype matrix
+                ├── final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix  # Conflict-free matrix
+                ├── df_flipping_count_for_each_mut.txt                # Per-mutation flipping stats
+                └── df_total_flipping_count.txt                       # Total flipping stats
+```
 
-The function will create:
-- Main circular tree plot (SVG/PDF)
-- Separate legend files for annotations and flipping counts
-- Sorted mutation matrix and heatmap metadata
+**Set `inputpath` to this `phylo/` directory.**
 
-### Interactive inspection
+### Required Annotation File Format
 
-After generating the circos plot and its associated output files, you can upload the results to the **interactive inspection platform** for manual review and quality control:
+The annotation file (tab-separated) must contain a `barcode` column matching cell IDs in the PhyloSOLID output. Optional columns include:
+
+| Column | Description |
+|--------|-------------|
+| `cluster_info` | Cell cluster assignments |
+| `cell_type` | Cell type annotations |
+| `sample` | Sample identifiers |
+| `tumor_score` | Numeric tumor scores |
+| `B_cell_prop` | B cell proportions |
+
+### Output Files
+
+The function generates:
+
+| File | Description |
+|------|-------------|
+| `*.circle_tree_output_as_point.*.svg/pdf` | Main circular plot (no embedded legend) |
+| `legend_components.circos_annotation.svg/pdf` | Circos annotation legend |
+| `legend_components.total_flipping_count.svg/pdf` | Flipping count legend |
+| `sorted_cf_matrix.txt` | Sorted mutation matrix |
+| `ordered_metadata_for_heatmap.txt` | Heatmap ordering data |
+| `CNVtree_data_clone_order_tree.rds` | Tree structure data for further analysis |
+
+### Interactive Inspection Platform
+
+After generating the circos plot, you can upload the following files to the **interactive inspection platform** for manual review and quality control:
 
 👉 **http://10.28.0.22:32300/home**
 
-Upload the following files to the platform:
+Upload:
 - Main circos plot (SVG/PDF)
-- Sorted CF matrix (`sorted_cf_matrix.txt`)
-- Heatmap metadata (`ordered_metadata_for_heatmap.txt`)
-- Tree structure data (`CNVtree_data_clone_order_tree.rds`)
+- `sorted_cf_matrix.txt`
+- `ordered_metadata_for_heatmap.txt`
+- `CNVtree_data_clone_order_tree.rds`
 
-For detailed documentation of the visualization package, visit:  
-[https://github.com/TsingYang1112/PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)
+### Example with Custom Parameters
 
+```r
+library(ggplot2)
+library(PhyloSOLIDvis)
+
+result <- plot_circos(
+  inputpath = "results/Org4S15D63/03_tree_building/mutation_integrator/phylo/",
+  outputpath = "figures/circos/",
+  annotation_file = "data/annotations.txt",
+  target_mut = "chr11_65426524_T_C",  # Highlight specific mutation
+  tip_label_offset = 8,                # Adjust tip label distance
+  tip_label_size = 3,                  # Increase label font size
+  heatmap_width = 0.3,                 # Control heatmap track width
+  flipping_point_size = 1.3,           # Size of flipping markers
+  plot_height = 12,                    # Output height (inches)
+  plot_width = 18,                     # Output width (inches)
+  verbose = TRUE
+)
+```
+
+### Using Built-in Demo Data
+
+```r
+# Locate demo data
+demo_path <- system.file("examples/input", package = "PhyloSOLIDvis")
+list.files(demo_path)
+
+# Run with demo data
+result <- plot_circos(
+  inputpath = demo_path,
+  outputpath = "demo_output/",
+  annotation_file = "path/to/annotation.txt",
+  target_mut = "no",
+  selected_mutlist = "all",
+  tip_label_offset = 6,
+  tip_label_size = 2.5,
+  verbose = TRUE
+)
+```
+
+### For Complete Documentation
+
+> **📘 For detailed parameter descriptions, advanced usage, troubleshooting, and full examples, please visit the PhyloSOLIDvis GitHub repository:**
+> 
+> **[https://github.com/TsingYang1112/PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)**
+>
+> *If you encounter any issues with visualization (e.g., missing dependencies, plot layout problems, or annotation file formatting), please check the PhyloSOLIDvis documentation first before opening an issue.*
+
+### Quick Troubleshooting for Visualization
+
+| Issue | Solution |
+|-------|----------|
+| `could not find function "plot_circos"` | Run `library(ggplot2)` then `library(PhyloSOLIDvis)` |
+| `cannot open file '.../phylo/final_cleaned_I_...'` | Verify `inputpath` points to the exact `phylo/` subdirectory |
+| Missing `annotation_file` column | Ensure file has a `barcode` column matching cell IDs |
+| Plot renders with overlapping labels | Adjust `tip_label_offset` (increase for more space) |
+| Network issues during installation | Set CRAN/BioC mirrors and retry |
 
 ## Troubleshooting
 
