@@ -1,0 +1,34 @@
+feature_extraction:
+  features_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt
+  outputs:
+    depth_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/01_features/depth_in_spots
+    features_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt
+  sample_id: demo_scrna
+  status: completed
+  step_name: 01_features
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/01_features
+summary:
+  sample_id: demo_scrna
+  steps_completed:
+  - feature_extraction
+  - tree_input
+  - tree_building
+  tree_file: null
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna
+tree_building:
+  outputs:
+    scaffold_cfmatrix: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/03_tree_building/scaffold_builder/phylo_scaffold_tree/final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred.CFMatrix
+  results_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/03_tree_building
+  sample_id: demo_scrna
+  status: completed
+  step_name: 03_tree_building
+  tree_file: null
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/03_tree_building
+tree_input:
+  outputs:
+    scid_barcode: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/02_treeinput/treeinput_scid_barcode.txt
+    spot_matrix: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/02_treeinput/treeinput_spot_c_3319.csv
+  sample_id: demo_scrna
+  status: completed
+  step_name: 02_treeinput
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/materials_of_PhyloSOLID/demo_data/scrna/demo_scrna/02_treeinput
