@@ -26,6 +26,7 @@ Outputs:
 
 
 import os
+import time
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -33,7 +34,6 @@ import logging
 import copy
 import math
 import random
-import time
 from tqdm import tqdm
 from copy import deepcopy
 import itertools
@@ -68,16 +68,60 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+_TRACE_ENABLED = os.environ.get("PHYLOSOLID_ENABLE_TRACE", "").lower() in {"1", "true", "yes", "on"}
+_VERBOSE_TREE_UPDATES = os.environ.get("PHYLOSOLID_VERBOSE_TREES", "").lower() in {"1", "true", "yes", "on"}
+
+_TRACE_STEP_MUTATIONS = {
+    "chr8_80170791_C_T",
+    "chr7_20381814_G_T",
+    "chr16_497748_G_T",
+    "chr10_73254076_G_T",
+    "chr2_171687790_A_T",
+    "chr21_44856223_C_A",
+    "chr11_9425206_C_A",
+    "chr7_87196234_G_T",
+    "chr2_171324260_C_T",
+    "chr18_9135639_C_G",
+    "chr12_51215297_G_T",
+    "chr7_132879457_T_A",
+    "chr10_104003258_C_T",
+    "chr7_128458208_G_T",
+    "chr7_128458208_G_T",
+    "chr1_171541779_G_T",
+    "chr17_7578893_G_T",
+}
+_TRACE_LOG_PATH = os.environ.get("PHYLOSOLID_TRACE_FILE", "/tmp/phylosolid_trace.log")
 
 
-def _should_emit_tree_diagnostics(active_logger):
-    return active_logger.isEnabledFor(logging.DEBUG)
+def _should_trace_mutation(mutation_name):
+    return _TRACE_ENABLED and mutation_name in _TRACE_STEP_MUTATIONS
 
 
-def _log_tree_diagnostics(active_logger, tree, message):
-    if _should_emit_tree_diagnostics(active_logger):
-        active_logger.debug(message)
-        print_tree(tree)
+def _format_position_summary(position):
+    return {
+        "placement_type": position.get("placement_type"),
+        "anchor": position.get("anchor"),
+        "meta": position.get("meta", {}),
+    }
+
+
+def _log_traced_mutation_decision(active_logger, stage_name, mutation_name, **payload):
+    if not _should_trace_mutation(mutation_name):
+        return
+    message = f"[TRACE][{stage_name}][{mutation_name}] {payload}"
+    active_logger.info(message)
+    try:
+        with open(_TRACE_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(message + "\n")
+    except OSError:
+        pass
+
+
+def _log_tree_snapshot(active_logger, label, tree):
+    if not _VERBOSE_TREE_UPDATES:
+        return
+    active_logger.info(label)
+    print_tree(tree)
 
 
 def _log_timed_end(active_logger, stage_name, start_time, summary=None):
@@ -180,18 +224,6 @@ def _is_conflict_free_gusfield_safe(matrix, active_logger=None, context_label="C
         matrix_for_check = _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label)
         return scp.ul.is_conflict_free_gusfield(matrix_for_check)
 
-
-def _clean_mutation_vector_against_conflicts(new_mut_vector, conflict_vector, index):
-    new_mut_bool = _coerce_bool_vector(new_mut_vector, index)
-    conflict_bool = _coerce_bool_vector(conflict_vector, index)
-    return new_mut_bool & ~conflict_bool
-
-
-def _combine_bool_vectors(left_vector, right_vector, index):
-    left_bool = _coerce_bool_vector(left_vector, index)
-    right_bool = _coerce_bool_vector(right_vector, index)
-    return left_bool | right_bool
-
 # Default parameters matching Methods Section 3
 DEFAULT_PARAMS = {
     "posterior_threshold": 0.5,        # Phylogenetic mosaic threshold
@@ -289,6 +321,61 @@ def count_conditions(I_attached_col, M_current_col):
         'count_na_1': count_na_1,
         'count_na_0': count_na_0
     }
+
+
+def is_conflict_free_matrix(matrix):
+    """
+    Run scphylo conflict checking on a sanitized binary view of the matrix.
+
+    Some intermediate placement steps can leave NaN/inf values in M_current.
+    Those values are not meaningful for Gusfield checking, and scphylo expects
+    an integer matrix. Treat missing/non-finite entries as 0 for validation.
+    """
+    values = matrix.to_numpy(copy=False)
+
+    if np.issubdtype(values.dtype, np.integer):
+        matrix_for_check = matrix
+    else:
+        if np.issubdtype(values.dtype, np.floating):
+            numeric_values = values
+        else:
+            numeric_values = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+        sanitized_values = np.nan_to_num(
+            numeric_values,
+            nan=0.0,
+            posinf=1.0,
+            neginf=0.0,
+            copy=True,
+        )
+        matrix_for_check = pd.DataFrame(
+            sanitized_values.astype(np.int8, copy=False),
+            index=matrix.index,
+            columns=matrix.columns,
+        )
+    return scp.ul.is_conflict_free_gusfield(matrix_for_check)
+
+
+def as_binary_mask(series, index):
+    """
+    Normalize a Series-like vector to an aligned boolean mask.
+    """
+    aligned = pd.Series(series, index=index) if not isinstance(series, pd.Series) else series.reindex(index)
+    values = aligned.to_numpy(copy=False)
+
+    if np.issubdtype(values.dtype, np.bool_):
+        return pd.Series(values, index=index, copy=False)
+
+    if np.issubdtype(values.dtype, np.integer):
+        return pd.Series(values > 0, index=index)
+
+    if np.issubdtype(values.dtype, np.floating):
+        mask = np.isfinite(values) & (values > 0)
+        return pd.Series(mask, index=index)
+
+    numeric = pd.to_numeric(aligned, errors="coerce")
+    numeric_values = numeric.to_numpy(dtype=np.float64, na_value=np.nan)
+    mask = np.isfinite(numeric_values) & (numeric_values > 0)
+    return pd.Series(mask, index=index)
 
 
 
@@ -936,7 +1023,7 @@ def find_intersection_positions_within_tree_directly(
             T_current, matrix, new_mut, min_overlap
         )
     
-    logger.debug(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug("Found %s intersection nodes for %s: %s", len(intersection_nodes), new_mut, intersection_nodes)
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -949,23 +1036,24 @@ def find_intersection_positions_within_tree_directly(
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes(intersection_nodes, tree_parent_dict)
     
-    logger.debug(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
-
-    if node_lookup is None:
-        node_lookup = {node.name: node for node in T_current.traverse()}
-
+    logger.debug("Found %s path nodes for %s", len(all_path_nodes), new_mut)
+    
     # 4. 只在这些相关节点上生成候选位置
     candidate_positions = []
+    if node_lookup is None:
+        node_lookup = {node.name: node for node in T_current.traverse()}
     
     for node_name in all_path_nodes:
         if node_name == "ROOT":
+            # 保留 ROOT 上的 on_node 类型的 position
             node = node_lookup.get(node_name)
             if node is None:
                 logger.warning(f"Node {node_name} not found in tree")
                 continue
-            candidate_positions.append(
-                {"placement_type": "on_node", "anchor": node.name, "meta": {}}
-            )
+            
+            # 生成 ROOT 上的 on_node 类型的候选位置
+            candidate_positions.append(_create_on_node_candidate_fast(node, new_mut))
+            
             continue  # ROOT 的其他类型位置仍然跳过
         
         node = node_lookup.get(node_name)
@@ -974,25 +1062,15 @@ def find_intersection_positions_within_tree_directly(
             continue
         
         # --- 1) 放在 node 上 ---
-        candidate_positions.append(
-            {"placement_type": "on_node", "anchor": node.name, "meta": {}}
-        )
+        candidate_positions.append(_create_on_node_candidate_fast(node, new_mut))
         
         # --- 2) 新 leaf ---
-        candidate_positions.append(
-            {"placement_type": "new_leaf", "anchor": node.name, "meta": {}}
-        )
+        candidate_positions.append(_create_new_leaf_candidate_fast(node, new_mut))
         
         # --- 3) 放在每条 edge 上 ---
         for child in node.children:
             if child.name in all_path_nodes:  # 只考虑路径上的子节点
-                candidate_positions.append(
-                    {
-                        "placement_type": "on_edge",
-                        "anchor": node.name,
-                        "meta": {"child": child.name},
-                    }
-                )
+                candidate_positions.append(_create_on_edge_candidate_fast(node, child, new_mut))
         
         # --- 4) 新 parent merge 多个子节点 ---
         if len(node.children) >= 2:
@@ -1002,15 +1080,9 @@ def find_intersection_positions_within_tree_directly(
                 # 限制组合数量避免爆炸
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
-                        candidate_positions.append(
-                            {
-                                "placement_type": "new_parent_merge",
-                                "anchor": node.name,
-                                "meta": {"merge_children": [child.name for child in combo]},
-                            }
-                        )
+                        candidate_positions.append(_create_merge_candidate_fast(node, combo, new_mut))
     
-    logger.debug(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug("Generated %s candidate positions for %s", len(candidate_positions), new_mut)
     return candidate_positions
 
 
@@ -1023,101 +1095,47 @@ def build_tree_parent_dict(tree):
     return parent_dict
 
 
-def _create_on_node_candidate_fast(base_tree_copy, node, new_mut):
+def _create_on_node_candidate_fast(node, new_mut):
     """快速创建放在节点上的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    anchor_node = new_tree.find(node.name)
-    
-    # 替换节点逻辑
-    new_node = TreeNode(new_mut)
-    for child in anchor_node.children:
-        new_node.add_child(deepcopy(child))
-    
-    if anchor_node.parent:
-        parent = anchor_node.parent
-        for i, child in enumerate(parent.children):
-            if child.name == node.name:
-                parent.children[i] = new_node
-                new_node.parent = parent
-                break
-    else:
-        new_tree = new_node
-    
     return {
         "placement_type": "on_node",
         "anchor": node.name,
         "meta": {},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "sibling_nodes": [],
     }
 
 
-def _create_new_leaf_candidate_fast(base_tree_copy, node, new_mut):
+def _create_new_leaf_candidate_fast(node, new_mut):
     """快速创建新叶子的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    anchor_node = new_tree.find(node.name)
-    new_leaf = TreeNode(new_mut)
-    anchor_node.add_child(new_leaf)
-    
+    child_nodes = [child.name for child in node.children]
     return {
         "placement_type": "new_leaf",
         "anchor": node.name,
         "meta": {},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "child_nodes": child_nodes,
+        "sibling_nodes": child_nodes,
     }
 
 
-def _create_on_edge_candidate_fast(base_tree_copy, parent_node, child_node, new_mut):
+def _create_on_edge_candidate_fast(parent_node, child_node, new_mut):
     """快速创建放在边上的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    parent = new_tree.find(parent_node.name)
-    child = new_tree.find(child_node.name)
-    new_node = TreeNode(new_mut)
-    parent.remove_child(child)
-    parent.add_child(new_node)
-    new_node.add_child(child)
-    
     return {
         "placement_type": "on_edge",
         "anchor": parent_node.name,
         "meta": {"child": child_node.name},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "sibling_nodes": [child.name for child in parent_node.children if child.name != child_node.name],
     }
 
 
-def _create_merge_candidate_fast(base_tree_copy, parent_node, children_combo, new_mut):
+def _create_merge_candidate_fast(parent_node, children_combo, new_mut):
     """快速创建合并子节点的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    parent = new_tree.find(parent_node.name)
-    combo_nodes = [new_tree.find(child.name) for child in children_combo]
-    new_parent = TreeNode(new_mut)
-    for cn in combo_nodes:
-        parent.remove_child(cn)
-        new_parent.add_child(cn)
-    parent.add_child(new_parent)
-    
+    merge_children = [child.name for child in children_combo]
     return {
         "placement_type": "new_parent_merge",
         "anchor": parent_node.name,
-        "meta": {"merge_children": [child.name for child in children_combo]},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "meta": {"merge_children": merge_children},
+        "sibling_nodes": [child.name for child in parent_node.children if child.name not in merge_children],
     }
-
-
-def _extract_nodes_info(tree):
-    """提取节点信息"""
-    return [{"name": n.name,
-             "parent": n.parent.name if n.parent else None,
-             "children": [c.name for c in n.children]} 
-            for n in tree.traverse()]
-
-
-def _extract_edges_info(tree):
-    """提取边信息"""
-    return [(n.parent.name, n.name) for n in tree.traverse() if n.parent]
 
 
 def build_parent_dict_from_candidates(candidate_positions):
@@ -1208,36 +1226,29 @@ def find_all_intersect_muts_from_tree_by_matrix(
         return intersect_nodes
 
     overlap_counts = matrix_positive_values[target_positive].sum(axis=0, dtype=np.int64)
-    
-    # 遍历所有节点（除 ROOT）
+
     nodes_to_scan = tree_nodes if tree_nodes is not None else tree.all_nodes()
     for node in nodes_to_scan:
         node_name = node.name if hasattr(node, "name") else node
         if node_name == "ROOT":
             continue
-        
+
         has_intersection = False
         mutations_on_node = node_to_mutations.get(node_name, ()) if node_to_mutations is not None else tuple(node_name.split("|"))
-
-        # 检查节点中的每个突变是否与目标突变有交集
         for mut in mutations_on_node:
             if mut == target_mut:
-                continue  # 跳过自身
-            
+                continue
+
             mut_idx = matrix_positive_col_to_idx.get(mut)
             if mut_idx is None:
-                continue  # 确保突变存在于矩阵中
-            N11 = int(overlap_counts[mut_idx])
-            
-            # 如果任何一个突变有足够的共现，就标记这个节点
-            if N11 >= min_overlap:
+                continue
+            if int(overlap_counts[mut_idx]) >= min_overlap:
                 has_intersection = True
-                break  # 只要节点中有一个突变有交集就够了
-        
-        # 如果节点中有任何突变与目标突变有交集，就添加整个节点
+                break
+
         if has_intersection:
             intersect_nodes.add(node_name)
-    
+
     return intersect_nodes
 
 def find_all_path_nodes(intersection_nodes, tree_parent_dict):
@@ -1419,7 +1430,7 @@ def compute_new_mut_clone_affinity_correct(new_mut, mutation_clones_rescue, I_at
     clone_affinity = {}
     detailed_scores = {}
     
-    print(f"calculate the correlation with tree mutations for : {new_mut}")
+    logger.debug("calculate the correlation with tree mutations for: %s", new_mut)
     
     for clone_rep, clone_muts in mutation_clones_rescue.items():
         clone_key = tuple(sorted(clone_muts))
@@ -1553,8 +1564,7 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
 ):
     import pandas as pd
     import numpy as np
-    best_result = None
-    best_base_total_penalty = None
+    results = []
     
     # 如果没有候选位置，直接返回 None
     if len(selected_positions) == 0:
@@ -1562,39 +1572,62 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         return None, None, pd.DataFrame(), M_current
     
     matrix_index = M_current.index
+    matrix_columns = M_current.columns
     new_mut_input_vector = I_selected[new_mut].replace({pd.NA: np.nan})
-    new_mut_input_array = _coerce_float_array(new_mut_input_vector, matrix_index)
-    new_mut_bool_vector = new_mut_input_array == 1
+    new_mut_mask = _coerce_bool_vector(new_mut_input_vector.fillna(0).astype(int), matrix_index)
+    new_mut_mask_array = new_mut_mask.to_numpy(dtype=bool, copy=False)
+    trace_mutation = _should_trace_mutation(new_mut)
+
     m_current_bool_cache = {}
-    node_array_cache = {}
+    m_current_array_cache = {}
     lineage_parent_cache = {}
     conflict_nodes_cache = {}
+    conflict_vector_cache = {}
     full_chain_cache = {}
-    positive_cell_cache = {}
-    children_cache = {}
+    node_mutations_cache = {}
     i_selected_cache = {new_mut: new_mut_input_vector}
-    i_selected_array_cache = {new_mut: new_mut_input_array}
+    i_selected_array_cache = {
+        new_mut: pd.to_numeric(new_mut_input_vector.reindex(matrix_index), errors="coerce").to_numpy(
+            dtype=np.float64,
+            na_value=np.nan,
+        )
+    }
     p_selected_cache = {new_mut: P_selected[new_mut]}
 
     def get_m_current_bool(column_name):
         cached = m_current_bool_cache.get(column_name)
         if cached is None:
-            cached = _coerce_bool_array(M_current[column_name], matrix_index)
+            try:
+                cached = _coerce_bool_array(M_current[column_name], matrix_index)
+            except KeyError as exc:
+                resolved_column = find_mutation_column(column_name, matrix_columns)
+                logger.warning(
+                    "Missing matrix column during Step6 scoring: mutation=%s requested=%s resolved=%s sample=%s",
+                    new_mut,
+                    column_name,
+                    resolved_column,
+                    list(matrix_columns[:10]),
+                )
+                raise
             m_current_bool_cache[column_name] = cached
         return cached
 
-    def get_node_array(column_name):
-        cached = node_array_cache.get(column_name)
+    def get_m_current_array(column_name):
+        cached = m_current_array_cache.get(column_name)
         if cached is None:
-            cached = _coerce_float_array(M_current[column_name], matrix_index)
-            node_array_cache[column_name] = cached
-        return cached
-
-    def get_positive_cells(column_name):
-        cached = positive_cell_cache.get(column_name)
-        if cached is None:
-            cached = set(matrix_index[get_node_array(column_name) == 1])
-            positive_cell_cache[column_name] = cached
+            try:
+                cached = _coerce_float_array(M_current[column_name], matrix_index)
+            except KeyError as exc:
+                resolved_column = find_mutation_column(column_name, matrix_columns)
+                logger.warning(
+                    "Missing matrix column during Step6 scoring array fetch: mutation=%s requested=%s resolved=%s sample=%s",
+                    new_mut,
+                    column_name,
+                    resolved_column,
+                    list(matrix_columns[:10]),
+                )
+                raise
+            m_current_array_cache[column_name] = cached
         return cached
 
     def get_lineage_parent_dict(anchor_name):
@@ -1606,7 +1639,8 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
 
     def get_conflict_nodes(anchor_name, sibling_nodes, exclude_nodes=None):
         exclude_nodes = tuple(exclude_nodes or ())
-        cache_key = (anchor_name, tuple(sorted(sibling_nodes)), exclude_nodes)
+        sibling_key = tuple(sorted(sibling_nodes))
+        cache_key = (anchor_name, sibling_key, exclude_nodes)
         cached = conflict_nodes_cache.get(cache_key)
         if cached is None:
             lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
@@ -1620,9 +1654,15 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         return cached
 
     def build_conflict_vector(conflict_nodes):
+        conflict_key = tuple(conflict_nodes)
+        cached = conflict_vector_cache.get(conflict_key)
+        if cached is not None:
+            return cached
+
         vec_conflicts = np.zeros(len(matrix_index), dtype=bool)
         for conflict in conflict_nodes:
             np.logical_or(vec_conflicts, get_m_current_bool(conflict), out=vec_conflicts)
+        conflict_vector_cache[conflict_key] = vec_conflicts
         return vec_conflicts
 
     def get_full_chain(anchor_name):
@@ -1631,12 +1671,6 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             cached = get_full_mutnode_chain_with_anchor(anchor_name, parent_dict)
             full_chain_cache[anchor_name] = cached
         return cached
-
-    if tree_children_cache is None:
-        tree_children_cache = {
-            node.name: [child.name for child in node.children]
-            for node in T_current.traverse()
-        }
 
     def get_i_selected_vector(mutation):
         cached = i_selected_cache.get(mutation)
@@ -1648,7 +1682,10 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
     def get_i_selected_array(mutation):
         cached = i_selected_array_cache.get(mutation)
         if cached is None:
-            cached = _coerce_float_array(get_i_selected_vector(mutation), matrix_index)
+            cached = pd.to_numeric(get_i_selected_vector(mutation).reindex(matrix_index), errors="coerce").to_numpy(
+                dtype=np.float64,
+                na_value=np.nan,
+            )
             i_selected_array_cache[mutation] = cached
         return cached
 
@@ -1658,21 +1695,35 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             cached = P_selected[mutation]
             p_selected_cache[mutation] = cached
         return cached
-        
-    # 计算突变的特征用于动态调整惩罚
-    input_binary_vec_full = i_selected_cache[new_mut]
-    na_ratio = float(np.isnan(new_mut_input_array).mean())
-    mut_ratio = float(np.nan_to_num(new_mut_input_array, nan=0.0).mean())
-    mut_cells = set(matrix_index[new_mut_input_array == 1])
+
+    def get_mutations_on_node(node_name):
+        cached = node_mutations_cache.get(node_name)
+        if cached is None:
+            cached = tuple(node_name.split("|"))
+            node_mutations_cache[node_name] = cached
+        return cached
+
+    if tree_children_cache is None:
+        tree_children_cache = {
+            node.name: [child.name for child in node.children]
+            for node in T_current.traverse()
+        }
+
+    input_binary_vec_full = new_mut_input_vector
+    na_ratio = input_binary_vec_full.isna().mean()
+    mut_ratio = input_binary_vec_full.fillna(0).mean()
     N_nodes_beforeT = node_count if node_count is not None else len(T_current.all_nodes())
+    best_result = None
+    valid_result_count = 0
     
     for idx, pos in enumerate(selected_positions):
         placement_type = pos['placement_type']
         anchor = pos['anchor']
         
         # 默认 imputed vector
-        imputed_vec = np.zeros(len(matrix_index), dtype=bool)
+        imputed_bool = np.zeros(len(matrix_index), dtype=bool)
         merge_penalty = 0
+        trace_detail = None
         
         # -------------------------
         # 修正：同时考虑直系sibling和lineage之外的冲突
@@ -1680,26 +1731,45 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         if placement_type == 'on_node':
             parent = anchor
             
-            # on_node 候选替换掉 anchor 自身，不保留 anchor 作为父节点名，因此这里没有直系 child 冲突节点
-            sibling_nodes = []
+            # 获取直系sibling冲突节点
+            sibling_nodes = pos.get('sibling_nodes', [])
+
             all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes)
             vec_conflicts = build_conflict_vector(all_conflict_nodes)
-            
+
             # 正确的逻辑：现有节点的向量与清理后的new_mut合并
-            new_mut_cleaned = new_mut_bool_vector & ~vec_conflicts
-            imputed_vec = get_m_current_bool(anchor) | new_mut_cleaned
+            anchor_mask = np.ones(len(matrix_index), dtype=bool) if anchor == 'ROOT' else get_m_current_bool(anchor)
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = anchor_mask | new_mut_cleaned
+            if trace_mutation:
+                trace_detail = {
+                    "raw_positive_count": int(new_mut_mask.sum()),
+                    "cleaned_positive_count": int(new_mut_cleaned.sum()),
+                    "anchor_positive_count": int(anchor_mask.sum()),
+                    "conflict_node_count": int(len(all_conflict_nodes)),
+                    "conflict_nodes_sample": list(all_conflict_nodes[:12]),
+                }
             N_nodes = N_nodes_beforeT + 1
             
         elif placement_type == 'new_leaf':
             parent = anchor
             
-            sibling_nodes = tree_children_cache.get(parent, [])
+            # 获取直系sibling冲突节点
+            sibling_nodes = pos.get('sibling_nodes', [])
+
             all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes)
             vec_conflicts = build_conflict_vector(all_conflict_nodes)
-            
+
             # 正确的逻辑：先排除所有冲突，再与parent交集
-            new_mut_cleaned = new_mut_bool_vector & ~vec_conflicts
-            imputed_vec = new_mut_cleaned
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = new_mut_cleaned
+            if trace_mutation:
+                trace_detail = {
+                    "raw_positive_count": int(new_mut_mask.sum()),
+                    "cleaned_positive_count": int(new_mut_cleaned.sum()),
+                    "conflict_node_count": int(len(all_conflict_nodes)),
+                    "conflict_nodes_sample": list(all_conflict_nodes[:12]),
+                }
             N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'on_edge':
@@ -1707,13 +1777,23 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             child = pos['meta']['child']
             vec_child = get_m_current_bool(child)
             
-            sibling_nodes = [name for name in tree_children_cache.get(parent, []) if name != child]
+            # 获取直系sibling冲突节点
+            sibling_nodes = pos.get('sibling_nodes', [])
+
             all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes)
             vec_conflicts = build_conflict_vector(all_conflict_nodes)
-            
+
             # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bool_vector & ~vec_conflicts
-            imputed_vec = vec_child | new_mut_cleaned
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = vec_child | new_mut_cleaned
+            if trace_mutation:
+                trace_detail = {
+                    "raw_positive_count": int(new_mut_mask.sum()),
+                    "cleaned_positive_count": int(new_mut_cleaned.sum()),
+                    "child_positive_count": int(vec_child.sum()),
+                    "conflict_node_count": int(len(all_conflict_nodes)),
+                    "conflict_nodes_sample": list(all_conflict_nodes[:12]),
+                }
             N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'new_parent_merge':
@@ -1725,13 +1805,23 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             for c in merge_children:
                 np.logical_or(vec_children, get_m_current_bool(c), out=vec_children)
             
-            sibling_nodes = [name for name in tree_children_cache.get(parent, []) if name not in merge_children]
+            # 获取直系sibling冲突节点
+            sibling_nodes = pos.get('sibling_nodes', [])
+
             all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes, exclude_nodes=merge_children)
             vec_conflicts = build_conflict_vector(all_conflict_nodes)
-            
+
             # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bool_vector & ~vec_conflicts
-            imputed_vec = vec_children | new_mut_cleaned
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = vec_children | new_mut_cleaned
+            if trace_mutation:
+                trace_detail = {
+                    "raw_positive_count": int(new_mut_mask.sum()),
+                    "cleaned_positive_count": int(new_mut_cleaned.sum()),
+                    "children_positive_count": int(vec_children.sum()),
+                    "conflict_node_count": int(len(all_conflict_nodes)),
+                    "conflict_nodes_sample": list(all_conflict_nodes[:12]),
+                }
             merge_penalty = np.log(len(merge_children)) * 0.5
             N_nodes = N_nodes_beforeT + 2
             
@@ -1743,10 +1833,12 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         # -------------------------
         # 获取从锚点到ROOT的完整突变链
         full_mutnode_chain = get_full_chain(anchor)
+
+        imputed_vec = pd.Series(imputed_bool.astype(int, copy=False), index=matrix_index, copy=False)
         
         # 计算new_mut本身的罚分
         posterior_vec = get_p_selected_vector(new_mut)
-        input_binary_vec = get_i_selected_array(new_mut)
+        input_binary_vec = get_i_selected_vector(new_mut)
         
         new_mut_penalty, actual_na_flip_ratio, refined_ω_NA, φ_adjusted, weight_na_to_1, weight_na_to_0 = compute_dynamic_penalty(
             input_binary_vec, posterior_vec, imputed_vec, fnfp_ratio, ω_NA, φ,
@@ -1761,29 +1853,29 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             if node == 'ROOT':
                 continue
             
-            mutations_on_node = node.split("|")
+            mutations_on_node = get_mutations_on_node(node)
+            node_values = get_m_current_array(node)
+            cells_to_flip_mask = imputed_bool & ((node_values == 0) | np.isnan(node_values))
+            if not bool(cells_to_flip_mask.any()):
+                continue
+            imputed_ones = np.ones(int(cells_to_flip_mask.sum()), dtype=np.int8)
             
             for mutation in mutations_on_node:
                 if mutation == new_mut:  # 跳过new_mut本身，因为已经计算过了
                     continue
                     
-                # 获取该突变的原始数据
+                chain_mutations_count += 1
                 mut_input_binary_vec = get_i_selected_array(mutation)
-                
-                # 计算该突变在new_mut放置后的新向量
-                # 对于split_full_mutmutation_chain_mutations中的突变，如果它们在final_imputed_vec为1的细胞中当前为0或NA，需要翻转为1
-                node_values = get_node_array(node)
-                cells_to_flip_mask = imputed_vec & ((node_values == 0) | np.isnan(node_values))
-                if bool(cells_to_flip_mask.any()):
-                    flipped_input = mut_input_binary_vec[cells_to_flip_mask]
-                    fn_count = int((flipped_input == 0).sum())
-                    na_to_1_count = int(np.isnan(flipped_input).sum())
-                    mut_penalty = (fn_count * fnfp_ratio) + (na_to_1_count * weight_na_to_1)
-                else:
-                    mut_penalty = 0
+                mut_penalty = compute_bayesian_penalty_each_chain_mut_by_pos(
+                    mut_input_binary_vec[cells_to_flip_mask],
+                    None,
+                    imputed_ones,
+                    weight_na_to_1,
+                    weight_na_to_0,
+                    fnfp_ratio,
+                )
                 
                 chain_penalty += mut_penalty
-                chain_mutations_count += 1
         
         # 总罚分 = new_mut罚分 + 完整突变链罚分
         total_chain_penalty = new_mut_penalty + chain_penalty
@@ -1802,92 +1894,107 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         # 添加基于intersection模式和层级的精细调整
         # -------------------------
         intersection_penalty = compute_intersection_based_penalty(
-            new_mut,
-            pos,
-            intersection_nodes,
-            M_current,
-            I_selected,
-            na_ratio,
-            mut_ratio,
-            actual_na_flip_ratio,
-            mut_cells=mut_cells,
-            positive_cell_cache=positive_cell_cache,
+            new_mut, pos, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio
         )
         
         hierarchy_penalty = compute_hierarchy_penalty(
-            new_mut,
-            pos,
-            M_current,
-            I_selected,
-            parent_dict,
-            na_ratio,
-            mut_ratio,
-            actual_na_flip_ratio,
-            mut_cells=mut_cells,
-            positive_cell_cache=positive_cell_cache,
-            children_cache=children_cache,
+            new_mut, pos, M_current, I_selected, parent_dict, na_ratio, mut_ratio, actual_na_flip_ratio
         )
         
         total_penalty = base_total_penalty + intersection_penalty + hierarchy_penalty
+
+        if trace_mutation:
+            _log_traced_mutation_decision(
+                logger,
+                "Step4_ScoringCandidate",
+                new_mut,
+                position_index=idx,
+                position=_format_position_summary(pos),
+                base_total_penalty=float(base_total_penalty),
+                total_penalty=float(total_penalty),
+                intersection_penalty=float(intersection_penalty),
+                hierarchy_penalty=float(hierarchy_penalty),
+                imputed_ones=int(imputed_vec.sum()),
+                chain=full_mutnode_chain,
+                trace_detail=trace_detail,
+            )
         
-        if not bool(imputed_vec.any()):
-            logger.debug(f"Skipping position with all imputed_vec values as 0: {pos}")
+        result_row = {
+            'position_index': idx,
+            'placement_type': placement_type,
+            'anchor': anchor,
+            'new_mut_penalty': new_mut_penalty,
+            'chain_penalty': chain_penalty,
+            'total_chain_penalty': total_chain_penalty,
+            'N_nodes': N_nodes,
+            'BIC_penalty': BIC_penalty,
+            'log_N_nodes_penalty': log_N_nodes_penalty,
+            'merge_penalty': merge_penalty,
+            'root_penalty': root_penalty,
+            'base_total_penalty': base_total_penalty,
+            'intersection_penalty': intersection_penalty,
+            'hierarchy_penalty': hierarchy_penalty,
+            'total_penalty': total_penalty,
+            'position': pos,
+            'imputed_vec': imputed_vec,
+            'na_ratio': na_ratio,
+            'mut_ratio': mut_ratio,
+            'actual_na_flip_ratio': actual_na_flip_ratio,
+            'chain_mutations_count': chain_mutations_count,
+            'weight_na_to_1': weight_na_to_1,
+            'weight_na_to_0': weight_na_to_0,
+            'refined_ω_NA': refined_ω_NA,
+            'φ_adjusted': φ_adjusted,
+            'base_ω_NA': ω_NA,
+            'base_φ': φ,
+            'full_mutnode_chain': full_mutnode_chain
+        }
+        results.append(result_row)
+
+        if imputed_vec.sum() == 0:
+            logger.debug("Skipping position with all imputed_vec values as 0: %s", pos)
             continue
 
-        if best_base_total_penalty is None or base_total_penalty < best_base_total_penalty:
-            best_base_total_penalty = base_total_penalty
-            best_result = {
-                'position_index': idx,
-                'placement_type': placement_type,
-                'anchor': anchor,
-                'new_mut_penalty': new_mut_penalty,
-                'chain_penalty': chain_penalty,
-                'total_chain_penalty': total_chain_penalty,
-                'N_nodes': N_nodes,
-                'BIC_penalty': BIC_penalty,
-                'log_N_nodes_penalty': log_N_nodes_penalty,
-                'merge_penalty': merge_penalty,
-                'root_penalty': root_penalty,
-                'base_total_penalty': base_total_penalty,
-                'intersection_penalty': intersection_penalty,
-                'hierarchy_penalty': hierarchy_penalty,
-                'total_penalty': total_penalty,
-                'position': pos,
-                'imputed_vec': imputed_vec,
-                'na_ratio': na_ratio,
-                'mut_ratio': mut_ratio,
-                'actual_na_flip_ratio': actual_na_flip_ratio,
-                'chain_mutations_count': chain_mutations_count,
-                'weight_na_to_1': weight_na_to_1,
-                'weight_na_to_0': weight_na_to_0,
-                'refined_ω_NA': refined_ω_NA,
-                'φ_adjusted': φ_adjusted,
-                'base_ω_NA': ω_NA,
-                'base_φ': φ,
-                'full_mutnode_chain': full_mutnode_chain,
-            }
-
+        valid_result_count += 1
+        if best_result is None or base_total_penalty < best_result['base_total_penalty']:
+            best_result = result_row
+    
+    # 初始化df_penalty避免作用域问题
     df_penalty = pd.DataFrame()
     
     try:
-        if best_result is None:
+        if len(results) == 0:
+            logger.warning(f"No valid results for mutation {new_mut}")
+            return None, None, pd.DataFrame(), M_current
+        
+        df_penalty = pd.DataFrame(results)
+        
+        if df_penalty.empty:
+            logger.warning(f"Empty penalty DataFrame for mutation {new_mut}")
+            return None, None, df_penalty, M_current
+        
+        if 'total_penalty' not in df_penalty.columns:
+            logger.warning(f"total_penalty column missing for mutation {new_mut}. Columns: {df_penalty.columns.tolist()}")
+            return None, None, df_penalty, M_current
+        
+        if df_penalty['total_penalty'].isna().all():
+            logger.warning(f"All total_penalty values are NaN for mutation {new_mut}")
+            return None, None, df_penalty, M_current
+
+        if best_result is None or valid_result_count == 0:
             logger.warning(f"No valid results (with non-zero imputed_vec) for mutation {new_mut}")
             return None, None, df_penalty, M_current
 
         final_position = best_result['position']
-        final_imputed_bool = best_result['imputed_vec'].copy()
-        final_imputed_vec = pd.Series(
-            final_imputed_bool.astype(int, copy=False),
-            index=matrix_index,
-        )
-        df_penalty = pd.DataFrame(
-            [
-                {
-                    key: value
-                    for key, value in best_result.items()
-                    if key not in {'position', 'imputed_vec', 'full_mutnode_chain'}
-                }
-            ]
+        final_imputed_vec = best_result['imputed_vec'].copy()
+        _log_traced_mutation_decision(
+            logger,
+            "Step4_ScoringSelected",
+            new_mut,
+            selected_position=_format_position_summary(final_position),
+            base_total_penalty=float(best_result['base_total_penalty']),
+            total_penalty=float(best_result['total_penalty']),
+            candidate_count=int(valid_result_count),
         )
         
         # -------------------------
@@ -1896,21 +2003,16 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         anchor = final_position['anchor']
         
         # 获取从锚点到ROOT的完整突变链
-        full_mutnode_chain = get_full_mutnode_chain_with_anchor(anchor, parent_dict)
+        full_mutnode_chain = best_result['full_mutnode_chain']
         
         # 找出所有在final_imputed_vec中为1的细胞
-        cells_with_final_one = final_imputed_bool
+        cells_with_final_one = final_imputed_vec[final_imputed_vec == 1].index
         
-        if bool(cells_with_final_one.any()):
-            # 对于每个在final_imputed_vec中为1的细胞，确保其父节点链也为1
-            for mutation in full_mutnode_chain:
-                current_values = M_current[mutation].to_numpy(copy=False)
-                cells_to_fill = cells_with_final_one & (current_values == 0)
-                if bool(cells_to_fill.any()):
-                    M_current.loc[cells_to_fill, mutation] = 1
-                    node_array_cache[mutation] = _coerce_float_array(M_current[mutation], matrix_index)
-                    m_current_bool_cache[mutation] = _coerce_bool_array(M_current[mutation], matrix_index)
-                    positive_cell_cache[mutation] = set(matrix_index[node_array_cache[mutation] == 1])
+        if len(cells_with_final_one) > 0:
+            chain_columns = [mutation for mutation in full_mutnode_chain if mutation in M_current.columns]
+            if chain_columns:
+                chain_block = M_current.loc[cells_with_final_one, chain_columns]
+                M_current.loc[cells_with_final_one, chain_columns] = chain_block.mask(chain_block == 0, 1)
         
         return final_position, final_imputed_vec.astype(int), df_penalty, M_current
     
@@ -1979,21 +2081,8 @@ def compute_dynamic_penalty(input_binary_vec, posterior_vec, imputed_vec, fnfp_r
     """
     基于实际NA→1翻转比例动态调整所有惩罚权重
     """
-    if hasattr(input_binary_vec, "to_numpy"):
-        input_binary_vec = pd.to_numeric(input_binary_vec, errors="coerce").to_numpy(
-            dtype=np.float64,
-            na_value=np.nan,
-        )
-    else:
-        input_binary_vec = np.asarray(input_binary_vec, dtype=np.float64)
-
-    if hasattr(imputed_vec, "to_numpy"):
-        imputed_vec = imputed_vec.to_numpy(dtype=np.int8, copy=False)
-    else:
-        imputed_vec = np.asarray(imputed_vec, dtype=np.int8)
-
     # 计算实际的NA→1翻转比例
-    na_mask = np.isnan(input_binary_vec)
+    na_mask = input_binary_vec.isna()
     na_to_one_count = ((imputed_vec == 1) & na_mask).sum()
     total_na_count = na_mask.sum()
     
@@ -2078,18 +2167,7 @@ def compute_dynamic_bic_penalty(base_φ, na_ratio, mut_ratio, actual_na_flip_rat
     return max(φ_adjusted, 0.1)  # 确保不会降得太低
 
 
-def compute_intersection_based_penalty(
-    new_mut,
-    position,
-    intersection_nodes,
-    M_current,
-    I_selected,
-    na_ratio,
-    mut_ratio,
-    actual_na_flip_ratio,
-    mut_cells=None,
-    positive_cell_cache=None,
-):
+def compute_intersection_based_penalty(new_mut, position, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio):
     """
     根据intersection模式和实际NA翻转调整罚分
     """
@@ -2097,20 +2175,11 @@ def compute_intersection_based_penalty(
     placement_type = position['placement_type']
     anchor = position['anchor']
     
-    if mut_cells is None:
-        mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
-    if positive_cell_cache is None:
-        positive_cell_cache = {}
-
-    def get_positive_cells(column_name):
-        cached = positive_cell_cache.get(column_name)
-        if cached is None:
-            cached = set(M_current.index[M_current[column_name] == 1])
-            positive_cell_cache[column_name] = cached
-        return cached
+    # 获取new_mut的mutant cells
+    mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
     
     if placement_type == 'on_node':
-        anchor_cells = get_positive_cells(anchor)
+        anchor_cells = set(M_current.index[M_current[anchor] == 1])
         
         # 情况1：如果new_mut只与一个节点强相交，但被放在不同的early node
         if len(intersection_nodes) == 1:
@@ -2144,19 +2213,8 @@ def compute_intersection_based_penalty(
     return extra_penalty
 
 
-def compute_hierarchy_penalty(
-    new_mut,
-    position,
-    M_current,
-    I_selected,
-    parent_dict,
-    na_ratio,
-    mut_ratio,
-    actual_na_flip_ratio,
-    mut_cells=None,
-    positive_cell_cache=None,
-    children_cache=None,
-):
+def compute_hierarchy_penalty(new_mut, position, M_current, I_selected, parent_dict, 
+                            na_ratio, mut_ratio, actual_na_flip_ratio):
     """
     计算层级合理性惩罚，考虑实际NA翻转
     """
@@ -2164,34 +2222,19 @@ def compute_hierarchy_penalty(
     placement_type = position['placement_type']
     anchor = position['anchor']
     
-    if mut_cells is None:
-        mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
-    if positive_cell_cache is None:
-        positive_cell_cache = {}
-    if children_cache is None:
-        children_cache = {}
-
-    def get_positive_cells(column_name):
-        cached = positive_cell_cache.get(column_name)
-        if cached is None:
-            cached = set(M_current.index[M_current[column_name] == 1])
-            positive_cell_cache[column_name] = cached
-        return cached
+    mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
     
     if placement_type == 'on_node':
-        anchor_cells = get_positive_cells(anchor)
+        anchor_cells = set(M_current.index[M_current[anchor] == 1])
         
         # 检查这个anchor是否有children
-        anchor_children = children_cache.get(anchor)
-        if anchor_children is None:
-            anchor_children = find_children_of_node(anchor, M_current.columns, parent_dict)
-            children_cache[anchor] = anchor_children
+        anchor_children = find_children_of_node(anchor, M_current.columns, parent_dict)
         
         if anchor_children:
             # 如果anchor有children，且new_mut与children有特定模式
             children_intersection = False
             for child in anchor_children:
-                child_cells = get_positive_cells(child)
+                child_cells = set(M_current.index[M_current[child] == 1])
                 if mut_cells.issubset(child_cells) and len(mut_cells) < len(child_cells) * 0.8:
                     children_intersection = True
                     break
@@ -2203,7 +2246,7 @@ def compute_hierarchy_penalty(
     
     elif placement_type == 'new_leaf':
         parent = anchor
-        parent_cells = get_positive_cells(parent)
+        parent_cells = set(M_current.index[M_current[parent] == 1])
         
         # 如果new_mut的细胞是parent细胞的真子集，这是一个合理的子克隆
         if mut_cells.issubset(parent_cells) and len(mut_cells) < len(parent_cells) * 0.8:
@@ -2236,12 +2279,7 @@ def find_children_of_node(node, all_columns, parent_dict):
 # -------------------------
 
 ##### 在整个树上计算
-def calculate_fp_fn_ratios_across_tree(
-    M_checkpoint,
-    I_attached,
-    active_logger=None,
-    stage_name="Step6_6_TreewideFpFnRatio",
-):
+def calculate_fp_fn_ratios_across_tree(M_checkpoint, I_attached, active_logger=None, stage_name=None):
     """
     计算每个突变的fp_ratio和fn_ratio
     
@@ -2253,88 +2291,68 @@ def calculate_fp_fn_ratios_across_tree(
     DataFrame: 包含每个突变的fp_ratio和fn_ratio
     dict: 包含每个突变对应的fp>0的其他突变列表
     """
-    if active_logger is None:
-        active_logger = logger
-
-    stage_start = time.perf_counter()
     shared_index = M_checkpoint.index.intersection(I_attached.index)
     shared_columns = [col for col in M_checkpoint.columns if col in I_attached.columns]
-    if not shared_columns or shared_index.empty:
+    if shared_index.empty or not shared_columns:
         return pd.DataFrame(columns=["identifier", "fp_ratio", "fn_ratio"]), {}
 
     m_view = M_checkpoint.loc[shared_index, shared_columns]
     i_view = I_attached.loc[shared_index, shared_columns]
-    i_all_view = I_attached.loc[shared_index, :]
 
-    mutations = list(shared_columns)
-    total_mutations = len(mutations)
-    results = []
-    fp_mutations_dict = {}
+    mutant_mask = m_view.eq(1).to_numpy(dtype=bool, copy=False)
+    original_one_mask = i_view.eq(1).to_numpy(dtype=bool, copy=False)
+    original_zero_mask = i_view.eq(0).to_numpy(dtype=bool, copy=False)
+    fp_mask = original_one_mask & m_view.eq(0).to_numpy(dtype=bool, copy=False)
 
-    mutant_mask = m_view.eq(1).fillna(False).to_numpy(dtype=bool, copy=False)
-    original_one_mask = i_view.eq(1).fillna(False).to_numpy(dtype=bool, copy=False)
-    original_zero_mask = i_view.eq(0).fillna(False).to_numpy(dtype=bool, copy=False)
-    fp_mask = (original_one_mask & m_view.eq(0).fillna(False).to_numpy(dtype=bool, copy=False))
+    mutant_mask_i = mutant_mask.astype(np.int32, copy=False)
+    fp_mask_i = fp_mask.astype(np.int32, copy=False)
+    cross_fp_counts = mutant_mask_i.T @ fp_mask_i
+    total_fp_counts = fp_mask_i.sum(axis=0, dtype=np.int64)
 
-    mutant_mask_int = mutant_mask.astype(np.int32, copy=False)
-    fp_mask_int = fp_mask.astype(np.int32, copy=False)
-    cross_fp_counts = mutant_mask_int.T @ fp_mask_int
-    total_fp_counts = fp_mask_int.sum(axis=0, dtype=np.int64)
-
-    row_one_counts_all = i_all_view.eq(1).sum(axis=1).to_numpy(dtype=np.int32, copy=False)
-    multi_one_rows = row_one_counts_all > 1
-    zero_counts = (mutant_mask & original_zero_mask).sum(axis=0, dtype=np.int64)
-    intersect_counts = (
-        mutant_mask
-        & original_one_mask
-        & multi_one_rows[:, None]
-    ).sum(axis=0, dtype=np.int64)
-
-    if total_mutations > 1:
+    mut_count = len(shared_columns)
+    if mut_count > 1:
         ratio_matrix = np.divide(
             cross_fp_counts,
             total_fp_counts[None, :],
             out=np.zeros_like(cross_fp_counts, dtype=float),
             where=total_fp_counts[None, :] > 0,
         )
-        row_sums = ratio_matrix.sum(axis=1, dtype=float) - np.diag(ratio_matrix)
-        avg_fp_ratios = row_sums / (total_mutations - 1)
+        avg_fp_ratios = (ratio_matrix.sum(axis=1) - np.diag(ratio_matrix)) / (mut_count - 1)
     else:
-        ratio_matrix = np.zeros((total_mutations, total_mutations), dtype=float)
-        avg_fp_ratios = np.zeros(total_mutations, dtype=float)
+        ratio_matrix = np.zeros((mut_count, mut_count), dtype=float)
+        avg_fp_ratios = np.zeros(mut_count, dtype=float)
 
-    fn_denominators = zero_counts + intersect_counts
+    row_one_counts = original_one_mask.sum(axis=1, dtype=np.int32)
+    intersectable_rows = row_one_counts > 1
+    zero_counts = (mutant_mask & original_zero_mask).sum(axis=0, dtype=np.int64)
+    intersect_counts = (
+        mutant_mask
+        & original_one_mask
+        & intersectable_rows[:, None]
+    ).sum(axis=0, dtype=np.int64)
+    fn_denominator = zero_counts + intersect_counts
     fn_ratios = np.divide(
         zero_counts,
-        fn_denominators,
-        out=np.zeros(total_mutations, dtype=float),
-        where=fn_denominators > 0,
+        fn_denominator,
+        out=np.zeros(mut_count, dtype=float),
+        where=fn_denominator > 0,
     )
 
-    column_names = np.asarray(mutations, dtype=object)
-    for idx, mut in enumerate(mutations, start=1):
-        if total_mutations > 1:
-            positive_mask = ratio_matrix[idx - 1] > 0
-            positive_mask[idx - 1] = False
-            fp_positive_muts = column_names[positive_mask].tolist() if bool(positive_mask.any()) else []
+    column_names = np.asarray(shared_columns, dtype=object)
+    fp_mutations_dict = {}
+    results = []
+    for idx, mut in enumerate(shared_columns):
+        if mut_count > 1:
+            positive_mask = ratio_matrix[idx] > 0
+            positive_mask[idx] = False
+            fp_mutations_dict[mut] = column_names[positive_mask].tolist() if positive_mask.any() else []
         else:
-            fp_positive_muts = []
-
-        fp_mutations_dict[mut] = fp_positive_muts
+            fp_mutations_dict[mut] = []
         results.append({
-            'identifier': mut,
-            'fp_ratio': float(avg_fp_ratios[idx - 1]),
-            'fn_ratio': float(fn_ratios[idx - 1]),
+            "identifier": mut,
+            "fp_ratio": float(avg_fp_ratios[idx]),
+            "fn_ratio": float(fn_ratios[idx]),
         })
-        _log_work_progress(
-            active_logger,
-            stage_name,
-            stage_start,
-            idx,
-            total_mutations,
-            mut,
-            "mutations",
-        )
 
     return pd.DataFrame(results), fp_mutations_dict
 
@@ -2345,13 +2363,7 @@ def calculate_fp_fn_ratios_across_tree(
 
 
 ##### 在树中的每一个 subclone 内部计算
-def calculate_fp_ratios_within_subclone(
-    M_checkpoint,
-    I_attached,
-    mutation_clones_for_subclone,
-    active_logger=None,
-    stage_name="Step6_5_SubcloneFpRatio",
-):
+def calculate_fp_ratios_within_subclone(M_checkpoint, I_attached, mutation_clones_for_subclone, active_logger=None, stage_name=None):
     """
     在每个subclone内部计算每个突变的fp_ratio，并记录FP>0的其他突变
     
@@ -2364,151 +2376,115 @@ def calculate_fp_ratios_within_subclone(
     DataFrame: 包含每个突变在每个subclone中的fp_ratio
     dict: 每个突变对应的FP>0的其他突变列表
     """
-    if active_logger is None:
-        active_logger = logger
-
-    stage_start = time.perf_counter()
-    results_for_out_subclone_muts = []
-    results_for_in_subclone_muts = []
-    fp_positive_mutations_dict_for_out_subclone_muts = {}
-    fp_positive_mutations_dict_for_in_subclone_muts = {}
-
     shared_index = M_checkpoint.index.intersection(I_attached.index)
     shared_columns = [col for col in M_checkpoint.columns if col in I_attached.columns]
-    if not shared_columns or shared_index.empty:
-        empty_out = pd.DataFrame(
-            columns=[
-                "identifier",
-                "subclone_representative",
-                "subclone_size",
-                "fp_ratio_within_subclone_for_out_subclone_muts",
-                "count_fp_mutations_for_out_subclone_muts",
-                "ratio_fp_mutations_for_out_subclone_muts",
-            ]
-        )
-        empty_in = pd.DataFrame(
-            columns=[
-                "identifier",
-                "fp_ratio_within_subclone_for_in_subclone_muts",
-                "count_fp_mutations_for_in_subclone_muts",
-                "ratio_fp_mutations_for_in_subclone_muts",
-            ]
-        )
-        return (
-            pd.merge(empty_out, empty_in, on="identifier", how="outer"),
-            fp_positive_mutations_dict_for_out_subclone_muts,
-            fp_positive_mutations_dict_for_in_subclone_muts,
-        )
+    if shared_index.empty or not shared_columns:
+        empty_out = pd.DataFrame(columns=[
+            "identifier",
+            "subclone_representative",
+            "subclone_size",
+            "fp_ratio_within_subclone_for_out_subclone_muts",
+            "count_fp_mutations_for_out_subclone_muts",
+            "ratio_fp_mutations_for_out_subclone_muts",
+        ])
+        empty_in = pd.DataFrame(columns=[
+            "identifier",
+            "fp_ratio_within_subclone_for_in_subclone_muts",
+            "count_fp_mutations_for_in_subclone_muts",
+            "ratio_fp_mutations_for_in_subclone_muts",
+        ])
+        return pd.merge(empty_out, empty_in, on="identifier", how="outer"), {}, {}
 
     m_view = M_checkpoint.loc[shared_index, shared_columns]
     i_view = I_attached.loc[shared_index, shared_columns]
-    original_one_df = i_view.eq(1).fillna(False)
-    imputed_zero_df = m_view.eq(0).fillna(False)
-    fp_mask = (original_one_df & imputed_zero_df).to_numpy(dtype=np.int32, copy=False)
-    mutant_mask = m_view.eq(1).fillna(False).to_numpy(dtype=bool, copy=False)
+    original_one = i_view.eq(1).to_numpy(dtype=bool, copy=False)
+    fp_mask = (original_one & m_view.eq(0).to_numpy(dtype=bool, copy=False)).astype(np.int32, copy=False)
+    mutant_mask = m_view.eq(1).to_numpy(dtype=bool, copy=False)
     column_names = np.asarray(shared_columns, dtype=object)
-    column_to_idx = {col: idx for idx, col in enumerate(shared_columns)}
-    total_columns = len(M_checkpoint.columns)
-    subclone_items = list(mutation_clones_for_subclone.items())
+    col_to_idx = {col: idx for idx, col in enumerate(shared_columns)}
+    total_columns = len(shared_columns)
 
-    for clone_idx, (subclone_rep, subclone_mutations) in enumerate(subclone_items, start=1):
-        valid_subclone_mutations = [mut for mut in subclone_mutations if mut in column_to_idx]
-        if not valid_subclone_mutations:
-            _log_work_progress(
-                active_logger,
-                stage_name,
-                stage_start,
-                clone_idx,
-                len(subclone_items),
-                subclone_rep,
-                "subclones",
-            )
+    results_out = []
+    results_in = []
+    fp_out = {}
+    fp_in = {}
+
+    for subclone_rep, subclone_mutations in mutation_clones_for_subclone.items():
+        valid_muts = [mut for mut in subclone_mutations if mut in col_to_idx]
+        if not valid_muts:
             continue
 
-        subclone_indices = np.asarray([column_to_idx[mut] for mut in valid_subclone_mutations], dtype=np.int32)
-        subclone_cells_mask = mutant_mask[:, subclone_indices].any(axis=1)
+        subclone_idx = np.asarray([col_to_idx[mut] for mut in valid_muts], dtype=np.int32)
+        subclone_cells_mask = mutant_mask[:, subclone_idx].any(axis=1)
         subclone_fp_counts_all = fp_mask[subclone_cells_mask].sum(axis=0, dtype=np.int64)
-        cross_fp_counts = mutant_mask[:, subclone_indices].astype(np.int32, copy=False).T @ fp_mask
+        cross_fp_counts = mutant_mask[:, subclone_idx].astype(np.int32, copy=False).T @ fp_mask
+
         outside_mask = np.ones(len(shared_columns), dtype=bool)
-        outside_mask[subclone_indices] = False
-        outside_indices = np.flatnonzero(outside_mask)
+        outside_mask[subclone_idx] = False
+        outside_idx = np.flatnonzero(outside_mask)
 
-        for local_idx, mut in enumerate(valid_subclone_mutations):
-            fp_positive_for_current_mut = []
-            if outside_indices.size > 0:
-                numerators = cross_fp_counts[local_idx, outside_indices]
-                denominators = subclone_fp_counts_all[outside_indices]
+        for local_idx, mut in enumerate(valid_muts):
+            if outside_idx.size > 0:
+                numerators = cross_fp_counts[local_idx, outside_idx]
+                denominators = subclone_fp_counts_all[outside_idx]
                 ratios = np.divide(
                     numerators,
                     denominators,
-                    out=np.zeros(outside_indices.size, dtype=float),
+                    out=np.zeros(outside_idx.size, dtype=float),
                     where=denominators > 0,
                 )
                 positive_mask = ratios > 0
-                if bool(positive_mask.any()):
-                    fp_positive_for_current_mut = column_names[outside_indices[positive_mask]].tolist()
-                avg_fp_ratio = float(ratios.mean())
+                positive_list = column_names[outside_idx[positive_mask]].tolist() if positive_mask.any() else []
+                avg_ratio = float(ratios.mean())
             else:
-                avg_fp_ratio = 0.0
+                positive_list = []
+                avg_ratio = 0.0
 
-            results_for_out_subclone_muts.append({
-                'identifier': mut,
-                'subclone_representative': subclone_rep,
-                'subclone_size': len(valid_subclone_mutations),
-                'fp_ratio_within_subclone_for_out_subclone_muts': avg_fp_ratio,
-                'count_fp_mutations_for_out_subclone_muts': len(fp_positive_for_current_mut),
-                'ratio_fp_mutations_for_out_subclone_muts': len(fp_positive_for_current_mut) / total_columns,
+            results_out.append({
+                "identifier": mut,
+                "subclone_representative": subclone_rep,
+                "subclone_size": len(valid_muts),
+                "fp_ratio_within_subclone_for_out_subclone_muts": avg_ratio,
+                "count_fp_mutations_for_out_subclone_muts": len(positive_list),
+                "ratio_fp_mutations_for_out_subclone_muts": len(positive_list) / total_columns if total_columns else 0,
             })
-            fp_positive_mutations_dict_for_out_subclone_muts[mut] = fp_positive_for_current_mut
+            fp_out[mut] = positive_list
 
-        if len(valid_subclone_mutations) <= 1:
-            for mut in valid_subclone_mutations:
-                results_for_in_subclone_muts.append({
-                    'identifier': mut,
-                    'fp_ratio_within_subclone_for_in_subclone_muts': 0,
-                    'count_fp_mutations_for_in_subclone_muts': 0,
-                    'ratio_fp_mutations_for_in_subclone_muts': 0,
+        if len(valid_muts) <= 1:
+            for mut in valid_muts:
+                results_in.append({
+                    "identifier": mut,
+                    "fp_ratio_within_subclone_for_in_subclone_muts": 0.0,
+                    "count_fp_mutations_for_in_subclone_muts": 0,
+                    "ratio_fp_mutations_for_in_subclone_muts": 0.0,
                 })
-                fp_positive_mutations_dict_for_in_subclone_muts[mut] = []
-        else:
-            for local_idx, mut in enumerate(valid_subclone_mutations):
-                in_mask = np.ones(len(subclone_indices), dtype=bool)
-                in_mask[local_idx] = False
-                other_indices = subclone_indices[in_mask]
-                numerators = cross_fp_counts[local_idx, other_indices]
-                denominators = subclone_fp_counts_all[other_indices]
-                ratios = np.divide(
-                    numerators,
-                    denominators,
-                    out=np.zeros(other_indices.size, dtype=float),
-                    where=denominators > 0,
-                )
-                positive_mask = ratios > 0
-                fp_positive_for_current_mut = (
-                    column_names[other_indices[positive_mask]].tolist()
-                    if bool(positive_mask.any())
-                    else []
-                )
-                results_for_in_subclone_muts.append({
-                    'identifier': mut,
-                    'fp_ratio_within_subclone_for_in_subclone_muts': float(ratios.mean()) if ratios.size else 0.0,
-                    'count_fp_mutations_for_in_subclone_muts': len(fp_positive_for_current_mut),
-                    'ratio_fp_mutations_for_in_subclone_muts': len(fp_positive_for_current_mut) / total_columns,
-                })
-                fp_positive_mutations_dict_for_in_subclone_muts[mut] = fp_positive_for_current_mut
+                fp_in[mut] = []
+            continue
 
-        _log_work_progress(
-            active_logger,
-            stage_name,
-            stage_start,
-            clone_idx,
-            len(subclone_items),
-            subclone_rep,
-            "subclones",
-        )
+        for local_idx, mut in enumerate(valid_muts):
+            in_mask = np.ones(len(subclone_idx), dtype=bool)
+            in_mask[local_idx] = False
+            other_idx = subclone_idx[in_mask]
+            numerators = cross_fp_counts[local_idx, other_idx]
+            denominators = subclone_fp_counts_all[other_idx]
+            ratios = np.divide(
+                numerators,
+                denominators,
+                out=np.zeros(other_idx.size, dtype=float),
+                where=denominators > 0,
+            )
+            positive_mask = ratios > 0
+            positive_list = column_names[other_idx[positive_mask]].tolist() if positive_mask.any() else []
+            results_in.append({
+                "identifier": mut,
+                "fp_ratio_within_subclone_for_in_subclone_muts": float(ratios.mean()) if ratios.size else 0.0,
+                "count_fp_mutations_for_in_subclone_muts": len(positive_list),
+                "ratio_fp_mutations_for_in_subclone_muts": len(positive_list) / total_columns if total_columns else 0.0,
+            })
+            fp_in[mut] = positive_list
 
-    df_out = pd.DataFrame(results_for_out_subclone_muts)
-    df_in = pd.DataFrame(results_for_in_subclone_muts)
+    df_out = pd.DataFrame(results_out)
+    df_in = pd.DataFrame(results_in)
     if df_out.empty:
         df_out = pd.DataFrame(columns=[
             "identifier",
@@ -2526,22 +2502,14 @@ def calculate_fp_ratios_within_subclone(
             "ratio_fp_mutations_for_in_subclone_muts",
         ])
 
-    df_results = pd.merge(df_out, df_in, on="identifier", how='outer')
-    
-    return df_results, fp_positive_mutations_dict_for_out_subclone_muts, fp_positive_mutations_dict_for_in_subclone_muts
+    return pd.merge(df_out, df_in, on="identifier", how="outer"), fp_out, fp_in
 
 # 使用示例
 # fp_ratios_df, fp_positive_mutations_dict_for_out_subclone_muts, fp_positive_mutations_dict_for_in_subclone_muts = calculate_fp_ratios_within_subclone(M_checkpoint, I_attached, mutation_clones_for_subclone)
 # print(ratios_df)
 
 
-def calculate_fp_ratios_persite_within_subclone(
-    M_checkpoint,
-    I_attached,
-    mutation_clones_for_subclone,
-    active_logger=None,
-    stage_name="Step6_7_PerSiteSubcloneFpRatio",
-):
+def calculate_fp_ratios_persite_within_subclone(M_checkpoint, I_attached, mutation_clones_for_subclone, active_logger=None, stage_name=None):
     """
     在每个subclone内部计算每个突变自身的fp_ratio_persite
     (FP个数除以该突变在subclone中的原始数据所有1的个数)
@@ -2554,67 +2522,43 @@ def calculate_fp_ratios_persite_within_subclone(
     Returns:
     DataFrame: 包含每个突变在每个subclone中的fp_count_persite和fp_ratio_persite
     """
-    if active_logger is None:
-        active_logger = logger
-
-    stage_start = time.perf_counter()
-    results = []
     shared_index = M_checkpoint.index.intersection(I_attached.index)
     shared_columns = [col for col in M_checkpoint.columns if col in I_attached.columns]
-    if not shared_columns or shared_index.empty:
-        return pd.DataFrame(results)
+    if shared_index.empty or not shared_columns:
+        return pd.DataFrame()
 
     m_view = M_checkpoint.loc[shared_index, shared_columns]
     i_view = I_attached.loc[shared_index, shared_columns]
-    mutant_mask = m_view.eq(1).fillna(False).to_numpy(dtype=bool, copy=False)
-    original_one_mask = i_view.eq(1).fillna(False).to_numpy(dtype=np.int32, copy=False)
+    mutant_mask = m_view.eq(1).to_numpy(dtype=bool, copy=False)
+    original_one = i_view.eq(1).to_numpy(dtype=np.int32, copy=False)
     fp_mask = (
-        i_view.eq(1).fillna(False) & m_view.eq(0).fillna(False)
-    ).to_numpy(dtype=np.int32, copy=False)
-    column_to_idx = {col: idx for idx, col in enumerate(shared_columns)}
-    subclone_items = list(mutation_clones_for_subclone.items())
+        i_view.eq(1).to_numpy(dtype=bool, copy=False)
+        & m_view.eq(0).to_numpy(dtype=bool, copy=False)
+    ).astype(np.int32, copy=False)
+    col_to_idx = {col: idx for idx, col in enumerate(shared_columns)}
+    results = []
 
-    for clone_idx, (subclone_rep, subclone_mutations) in enumerate(subclone_items, start=1):
-        valid_subclone_mutations = [mut for mut in subclone_mutations if mut in column_to_idx]
-        if not valid_subclone_mutations:
-            _log_work_progress(
-                active_logger,
-                stage_name,
-                stage_start,
-                clone_idx,
-                len(subclone_items),
-                subclone_rep,
-                "subclones",
-            )
+    for subclone_rep, subclone_mutations in mutation_clones_for_subclone.items():
+        valid_muts = [mut for mut in subclone_mutations if mut in col_to_idx]
+        if not valid_muts:
             continue
 
-        subclone_indices = np.asarray([column_to_idx[mut] for mut in valid_subclone_mutations], dtype=np.int32)
-        subclone_cells_mask = mutant_mask[:, subclone_indices].any(axis=1)
-        total_ones_in_subclone = original_one_mask[subclone_cells_mask][:, subclone_indices].sum(axis=0, dtype=np.int64)
-        fp_counts_in_subclone = fp_mask[subclone_cells_mask][:, subclone_indices].sum(axis=0, dtype=np.int64)
+        subclone_idx = np.asarray([col_to_idx[mut] for mut in valid_muts], dtype=np.int32)
+        subclone_cells_mask = mutant_mask[:, subclone_idx].any(axis=1)
+        total_ones = original_one[subclone_cells_mask][:, subclone_idx].sum(axis=0, dtype=np.int64)
+        fp_counts = fp_mask[subclone_cells_mask][:, subclone_idx].sum(axis=0, dtype=np.int64)
 
-        for local_idx, mut in enumerate(valid_subclone_mutations):
-            total_ones = int(total_ones_in_subclone[local_idx])
-            fp_count = int(fp_counts_in_subclone[local_idx])
-            fp_ratio = (fp_count / total_ones) if total_ones > 0 else 0
+        for local_idx, mut in enumerate(valid_muts):
+            ones = int(total_ones[local_idx])
+            fp_count = int(fp_counts[local_idx])
             results.append({
-                'identifier': mut,
-                'subclone_representative': subclone_rep,
-                'fp_count_persite': fp_count,
-                'fp_ratio_persite': fp_ratio,
-                'total_ones_in_subclone': total_ones,
-                'subclone_size': len(valid_subclone_mutations),
+                "identifier": mut,
+                "subclone_representative": subclone_rep,
+                "fp_count_persite": fp_count,
+                "fp_ratio_persite": (fp_count / ones) if ones > 0 else 0.0,
+                "total_ones_in_subclone": ones,
+                "subclone_size": len(valid_muts),
             })
-
-        _log_work_progress(
-            active_logger,
-            stage_name,
-            stage_start,
-            clone_idx,
-            len(subclone_items),
-            subclone_rep,
-            "subclones",
-        )
 
     return pd.DataFrame(results)
 
@@ -2632,64 +2576,40 @@ def calculate_fp_ratio_per_mutation_with_fp_mutations_dict(M_checkpoint, I_attac
         DataFrame: 包含每个突变的fp_count和fp_ratio_per_mutation
         dict: 包含每个突变对应的fp>0的其他突变列表
     """
-    results = []
-    fp_mutations_dict = {}  # 存储每个突变对应的fp>0的其他突变列表
-    
-    # 遍历每个突变
-    for mut in I_attached.columns:
-        # 计算该突变在所有细胞中的原始数据所有1的个数
-        original_data = I_attached[mut]
-        total_ones = (original_data == 1).sum()
-        total_zeros = (original_data == 0).sum()
-        
-        # 如果该突变在原始数据中没有1，则fp_ratio设为0
-        if total_ones == 0:
-            results.append({
-                'identifier': mut,
-                'fp_cells_count': 0,
-                'fp_cells_ratio_per_mutation': 0,
-                'total_ones_cells': 0,
-                'total_zeros_cells': 0,
-                'total_coverage_cells': 0
-            })
-            fp_mutations_dict[mut] = []  # 空列表
-            continue
-        
-        # 计算该突变的FP数量：原始为1但imputed为0
-        fp_count = ((original_data == 1) & (M_checkpoint[mut] == 0)).sum()
-        
-        # 计算fp_ratio_per_mutation
-        fp_ratio = fp_count / total_ones
-        
-        # 找出该突变FP>0对应的其他突变
-        fp_positive_muts = []
-        for other_mut in I_attached.columns:
-            if other_mut == mut:
-                continue
-                
-            # 找出该突变原始为1但imputed为0的细胞
-            fp_cells_mask = (original_data == 1) & (M_checkpoint[mut] == 0)
-            if fp_cells_mask.any():
-                # 在这些FP细胞中，检查other_mut的情况
-                fp_cells = original_data[fp_cells_mask].index
-                other_in_fp_cells = I_attached.loc[fp_cells, other_mut]
-                
-                # 如果other_mut在这些FP细胞中有至少一个1，则记录
-                if (other_in_fp_cells == 1).any():
-                    fp_positive_muts.append(other_mut)
-        
-        results.append({
-            'identifier': mut,
-            'fp_cells_count': fp_count,
-            'fp_cells_ratio_per_mutation': fp_ratio,
-            'total_ones_cells': total_ones,
-            'total_zeros_cells': total_zeros,
-            'total_coverage_cells': total_ones + total_zeros
-        })
-        
-        fp_mutations_dict[mut] = fp_positive_muts
-    
-    return pd.DataFrame(results), fp_mutations_dict
+    if M_checkpoint.empty or I_attached.empty:
+        return pd.DataFrame(), {}
+
+    original_one = I_attached.eq(1).to_numpy(dtype=bool, copy=False)
+    original_zero = I_attached.eq(0).to_numpy(dtype=bool, copy=False)
+    fp_cells_mask = original_one & M_checkpoint.eq(0).to_numpy(dtype=bool, copy=False)
+
+    total_ones = original_one.sum(axis=0, dtype=np.int64)
+    total_zeros = original_zero.sum(axis=0, dtype=np.int64)
+    fp_counts = fp_cells_mask.sum(axis=0, dtype=np.int64)
+    fp_ratios = np.divide(
+        fp_counts,
+        total_ones,
+        out=np.zeros(len(I_attached.columns), dtype=float),
+        where=total_ones > 0,
+    )
+
+    cooccur_counts = fp_cells_mask.astype(np.int32, copy=False).T @ original_one.astype(np.int32, copy=False)
+    column_names = np.asarray(I_attached.columns, dtype=object)
+    fp_mutations_dict = {}
+    for idx, mut in enumerate(I_attached.columns):
+        positive_mask = cooccur_counts[idx] > 0
+        positive_mask[idx] = False
+        fp_mutations_dict[mut] = column_names[positive_mask].tolist() if positive_mask.any() else []
+
+    result_df = pd.DataFrame({
+        "identifier": I_attached.columns,
+        "fp_cells_count": fp_counts,
+        "fp_cells_ratio_per_mutation": fp_ratios,
+        "total_ones_cells": total_ones,
+        "total_zeros_cells": total_zeros,
+        "total_coverage_cells": total_ones + total_zeros,
+    })
+    return result_df, fp_mutations_dict
 
 # # 使用示例
 # df_fp_ratio, fp_mutations_dict = calculate_fp_ratio_per_mutation_with_fp_mutations_dict(M_checkpoint, I_attached)
@@ -2706,43 +2626,31 @@ def calculate_fp_ratio_per_cell(M_checkpoint, I_attached):
     Returns:
     DataFrame: 包含每个细胞的fp_count和fp_ratio_per_cell
     """
-    results = []
-    
-    # 遍历每个细胞
-    for cell in I_attached.index:
-        # 计算该细胞在所有突变中的原始数据所有1的个数
-        original_data = I_attached.loc[cell]
-        total_ones = (original_data == 1).sum()
-        total_zeros = (original_data == 0).sum()
-        
-        # 如果该细胞在原始数据中没有1，则fp_ratio设为0
-        if total_ones == 0:
-            results.append({
-                'cell_id': cell,
-                'fp_muts_count': 0,
-                'fp_muts_ratio_per_cell': 0,
-                'total_ones_muts': 0,
-                'total_zeros_muts': 0,
-                'total_coverage_muts': 0
-            })
-            continue
-        
-        # 计算该细胞的FP数量：原始为1但imputed为0
-        fp_count = ((original_data == 1) & (M_checkpoint.loc[cell] == 0)).sum()
-        
-        # 计算fp_ratio_per_cell
-        fp_ratio = fp_count / total_ones
-        
-        results.append({
-            'cell_id': cell,
-            'fp_muts_count': fp_count,
-            'fp_muts_ratio_per_cell': fp_ratio,
-            'total_ones_muts': total_ones,
-            'total_zeros_muts': total_zeros,
-            'total_coverage_muts': total_ones+total_zeros
-        })
-    
-    return pd.DataFrame(results)
+    if M_checkpoint.empty or I_attached.empty:
+        return pd.DataFrame()
+
+    original_one = I_attached.eq(1).to_numpy(dtype=bool, copy=False)
+    original_zero = I_attached.eq(0).to_numpy(dtype=bool, copy=False)
+    fp_mask = original_one & M_checkpoint.eq(0).to_numpy(dtype=bool, copy=False)
+
+    total_ones = original_one.sum(axis=1, dtype=np.int64)
+    total_zeros = original_zero.sum(axis=1, dtype=np.int64)
+    fp_counts = fp_mask.sum(axis=1, dtype=np.int64)
+    fp_ratios = np.divide(
+        fp_counts,
+        total_ones,
+        out=np.zeros(len(I_attached.index), dtype=float),
+        where=total_ones > 0,
+    )
+
+    return pd.DataFrame({
+        "cell_id": I_attached.index,
+        "fp_muts_count": fp_counts,
+        "fp_muts_ratio_per_cell": fp_ratios,
+        "total_ones_muts": total_ones,
+        "total_zeros_muts": total_zeros,
+        "total_coverage_muts": total_ones + total_zeros,
+    })
 
 def calculate_comprehensive_fp_metrics(
     M_checkpoint,
@@ -3191,10 +3099,15 @@ def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(ro
         else:
             return [mutation_name]
     
-    if df.empty:
-        mutation_frequency = {}
-    else:
-        mutation_frequency = ((df == 1).sum(axis=0) / len(df)).to_dict()
+    def get_mutation_frequency(mutation, dataframe):
+        """计算突变在数据框中的出现频率（值为1的比例）"""
+        if mutation not in dataframe.columns:
+            return 0
+        # col_data = dataframe[mutation].dropna()  # 去掉NaN值
+        col_data = dataframe[mutation]             # 保留NaN值
+        if len(col_data) == 0:
+            return 0
+        return (col_data == 1).sum() / len(col_data)
     
     clone_dict = {}
     for child in root.children:
@@ -3211,11 +3124,18 @@ def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(ro
             clone_key = root_mutations[0]
         else:
             # 对于复合突变，选择在数据框中出现频率最高的那个
-            mutation_frequencies = [(mutation, mutation_frequency.get(mutation, 0)) for mutation in root_mutations]
+            mutation_frequencies = []
+            for mutation in root_mutations:
+                freq = get_mutation_frequency(mutation, df)
+                mutation_frequencies.append((mutation, freq))
             
             # 按频率排序，选择频率最高的
             mutation_frequencies.sort(key=lambda x: x[1], reverse=True)
             clone_key = mutation_frequencies[0][0]
+            
+            print(f"复合突变 {child.name} 拆分为: {root_mutations}")
+            print(f"频率统计: {mutation_frequencies}")
+            print(f"选择作为键: {clone_key}\n")
         
         clone_dict[clone_key] = all_mutations
     
@@ -3346,8 +3266,8 @@ def calculate_intersection_counts_under_backbone_nodes(
     new_mut_idx = i_attached_positive_col_to_idx.get(new_mut)
     if new_mut_idx is None:
         raise ValueError(f"突变 {new_mut} 不在 I_attached 数据框中")
+
     new_mut_positive_mask = i_attached_positive_values[:, new_mut_idx]
-    
     for backbone_node, mutation_list in mutation_list_under_backbone_nodes.items():
         if backbone_node not in M_current.columns:
             intersection_counts[backbone_node] = 0
@@ -3376,8 +3296,7 @@ def calculate_intersection_counts_under_backbone_nodes(
             intersection_counts[backbone_node] = 0
             continue
 
-        total_intersection = int(i_attached_positive_values[selected_rows][:, valid_indices].sum())
-        intersection_counts[backbone_node] = total_intersection
+        intersection_counts[backbone_node] = int(i_attached_positive_values[selected_rows][:, valid_indices].sum())
     
     return intersection_counts
 
@@ -4246,10 +4165,6 @@ def run_dp_pass_tree(
         axis=1,
         args=(pass_tree_cutoff, unpass_tree_cutoff,),
     )
-    logger.info(
-        "Step5 phylogeny_label distribution: %s",
-        out_features['phylogeny_label'].value_counts(dropna=False).to_dict(),
-    )
     
     # Step 5: flipping counts
     df_binary_withNA3 = posterior2ter_NAto3_bothPosteriorMutallele(in_posterior, in_reads, p_thresh)
@@ -4366,11 +4281,10 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             tree_state["backbone_mutation_indices"] = backbone_mutation_indices
             tree_state_dirty = False
         return tree_state
-    
+
     for idx, new_mut in enumerate(tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"), start=1):
         current_tree_state = ensure_tree_state()
 
-        # 确定 new_mut 应该属于哪一个 backbone clone
         phase_start = time.perf_counter()
         best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
             current_tree_state["mutation_list_under_backbone_nodes"],
@@ -4385,8 +4299,7 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         )
         assigned_nodes = current_tree_state["node_list_under_backbone_nodes"].get(best_backbone, [])
         phase_totals["backbone_selection"] += time.perf_counter() - phase_start
-        
-        # 找到交集节点
+
         phase_start = time.perf_counter()
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
             T_current,
@@ -4401,10 +4314,19 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         phase_totals["intersection_scan"] += time.perf_counter() - phase_start
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
-            _log_mutation_progress(logger, stage_name, stage_start, idx, len(sorted_attached_mutations), new_mut, placed_mutations, len(external_mutations), len(root_mutations))
+            _log_mutation_progress(
+                logger,
+                stage_name,
+                stage_start,
+                idx,
+                len(sorted_attached_mutations),
+                new_mut,
+                placed_mutations,
+                len(external_mutations),
+                len(root_mutations),
+            )
             continue
-        
-        # 使用优化方法获取候选位置
+
         phase_start = time.perf_counter()
         potential_positions = find_intersection_positions_within_tree_directly(
             T_current,
@@ -4416,17 +4338,21 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             node_lookup=current_tree_state["node_lookup"],
         )
         parent_dict = build_parent_dict_from_candidates(potential_positions)
-        selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
-        
-        # 检查是否找到候选位置（理论上这里应该有，但双重检查）
+        selected_positions = [p for p in potential_positions if p['anchor'] in assigned_nodes]
         if len(selected_positions) == 0:
-            selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] != 'ROOT']
+            selected_positions = [p for p in potential_positions if p['anchor'] != 'ROOT']
         phase_totals["candidate_generation"] += time.perf_counter() - phase_start
-        
-        # 计算贝叶斯罚分并更新 M_current
+
         phase_start = time.perf_counter()
         final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_consider_ROOT(
-            new_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
+            new_mut,
+            selected_positions,
+            T_current,
+            M_current,
+            I_attached,
+            P_attached,
+            parent_dict,
+            intersection_nodes,
             ω_NA=ω_NA,
             fnfp_ratio=fnfp_ratio,
             φ=φ,
@@ -4434,8 +4360,7 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             node_count=current_tree_state["node_count"],
         )
         phase_totals["position_scoring"] += time.perf_counter() - phase_start
-        
-        # 更新 M_current
+
         phase_start = time.perf_counter()
         if final_position['placement_type'] == 'on_node':
             mut_in_mtx = final_position['anchor']
@@ -4450,21 +4375,30 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         placed_mutations += 1
         tree_state_dirty = True
         phase_totals["tree_update"] += time.perf_counter() - phase_start
-        
-        _log_tree_diagnostics(logger, T_current, f"Updated Step6 tree after mutation {new_mut}")
-        
-        # 检查冲突
+
+        _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
+
         phase_start = time.perf_counter()
         if not _is_conflict_free_gusfield_safe(
             M_current,
             logger,
             f"Step6_AttachMutations[{new_mut}]",
         ):
-            raise ValueError(f"Current M_current is conflict !!! Break!!!.")
+            raise ValueError("Current M_current is conflict !!! Break!!!.")
         phase_totals["conflict_check"] += time.perf_counter() - phase_start
-        
-        _log_mutation_progress(logger, stage_name, stage_start, idx, len(sorted_attached_mutations), new_mut, placed_mutations, len(external_mutations), len(root_mutations))
-    
+
+        _log_mutation_progress(
+            logger,
+            stage_name,
+            stage_start,
+            idx,
+            len(sorted_attached_mutations),
+            new_mut,
+            placed_mutations,
+            len(external_mutations),
+            len(root_mutations),
+        )
+
     for phase_name, elapsed in phase_totals.items():
         logger.info(f"[TIMER] {stage_name}: {phase_name} total={elapsed:.3f}s")
     _log_timed_end(
@@ -4473,6 +4407,7 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         stage_start,
         summary=f"processed={len(sorted_attached_mutations)}, placed={placed_mutations}, deferred={len(external_mutations)}, root={len(root_mutations)}",
     )
+
     return external_mutations, T_current, M_current, root_mutations
 
 # # 调用函数
@@ -4535,13 +4470,13 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
     external_mutations = []
     
     for new_mut in tqdm(sorted_rescue_mutations, desc="Processing rescue mutations", unit="mutation"):
-        logger.info(f"Processing rescue mutation: {new_mut}")
+        logger.debug("Processing rescue mutation: %s", new_mut)
         
         # 找到交集节点
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, new_mut)
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
+            logger.debug("Mutation %s added to external_mutations (no intersection found)", new_mut)
             continue
         
         # 使用优化方法获取候选位置
@@ -4551,7 +4486,7 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
         # 检查是否找到候选位置（理论上这里应该有，但双重检查）
         if len(potential_positions) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no candidate positions found despite having intersection nodes)")
+            logger.debug("Mutation %s added to external_mutations (no candidate positions found despite having intersection nodes)", new_mut)
             continue
                 
         # 基于 intersection 的情况先选出应该放在哪一个 clone 下
@@ -4566,7 +4501,7 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
         
         if len(assigned_clone) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no significant correlated clone on current tree)")
+            logger.debug("Mutation %s added to external_mutations (no significant correlated clone on current tree)", new_mut)
             continue
         else:
             assigned_clone_muts = []
@@ -4585,7 +4520,7 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
             new_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
             ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
         )
-        logger.info(f"The new_mut should be placed on position: {final_position['placement_type']}.")
+        logger.debug("Rescue mutation %s selected position: %s", new_mut, final_position['placement_type'])
         
         # 更新 M_current
         if final_position['placement_type'] == 'on_node':
@@ -4599,14 +4534,12 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
             M_current[new_mut] = final_imputed_vec
             T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
         
-        _log_tree_diagnostics(logger, T_current, f"Updated Step6 rescue tree after mutation {new_mut}")
+        _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
-        if not _is_conflict_free_gusfield_safe(
-            M_current,
-            logger,
-            f"Step6_RescueMutations[{new_mut}]",
-        ):
+        if is_conflict_free_matrix(M_current):
+            logger.debug("Current M_current is conflict-free and shaped as: %s", M_current.shape)
+        else:
             raise ValueError(f"Current M_current is conflict !!! Break!!!.")
     
     return external_mutations, T_current, M_current, root_mutations
@@ -4670,7 +4603,6 @@ def process_external_mutations_by_subtree_groups(
         root_mutations = []
     
     remained_mutations = []
-    i_attached_positive = I_attached.reindex(index=M_current.index).eq(1).fillna(False)
     
     # 分离子树组和单元素组
     multi_mut_subtree_groups = [g for g in subtree_groups if len(g) > 1]
@@ -4708,35 +4640,18 @@ def process_external_mutations_by_subtree_groups(
                 node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
                 # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
                 # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
-                    mutation_list_under_backbone_nodes,
-                    M_current,
-                    I_attached,
-                    subtree_mut,
-                    i_attached_positive=i_attached_positive,
-                )
+                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut)
                 assigned_nodes = node_list_under_backbone_nodes[best_backbone]
                 
                 # 找到交集节点
-                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
-                    T_current,
-                    I_attached,
-                    subtree_mut,
-                    matrix_positive=i_attached_positive,
-                )
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, subtree_mut)
                 if len(intersection_nodes) == 0:
                     reattached_mutations.append(subtree_mut)
                     logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no intersection found)")
                     continue
                 
                 # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly(
-                    T_current,
-                    subtree_mut,
-                    I_attached,
-                    min_overlap=1,
-                    intersection_nodes=intersection_nodes,
-                )
+                potential_positions = find_intersection_positions_within_tree_directly(T_current, subtree_mut, I_attached, min_overlap=1)
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
                 selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
                 
@@ -4765,14 +4680,10 @@ def process_external_mutations_by_subtree_groups(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
             
-            _log_tree_diagnostics(logger, T_current, f"Step6 external subtree placement after mutation {subtree_mut}")
+            _log_tree_snapshot(logger, f"Tree after adding {subtree_mut}:", T_current)
             
             # 检查冲突
-            if not _is_conflict_free_gusfield_safe(
-                M_current,
-                logger,
-                f"Step6_SubtreeGroup[{subtree_mut}]",
-            ):
+            if not is_conflict_free_matrix(M_current):
                 logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
                 
                 # 回滚操作：从矩阵中移除这个突变
@@ -4801,35 +4712,18 @@ def process_external_mutations_by_subtree_groups(
                 node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
                 # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
                 # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
-                    mutation_list_under_backbone_nodes,
-                    M_current,
-                    I_attached,
-                    subtree_mut,
-                    i_attached_positive=i_attached_positive,
-                )
+                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut)
                 assigned_nodes = node_list_under_backbone_nodes[best_backbone]
                 
                 # 找到交集节点
-                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
-                    T_current,
-                    I_attached,
-                    subtree_mut,
-                    matrix_positive=i_attached_positive,
-                )
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, subtree_mut)
                 if len(intersection_nodes) == 0:
                     second_reattached_mutations.append(subtree_mut)
                     logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no intersection found)")
                     continue
                 
                 # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly(
-                    T_current,
-                    subtree_mut,
-                    I_attached,
-                    min_overlap=1,
-                    intersection_nodes=intersection_nodes,
-                )
+                potential_positions = find_intersection_positions_within_tree_directly(T_current, subtree_mut, I_attached, min_overlap=1)
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
                 selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
                 
@@ -4858,14 +4752,11 @@ def process_external_mutations_by_subtree_groups(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 
-                _log_tree_diagnostics(logger, T_current, f"Step6 external subtree re-attachment after mutation {subtree_mut}")
+                # 打印当前树结构
+                _log_tree_snapshot(logger, f"Updated tree after re-attaching mutation {subtree_mut}:", T_current)
                 
                 # 检查冲突
-                if not _is_conflict_free_gusfield_safe(
-                    M_current,
-                    logger,
-                    f"Step6_SubtreeReattach[{subtree_mut}]",
-                ):
+                if not is_conflict_free_matrix(M_current):
                     logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
                     
                     # 回滚操作：从矩阵中移除这个突变
@@ -4895,13 +4786,9 @@ def process_external_mutations_by_subtree_groups(
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
         
-        _log_tree_diagnostics(logger, T_current, f"Step6 singleton external subtree placement after mutation {subtree_mut}")
+        _log_tree_snapshot(logger, f"Tree after adding singleton {subtree_mut}:", T_current)
         
-        if not _is_conflict_free_gusfield_safe(
-            M_current,
-            logger,
-            f"Step6_SubtreeSingleton[{subtree_mut}]",
-        ):
+        if not is_conflict_free_matrix(M_current):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
             
             # 回滚操作：从矩阵中移除这个突变

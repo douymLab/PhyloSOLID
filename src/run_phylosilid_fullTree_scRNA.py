@@ -28,6 +28,7 @@ import os
 import logging
 import copy
 import random
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import numpy as np
@@ -270,6 +271,58 @@ def reindex_with_truncated_log(
         result = result.fillna(fill_value)
     return result
 
+
+class Step6MatrixExpansionCache:
+    """Cache ROOT-stripped and split-expanded matrices without touching placement logic."""
+
+    def __init__(self, max_entries: int = 2):
+        self.max_entries = max(1, int(max_entries))
+        self._entries = OrderedDict()
+
+    def _make_key(self, frame: pd.DataFrame):
+        return (id(frame), frame.shape, tuple(frame.columns))
+
+    def _get_entry(self, frame: pd.DataFrame):
+        key = self._make_key(frame)
+        entry = self._entries.get(key)
+        if entry is None:
+            entry = {"frame": frame}
+            self._entries[key] = entry
+            while len(self._entries) > self.max_entries:
+                self._entries.popitem(last=False)
+        else:
+            self._entries.move_to_end(key)
+        return entry
+
+    def get_no_root(self, frame: pd.DataFrame) -> pd.DataFrame:
+        entry = self._get_entry(frame)
+        no_root = entry.get("no_root")
+        if no_root is None:
+            no_root = frame.drop(columns=["ROOT"], errors="ignore")
+            entry["no_root"] = no_root
+        return no_root
+
+    def get_mutation_names(self, frame: pd.DataFrame):
+        entry = self._get_entry(frame)
+        mutation_names = entry.get("mutation_names")
+        if mutation_names is None:
+            no_root = self.get_no_root(frame)
+            mutation_names = (
+                no_root.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+            )
+            entry["mutation_names"] = mutation_names
+        return mutation_names
+
+    def get_expanded(self, frame: pd.DataFrame) -> pd.DataFrame:
+        entry = self._get_entry(frame)
+        expanded = entry.get("expanded")
+        if expanded is None:
+            no_root = self.get_no_root(frame)
+            mutation_names = self.get_mutation_names(frame)
+            expanded = split_merged_columns(no_root, mutation_names)
+            entry["expanded"] = expanded
+        return expanded
+
 def main():
     import multiprocessing as mp
     import argparse
@@ -324,6 +377,7 @@ def main():
     logger.info(f"export_workers: {args.export_workers}")
 
     stage_timer = StageTimer(logger)
+    step6_matrix_cache = Step6MatrixExpansionCache(max_entries=2)
     stage_timer.start("MainPipeline")
 
 
@@ -1057,9 +1111,7 @@ def main():
     T_checkpoint_fpratio_within_subclone = copy.deepcopy(T_current)
     M_checkpoint_fpratio_within_subclone = M_current.copy()
 
-    M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone = M_checkpoint_fpratio_within_subclone.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_fpratio_within_subclone = M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone, mutations_on_T_current_fpratio_within_subclone)
+    M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone = step6_matrix_cache.get_expanded(M_checkpoint_fpratio_within_subclone)
 
     df_fp_ratio_fpratio_within_subclone, fp_mutations_dict_for_out_subclone_muts_fpratio_within_subclone, fp_mutations_dict_for_in_subclone_muts_fpratio_within_subclone = calculate_fp_ratios_within_subclone(
         M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone,
@@ -1288,9 +1340,7 @@ def main():
     T_checkpoint_fpratio_within_subclone_v2 = copy.deepcopy(T_current)
     M_checkpoint_fpratio_within_subclone_v2 = M_current.copy()
 
-    M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone_v2 = M_checkpoint_fpratio_within_subclone_v2.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_fpratio_within_subclone_v2 = M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone_v2 = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone_v2, mutations_on_T_current_fpratio_within_subclone_v2)
+    M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone_v2 = step6_matrix_cache.get_expanded(M_checkpoint_fpratio_within_subclone_v2)
 
     df_fp_ratio_fpratio_within_subclone_v2, fp_mutations_dict_for_out_subclone_muts_fpratio_within_subclone_v2, fp_mutations_dict_for_in_subclone_muts_fpratio_within_subclone_v2 = calculate_fp_ratios_within_subclone(M_for_fp_ratio_and_fn_ratio_fpratio_within_subclone_v2, I_attached, mutation_clones_for_subclone_v2)
     df_fp_ratio_fpratio_within_subclone_v2
@@ -1355,9 +1405,7 @@ def main():
     T_checkpoint_fpfnratio_across_tree = copy.deepcopy(T_current)
     M_checkpoint_fpfnratio_across_tree = M_current.copy()
 
-    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree = M_checkpoint_fpfnratio_across_tree.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_fpfnratio_across_tree = M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree, mutations_on_T_current_fpfnratio_across_tree)
+    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree = step6_matrix_cache.get_expanded(M_checkpoint_fpfnratio_across_tree)
 
     df_fp_ratio_and_fn_ratio_fpfnratio_across_tree, fp_mutations_dict_fpfnratio_across_tree = calculate_fp_fn_ratios_across_tree(
         M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree,
@@ -1617,9 +1665,7 @@ def main():
     T_checkpoint_fpfnratio_across_tree_v2 = copy.deepcopy(T_current)
     M_checkpoint_fpfnratio_across_tree_v2 = M_current.copy()
 
-    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = M_checkpoint_fpfnratio_across_tree_v2.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_fpfnratio_across_tree_v2 = M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, mutations_on_T_current_fpfnratio_across_tree_v2)
+    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = step6_matrix_cache.get_expanded(M_checkpoint_fpfnratio_across_tree_v2)
 
     df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, fp_mutations_dict_fpfnratio_across_tree_v2 = calculate_fp_fn_ratios_across_tree(
         M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2,
@@ -1697,9 +1743,7 @@ def main():
     T_checkpoint_fp_ratio_persitefp = copy.deepcopy(T_current)
     M_checkpoint_fp_ratio_persitefp = M_current.copy()
 
-    M_for_fp_ratio_persitefp = M_checkpoint_fp_ratio_persitefp.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_persitefp = M_for_fp_ratio_persitefp.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_persitefp = split_merged_columns(M_for_fp_ratio_persitefp, mutations_on_T_current_persitefp)
+    M_for_fp_ratio_persitefp = step6_matrix_cache.get_expanded(M_checkpoint_fp_ratio_persitefp)
 
     df_fp_ratio_persitefp = calculate_fp_ratios_persite_within_subclone(
         M_for_fp_ratio_persitefp,
@@ -1858,9 +1902,7 @@ def main():
     T_checkpoint_fp_ratio_persitefp_v2 = copy.deepcopy(T_current)
     M_checkpoint_fp_ratio_persitefp_v2 = M_current.copy()
 
-    M_for_fp_ratio_persitefp_v2 = M_checkpoint_fp_ratio_persitefp_v2.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_persitefp = M_for_fp_ratio_persitefp_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_persitefp_v2 = split_merged_columns(M_for_fp_ratio_persitefp_v2, mutations_on_T_current_persitefp)
+    M_for_fp_ratio_persitefp_v2 = step6_matrix_cache.get_expanded(M_checkpoint_fp_ratio_persitefp_v2)
 
     df_fp_ratio_persitefp_v2 = calculate_fp_ratios_persite_within_subclone(
         M_for_fp_ratio_persitefp_v2,
@@ -1973,11 +2015,6 @@ def main():
     T_checkpoint_outgroup = copy.deepcopy(T_current)
     M_checkpoint_outgroup = M_current.copy()
 
-    M_for_fp_ratio_and_fn_ratio_outgroup = M_checkpoint_outgroup.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_outgroup = M_for_fp_ratio_and_fn_ratio_outgroup.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_and_fn_ratio_outgroup = split_merged_columns(M_for_fp_ratio_and_fn_ratio_outgroup, mutations_on_T_current_outgroup)
-
-
     df_intersection_and_inter_vs_fn_flipping_ratio_per_mutation = calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_checkpoint_outgroup, M_checkpoint_outgroup, I_attached)
     stage_timer.checkpoint(
         "Step6_8_ParentMutationReattach",
@@ -2030,8 +2067,6 @@ def main():
         
             T_removed_outgroup, M_removed_outgroup = remove_mutations_from_tree_and_matrix(T_checkpoint_outgroup, M_checkpoint_outgroup, sorted_rehanged_mutations_all_outgroup)
             log_tree_debug(logger, T_removed_outgroup, "Step6.8 tree after removing outgroup candidates")
-            M_removed_outgroup_modified = process_matrices_by_removed_some_mutations_from_tree(M_removed_outgroup, I_attached)[1]
-        
             logger.info(f"The shape of removed_tree to be refined is : {M_removed_outgroup.shape}")    
         
             T_current = copy.deepcopy(T_removed_outgroup)
@@ -2129,9 +2164,7 @@ def main():
     T_checkpoint_wireless_cells = copy.deepcopy(T_current)
     M_checkpoint_wireless_cells = M_current.copy()
 
-    M_for_fp_ratio_and_fn_ratio_wireless_cells = M_checkpoint_wireless_cells.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_wireless_cells = M_for_fp_ratio_and_fn_ratio_wireless_cells.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_fp_ratio_and_fn_ratio_wireless_cells = split_merged_columns(M_for_fp_ratio_and_fn_ratio_wireless_cells, mutations_on_T_current_wireless_cells)
+    M_for_fp_ratio_and_fn_ratio_wireless_cells = step6_matrix_cache.get_expanded(M_checkpoint_wireless_cells)
 
 
     df_intersection_and_flipping_to_1_count_per_cell = calculate_intersection_and_flipping_to_1_count_per_cell(M_for_fp_ratio_and_fn_ratio_wireless_cells, I_attached)
@@ -2208,9 +2241,7 @@ def main():
     T_checkpoint_artifact_and_doublet = copy.deepcopy(T_current)
     M_checkpoint_artifact_and_doublet = M_current.copy()
 
-    M_for_artifact_and_doublet = M_checkpoint_artifact_and_doublet.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_T_current_artifact_and_doublet = M_for_artifact_and_doublet.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_artifact_and_doublet = split_merged_columns(M_for_artifact_and_doublet, mutations_on_T_current_artifact_and_doublet)
+    M_for_artifact_and_doublet = step6_matrix_cache.get_expanded(M_checkpoint_artifact_and_doublet)
 
     # 计算
     df_fp_ratio_per_mutation_cross_all_cells, df_fp_ratio_per_cell_cross_all_muts, overall_metrics, fp_mutations_dict_cross_all_cells = calculate_comprehensive_fp_metrics(
@@ -2429,17 +2460,15 @@ def main():
     stage_timer.start("Step7_PostProcessing")
 
     ##### 结束建树，后续处理加输出
-    M_current_filtered = M_current.drop(columns=['ROOT'], errors='ignore')
+    M_current_filtered = step6_matrix_cache.get_no_root(M_current).copy()
 
     for mut_on_root in root_mutations:
         M_current_filtered.insert(0, mut_on_root, 1)
 
-    mutations_on_T_current = M_current_filtered.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-
     # Final scaffold tree and matrix
     M_full_initial = M_current_filtered.copy()
     T_full = copy.deepcopy(T_current)
-    M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
+    M_full = step6_matrix_cache.get_expanded(M_current_filtered)
 
     logger.info("Final scaffold tree:")
     log_tree_debug(logger, T_full, "Final full-resolved tree")
