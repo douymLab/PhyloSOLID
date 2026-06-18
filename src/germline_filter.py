@@ -287,7 +287,7 @@ def plot_heatmap_with_germline_mutations(I_raw, germline_mutations, pdf_file):
     ax_col_bar.set_xlim(ax_heatmap.get_xlim())
     ax_col_bar.set_xticks([])
     ax_col_bar.tick_params(axis="y", labelsize=8)
-    ax_col_bar.set_ylabel("#Mutations", fontsize=10)
+    ax_col_bar.set_ylabel("Cell Number\nper Mutation", fontsize=10)
     
     # -------------------
     # Step 8: 行条形图（每个 cell 有多少突变）
@@ -296,7 +296,7 @@ def plot_heatmap_with_germline_mutations(I_raw, germline_mutations, pdf_file):
                     color="#7D2224", alpha=0.7, align="center")
     ax_row_bar.set_ylim(ax_heatmap.get_ylim())
     ax_row_bar.set_yticks([])
-    ax_row_bar.set_xlabel("#Cells", fontsize=10)
+    ax_row_bar.set_xlabel("Mutation\nBurden\nper Cell", fontsize=10)
     ax_row_bar.invert_xaxis()
     
     # -------------------

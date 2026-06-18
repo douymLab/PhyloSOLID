@@ -1,6 +1,6 @@
 # PhyloSOLID
 
-Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
+**Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)**
 
 
 > **Important Note for Users:**
@@ -15,6 +15,12 @@ Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)
 ## Overview
 
 PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from single-cell sequencing data. It supports both scRNA-seq and scDNA-seq modes, with features for mutation filtering, tree construction, and visualization.
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/douymLab/PhyloSOLID/main/images/1figure_plot.png" alt="PhyloSOLID workflow overview" width="800">
+  <br>
+  <em>Figure 1: Overview of the PhyloSOLID pipeline</em>
+</div>
 
 
 > **System Requirements:**
@@ -72,36 +78,54 @@ mkdir -p /path/to/software/annovar/humandb
 
 ### Step 3: Download and setup resource files
 
-All required resource files for running PhyloSOLID with the hg38 genome build are available on Figshare. **Due to their large total size (~8.85 GB), these files are not included in the GitHub repository and must be downloaded separately.**
+All required resource files for running PhyloSOLID with the hg38 genome build are available on Figshare. **Due to their large total size (~9.18 GB), these files are not included in the GitHub repository and must be downloaded separately.**
 
 **Figshare URL**: [https://figshare.com/s/2aee3e878688722e9c6f](https://figshare.com/s/2aee3e878688722e9c6f)
 
-The Figshare repository contains the following six compressed (`.gz`) files:
+The Figshare repository contains the following files:
+
+**Reference and resource files (required for pipeline execution):**
 
 | File | Description | Size |
 |:-----|:------------|------:|
 | `genome.fa.gz` | hg38 reference genome | 840.4 MB |
+| `genome.fa.fai.gz` | FASTA index file for genome.fa | 2.13 KB |
 | `wgEncodeGencodeExonSupportV44.sort.bed.gz` | Exon coordinates for variant annotation | 51.07 MB |
 | `k24.umap.bedgraph.gz` | Mappability track for filtering (k-mer 24) | 2.57 GB |
 | `k100.umap.bedgraph.gz` | Mappability track for filtering (k-mer 100) | 718.29 MB |
 | `hg38_gnomad312_genome_only_af_all.txt.gz` | Population allele frequencies from gnomAD v3.1.2 | 4.65 GB |
 | `COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz` | Curated RNA editing sites | 58.26 MB |
 
+**Demo data files (optional, for testing the pipeline):**
+
+| File | Description | Size |
+|:-----|:------------|------:|
+| `Org4S15D63.bam` | Demo BAM file for testing the pipeline | 330.77 MB |
+| `Org4S15D63.bam.bai` | BAM index file | 2.68 MB |
+
 **Download and Setup Instructions:**
 
-1. Download all six `.gz` files from Figshare using the URL above
+1. Download all files from Figshare using the URL above
 2. Place the downloaded files in a dedicated directory on your system (e.g., `/path/to/resource/`)
-3. Extract each file:
+3. Extract the reference and resource files:
 
 ```bash
 # Navigate to your resource directory
 cd /path/to/resource/
 
-# Extract all .gz files
-for file in *.gz; do
-    gunzip "$file"
-done
+# Extract reference and resource files
+gunzip genome.fa.gz
+gunzip genome.fa.fai.gz
+gunzip wgEncodeGencodeExonSupportV44.sort.bed.gz
+gunzip k24.umap.bedgraph.gz
+gunzip k100.umap.bedgraph.gz
+gunzip hg38_gnomad312_genome_only_af_all.txt.gz
+gunzip COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz
 ```
+
+**Important:** 
+- The BAM file (`Org4S15D63.bam`) and its index (`Org4S15D63.bam.bai`) are **demo data** for testing the pipeline. They are not required for running PhyloSOLID on your own data.
+- If you want to test the pipeline with the provided demo data, place the BAM files in the `demo/input/Org4S15D63/01_rawdata/` directory.
 
 ### Step 4: Configure paths.yaml
 
@@ -134,6 +158,7 @@ annovar:
 # Reference files (paths to extracted files)
 reference:
   genome_fasta: "/path/to/resource/genome.fa"
+  genome_fasta_index: "/path/to/resource/genome.fa.fai"
   gff3_file: "/path/to/resource/wgEncodeGencodeExonSupportV44.sort.bed"
   mappability_file: "/path/to/resource/k24.umap.bedgraph"
   gnomad_file: "/path/to/resource/hg38_gnomad312_genome_only_af_all.txt"
@@ -169,6 +194,8 @@ cd demo
 ```
 
 ## Usage
+
+> **💡 Tip:** One individual → one BAM file. Merge replicates with `samtools merge` beforehand.
 
 ### Binary matrix mode (Direct tree building)
 
@@ -216,7 +243,9 @@ phylosolid --workdir ./results scrna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
-    --barcode barcodes.txt
+    --barcode barcodes.txt \
+    --read-len 100 \
+    --cellnum 155
 ```
 
 **With all options:**
@@ -261,7 +290,9 @@ phylosolid --workdir ./results scdna \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
-    --barcode barcodes.txt
+    --barcode barcodes.txt \
+    --read-len 100 \
+    --cellnum 155
 ```
 
 ### SpaceTracer mode (Skip feature extraction and classifier)
@@ -279,7 +310,9 @@ phylosolid --workdir ./results spacetracer \
     --sample SAMPLE_ID \
     --mutation-list mutations.txt \
     --bam sample.bam \
-    --barcode barcodes.txt
+    --barcode barcodes.txt \
+    --read-len 100 \
+    --cellnum 155
 ```
 
 **With all options:**
@@ -305,7 +338,7 @@ chr1_2000_C_T
 chr2_3000_G_A
 chr3_4000_T_C
 ```
-Format: `chromosome_position_reference_alt_gene`
+Format: `chromosome_position_reference_alt`
 
 ### Barcode file (barcodes.txt)
 ```
@@ -314,13 +347,30 @@ AAACCTGAGAAACCGG-1
 AAACCTGAGAAACCTA-1
 ```
 
-### Metadata file (metadata.txt)
+### Metadata file (metadata.txt) - OPTIONAL
+
+The metadata file is **optional** for tree building. If provided, it enables cell-type annotation layers in the final visualization.
+
+**Format:** Tab-separated file with header:
+
+| Column | Required | Description |
+|--------|----------|-------------|
+| `cell_barcode` | Yes | Cell barcode/ID matching the barcode file |
+| `cell_type` | No | Cell type annotations (e.g., CD8+T, CD4+T, Monocyte) |
+| `cluster_info` | No | Cell cluster assignments |
+| `sample` | No | Sample identifiers |
+| `tumor_score` | No | Numeric tumor scores |
+| `B_cell_prop` | No | B cell proportions |
+
+**Example:**
 ```
-cell_barcode    cell_type
-AAACCTGAGAAACCAT-1  CD8+T
-AAACCTGAGAAACCGG-1  CD4+T
-AAACCTGAGAAACCTA-1  Monocyte
+cell_barcode    cell_type   cluster_info    sample
+AAACCTGAGAAACCAT-1  CD8+T   cluster1    sample1
+AAACCTGAGAAACCGG-1  CD4+T   cluster2    sample1
+AAACCTGAGAAACCTA-1  Monocyte    cluster1    sample2
 ```
+
+**Note:** The metadata file is not required for tree construction. It is only used for visualization purposes when generating circos plots with PhyloSOLIDvis. If no metadata is provided, the tree and heatmap will still be generated without annotation layers.
 
 ## Output Structure
 
@@ -349,12 +399,23 @@ workdir/
 
 ## Demo Example
 
-A complete demo with test data is available in the `demo/` directory:
+A complete demo with test data is available in the `demo/` directory. The demo uses the `Org4S15D63` sample data.
+
+**Demo data files:**
+- `demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam` - BAM file (downloaded from Figshare)
+- `demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam.bai` - BAM index file (downloaded from Figshare)
+- `demo/input/Org4S15D63/02_identifier/identifier.txt` - Mutation list
+- `demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt` - Barcode list
+- `demo/input/Org4S15D63/03_celltype/celltype_file_for_Org4S15D63.txt` - Cell type metadata (optional)
+
+**To run the demo:**
 
 ```bash
 cd demo
 ./run_demo.sh
 ```
+
+**Note:** The BAM files are not included in the GitHub repository due to their size. They must be downloaded from Figshare separately and placed in the `demo/input/Org4S15D63/01_rawdata/` directory before running the demo.
 
 ### Run individual steps with demo data
 
@@ -445,6 +506,13 @@ samtools view your.bam | head -n1 | awk '{print length($10)}'
 ```
 2. Use the `--read-len` parameter to specify the correct value
 
+### Large BAM files?
+
+If your BAM files are large, extract only target sites before running:
+```bash
+samtools view -b large.bam -L target_sites.bed > mini.bam
+```
+
 ### Permission denied errors
 
 Ensure scripts are executable:
@@ -458,7 +526,7 @@ chmod +x scripts/scrna/**/*.R
 
 If you use PhyloSOLID in your research, please cite:
 
-    1. Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
+1. Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
 
 ## License
 
@@ -487,3 +555,4 @@ Please respect the licenses of these dependencies when using PhyloSOLID.
 For questions and support, please contact:  
 Qing Yang: yangqing@westlake.edu.cn  
 Yanmei Dou: yanmeidou@westlake.edu.cn
+

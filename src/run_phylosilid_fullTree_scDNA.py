@@ -67,7 +67,7 @@ import argparse
 from argparse import ArgumentParser
 parser = argparse.ArgumentParser()
 
-parser.add_argument("-s", "--sampleid", default="sampleid", type=str, help="The sampleid you can set and check.")
+parser.add_argument("-s", "--sampleid", default="", type=str, help="The sampleid you can set and check.")
 parser.add_argument("-i", "--inputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/data", type=str, help="The inputpath contains the preprocessing results from raw posterior-reads data.")
 parser.add_argument("-o", "--outputpath", default="/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src/phylosolid/samples/phylo_100k.30true/results", type=str, help="The outputpath you want to save results.")
 parser.add_argument("-c", "--celltype_file", default=None, type=str, help="The celltype_file you should provide. If you can't generate this file, please set 'None'.")
@@ -419,7 +419,8 @@ logger.info(f"Celltype data loaded: {df_celltype.shape[0]} cells")
 
 ##### Scaffold builder
 logging.info("Running scaffold building ...")
-immune_mutations = ['chr14_105707803_C_A', 'chr14_106276422_A_G', 'chr14_106276454_C_G', 'chr22_22881588_G_A', 'chr22_22895482_G_A', 'chr22_22895504_C_A', 'chr22_22901226_C_G', 'chr22_22901169_G_C', 'chr22_22895709_C_G']
+# immune_mutations = ['chr14_105707803_C_A', 'chr14_106276422_A_G', 'chr14_106276454_C_G', 'chr22_22881588_G_A', 'chr22_22895482_G_A', 'chr22_22895504_C_A', 'chr22_22901226_C_G', 'chr22_22901169_G_C', 'chr22_22895709_C_G']
+immune_mutations = []
 results_of_scaffold = build_scaffold_tree(
     P_somatic = P_somatic, 
     V_somatic = V_somatic, 
@@ -626,9 +627,13 @@ I_attached_selected = I[scaffold_mutations + attached_mutations]
 I_attached_selected_sorted = I_attached_selected[I_attached_selected.apply(lambda col: (col == 1).sum(), axis=0).sort_values(ascending=False).index]
 I_attached_sorted_non_empty = I_attached_selected_sorted[I_attached_selected_sorted.eq(1).any(axis=1)]
 
-P_attached_selected = P[scaffold_mutations + attached_mutations]
-P_attached_selected_sorted = P_attached_selected[P_attached_selected.apply(lambda col: (col == 1).sum(), axis=0).sort_values(ascending=False).index]
-P_attached_sorted_non_empty = P_attached_selected_sorted[P_attached_selected_sorted.eq(1).any(axis=1)]
+# P_attached_selected = P[scaffold_mutations + attached_mutations]
+# P_attached_selected_sorted = P_attached_selected[P_attached_selected.apply(lambda col: (col == 1).sum(), axis=0).sort_values(ascending=False).index]
+# P_attached_sorted_non_empty = P_attached_selected_sorted[P_attached_selected_sorted.eq(1).any(axis=1)]
+P_attached_sorted_non_empty = P.loc[
+    I_attached_sorted_non_empty.index,
+    I_attached_sorted_non_empty.columns
+]
 
 I_attached_split, P_attached_split = split_spots_by_immune_mutations(spots_to_split, [i for i in immune_mutations if i in I_attached_sorted_non_empty.columns], I_attached_sorted_non_empty, P_attached_sorted_non_empty)
 I_attached, sorting_stats_of_I_attached = reorder_columns_by_mutant_stats(

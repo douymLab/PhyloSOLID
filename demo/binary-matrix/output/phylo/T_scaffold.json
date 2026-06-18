@@ -1,0 +1,47 @@
+{
+    "name": "ROOT",
+    "children": [
+        {
+            "name": "chr9_91232109_C>CTTAT",
+            "children": [
+                {
+                    "name": "chr2_177844406_GT>G|chr9_79602437_G>A",
+                    "children": [
+                        {
+                            "name": "chr13_35593448_T>G",
+                            "children": [
+                                {
+                                    "name": "chr3_181032100_GA>G|chr1_30775458_C>T|chr2_235552139_A>ATG|chr12_55841107_GT>G|chr13_54754211_G>GA|chr11_40223839_G>GT",
+                                    "children": [
+                                        {
+                                            "name": "chr9_4259245_T>TTTTATTTA",
+                                            "children": [
+                                                {
+                                                    "name": "chr8_25976670_A>T|chr6_135647703_AT>A"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "chr9_106306487_CT>C",
+            "children": [
+                {
+                    "name": "chr19_9734206_G>GT|chr4_55987018_C>CGT|chr1_53301408_T>A"
+                }
+            ]
+        },
+        {
+            "name": "chr1_49664418_GT>G|chr21_16719208_GA>G|chr17_717206_TA>T"
+        },
+        {
+            "name": "chr9_9117220_GT>G"
+        }
+    ]
+}
