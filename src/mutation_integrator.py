@@ -224,6 +224,100 @@ def _is_conflict_free_gusfield_safe(matrix, active_logger=None, context_label="C
         matrix_for_check = _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label)
         return scp.ul.is_conflict_free_gusfield(matrix_for_check)
 
+
+def _resolve_touched_columns_for_conflict_check(final_position, parent_dict, matrix_columns, new_mut):
+    """Return the matrix columns whose updates could introduce new conflicts."""
+    placement_type = final_position.get("placement_type")
+    anchor = final_position.get("anchor")
+    matrix_column_set = set(matrix_columns)
+    touched_columns = []
+    seen = set()
+
+    if anchor is not None:
+        for node in get_full_mutnode_chain_with_anchor(anchor, parent_dict):
+            if node == "ROOT":
+                continue
+            resolved_node = node
+            if placement_type == "on_node" and node == anchor and anchor != "ROOT":
+                resolved_node = f"{anchor}|{new_mut}"
+            if resolved_node in matrix_column_set and resolved_node not in seen:
+                touched_columns.append(resolved_node)
+                seen.add(resolved_node)
+
+    if placement_type != "on_node" and new_mut in matrix_column_set and new_mut not in seen:
+        touched_columns.append(new_mut)
+
+    return touched_columns
+
+
+def _is_conflict_free_local_update(matrix, touched_columns, active_logger=None, context_label="LocalConflictCheck", sample_limit=5):
+    """
+    Exact local conflict check using the four-gamete criterion.
+
+    Only pairs involving touched columns can introduce a new conflict because
+    untouched-vs-untouched pairs are unchanged by the latest placement step.
+    """
+    if active_logger is None:
+        active_logger = logger
+
+    if not touched_columns:
+        return True
+
+    missing = [col for col in touched_columns if col not in matrix.columns]
+    if missing:
+        active_logger.warning(
+            "%s touched columns missing from matrix; falling back to full check. sample=%s",
+            context_label,
+            missing[:sample_limit],
+        )
+        return _is_conflict_free_gusfield_safe(matrix, active_logger, context_label)
+
+    values = matrix.to_numpy(copy=False)
+    if np.issubdtype(values.dtype, np.bool_):
+        bool_values = values
+    elif np.issubdtype(values.dtype, np.integer):
+        bool_values = values > 0
+    elif np.issubdtype(values.dtype, np.floating):
+        bool_values = np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0, copy=True) > 0
+    else:
+        numeric_values = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(
+            dtype=np.float64,
+            copy=False,
+            na_value=np.nan,
+        )
+        bool_values = np.nan_to_num(numeric_values, nan=0.0, posinf=1.0, neginf=0.0, copy=True) > 0
+
+    all_columns = matrix.columns
+    touched_indices = all_columns.get_indexer(touched_columns)
+    if np.any(touched_indices < 0):
+        unresolved = [touched_columns[i] for i, idx in enumerate(touched_indices) if idx < 0]
+        active_logger.warning(
+            "%s unresolved touched indices; falling back to full check. sample=%s",
+            context_label,
+            unresolved[:sample_limit],
+        )
+        return _is_conflict_free_gusfield_safe(matrix, active_logger, context_label)
+
+    for touched_name, touched_idx in zip(touched_columns, touched_indices):
+        col = bool_values[:, touched_idx][:, None]
+        has10 = np.any(col & ~bool_values, axis=0)
+        has01 = np.any(~col & bool_values, axis=0)
+        has11 = np.any(col & bool_values, axis=0)
+        conflict_mask = has10 & has01 & has11
+        conflict_mask[touched_idx] = False
+        if bool(conflict_mask.any()):
+            conflict_indices = np.flatnonzero(conflict_mask)[:sample_limit]
+            conflict_columns = [all_columns[i] for i in conflict_indices]
+            active_logger.warning(
+                "%s detected local conflict: touched=%s conflicts=%s",
+                context_label,
+                touched_name,
+                conflict_columns,
+            )
+            return False
+
+    return True
+
 # Default parameters matching Methods Section 3
 DEFAULT_PARAMS = {
     "posterior_threshold": 0.5,        # Phylogenetic mosaic threshold
@@ -4379,8 +4473,15 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
 
         phase_start = time.perf_counter()
-        if not _is_conflict_free_gusfield_safe(
+        touched_columns = _resolve_touched_columns_for_conflict_check(
+            final_position,
+            parent_dict,
+            M_current.columns,
+            new_mut,
+        )
+        if not _is_conflict_free_local_update(
             M_current,
+            touched_columns,
             logger,
             f"Step6_AttachMutations[{new_mut}]",
         ):
@@ -4398,6 +4499,15 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
             len(external_mutations),
             len(root_mutations),
         )
+
+    phase_start = time.perf_counter()
+    if not _is_conflict_free_gusfield_safe(
+        M_current,
+        logger,
+        f"{stage_name}[final]",
+    ):
+        raise ValueError("Current M_current failed final conflict validation.")
+    phase_totals["conflict_check"] += time.perf_counter() - phase_start
 
     for phase_name, elapsed in phase_totals.items():
         logger.info(f"[TIMER] {stage_name}: {phase_name} total={elapsed:.3f}s")
@@ -4537,11 +4647,25 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
         _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
-        if is_conflict_free_matrix(M_current):
+        touched_columns = _resolve_touched_columns_for_conflict_check(
+            final_position,
+            parent_dict,
+            M_current.columns,
+            new_mut,
+        )
+        if _is_conflict_free_local_update(
+            M_current,
+            touched_columns,
+            logger,
+            f"Step6_RescueMutations[{new_mut}]",
+        ):
             logger.debug("Current M_current is conflict-free and shaped as: %s", M_current.shape)
         else:
             raise ValueError(f"Current M_current is conflict !!! Break!!!.")
-    
+
+    if not _is_conflict_free_gusfield_safe(M_current, logger, "Step6_RescueMutations[final]"):
+        raise ValueError("Current M_current failed final conflict validation.")
+
     return external_mutations, T_current, M_current, root_mutations
 
 # # 调用函数
@@ -4632,6 +4756,7 @@ def process_external_mutations_by_subtree_groups(
                 final_position = generate_new_leaf_on_root(T_current, subtree_mut)
                 T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
+                touched_columns = [subtree_mut] if subtree_mut in M_current.columns else []
             
             else:
                 
@@ -4679,11 +4804,22 @@ def process_external_mutations_by_subtree_groups(
                 else:
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                touched_columns = _resolve_touched_columns_for_conflict_check(
+                    final_position,
+                    parent_dict,
+                    M_current.columns,
+                    subtree_mut,
+                )
             
             _log_tree_snapshot(logger, f"Tree after adding {subtree_mut}:", T_current)
             
             # 检查冲突
-            if not is_conflict_free_matrix(M_current):
+            if not _is_conflict_free_local_update(
+                M_current,
+                touched_columns,
+                logger,
+                f"Step6_SubtreeGroup[{subtree_mut}]",
+            ):
                 logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
                 
                 # 回滚操作：从矩阵中移除这个突变
@@ -4751,12 +4887,23 @@ def process_external_mutations_by_subtree_groups(
                 else:
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                touched_columns = _resolve_touched_columns_for_conflict_check(
+                    final_position,
+                    parent_dict,
+                    M_current.columns,
+                    subtree_mut,
+                )
                 
                 # 打印当前树结构
                 _log_tree_snapshot(logger, f"Updated tree after re-attaching mutation {subtree_mut}:", T_current)
                 
                 # 检查冲突
-                if not is_conflict_free_matrix(M_current):
+                if not _is_conflict_free_local_update(
+                    M_current,
+                    touched_columns,
+                    logger,
+                    f"Step6_SubtreeReattach[{subtree_mut}]",
+                ):
                     logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
                     
                     # 回滚操作：从矩阵中移除这个突变
@@ -4785,10 +4932,16 @@ def process_external_mutations_by_subtree_groups(
         final_position = generate_new_leaf_on_root(T_current, subtree_mut)
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
+        touched_columns = [subtree_mut] if subtree_mut in M_current.columns else []
         
         _log_tree_snapshot(logger, f"Tree after adding singleton {subtree_mut}:", T_current)
         
-        if not is_conflict_free_matrix(M_current):
+        if not _is_conflict_free_local_update(
+            M_current,
+            touched_columns,
+            logger,
+            f"Step6_SubtreeSingleton[{subtree_mut}]",
+        ):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
             
             # 回滚操作：从矩阵中移除这个突变
@@ -4802,6 +4955,9 @@ def process_external_mutations_by_subtree_groups(
     
     logger.info("All external mutations have been processed successfully.")
     logger.info(f"Remained mutations count: {len(remained_mutations)}")
+
+    if not _is_conflict_free_gusfield_safe(M_current, logger, "Step6_SubtreeGroups[final]"):
+        raise ValueError("Current M_current failed final conflict validation.")
     
     return remained_mutations, T_current, M_current, root_mutations
 
