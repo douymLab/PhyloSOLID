@@ -100,8 +100,8 @@ The Figshare repository contains the following files:
 
 | File | Description | Size |
 |:-----|:------------|------:|
-| `demo_scrna.bam` | Demo BAM file for testing the pipeline | 53.3 MB |
-| `demo_scrna.bam.bai` | BAM index file | 315 KB |
+| `demo_scrna.bam` | Demo BAM file for testing the pipeline | 52.06 MB |
+| `demo_scrna.bam.bai` | BAM index file | 314.56 KB |
 
 **Download and Setup Instructions:**
 
