@@ -203,10 +203,10 @@ For users who already have a binary mutation matrix, PhyloSOLID provides a direc
 
 ```bash
 # Basic usage
-python -m cli.main binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -outputpath output_dir
+python -m cli.main binary-matrix --sampleid SAMPLE_ID --inputfile matrix.txt --outputpath output_dir
 
 # Or using the installed command
-phylosolid binary-matrix --sampleid SAMPLE_ID -inputfile matrix.txt -outputpath output_dir
+phylosolid binary-matrix --sampleid SAMPLE_ID --inputfile matrix.txt --outputpath output_dir
 ```
 
 **Input format (tab-separated):**
