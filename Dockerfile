@@ -1,95 +1,125 @@
-# Base image with conda
-FROM continuumio/miniconda3:latest
-
-# Set working directory
-WORKDIR /app
+# Use Mambaforge with specific version for reproducibility
+FROM condaforge/mambaforge:24.3.0-0
 
 # Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    CONDA_AUTO_UPDATE_CONDA=false \
-    PATH="/opt/conda/bin:${PATH}"
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PATH=/opt/conda/envs/phylosolid_env/bin:$PATH \
+    CONDA_DEFAULT_ENV=phylosolid_env \
+    DEBIAN_FRONTEND=noninteractive \
+    # R related environment variables
+    R_HOME=/opt/conda/envs/phylosolid_env/lib/R \
+    R_LIBS_USER=/opt/conda/envs/phylosolid_env/lib/R/library \
+    # Increase R download timeout for large packages
+    R_DOWNLOAD_TIMEOUT=600
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Set working directory
+WORKDIR /opt
+
+# Install system dependencies (required for R packages and bioinformatics tools)
+RUN apt-get update && apt-get install -y \
     build-essential \
-    gcc \
-    g++ \
-    make \
-    cmake \
-    wget \
-    curl \
-    git \
-    vim \
-    libssl-dev \
     libcurl4-openssl-dev \
+    libssl-dev \
     libxml2-dev \
     libfontconfig1-dev \
-    libfreetype6-dev \
-    libpng-dev \
-    libtiff5-dev \
-    libjpeg-dev \
     libharfbuzz-dev \
     libfribidi-dev \
+    libgit2-dev \
+    libmagick++-dev \
     libudunits2-dev \
     libgdal-dev \
-    libgeos-dev \
-    libproj-dev \
-    libsqlite3-dev \
-    libbz2-dev \
-    liblzma-dev \
-    zlib1g-dev \
+    cmake \
+    wget \
+    git \
+    vim \
+    libglpk-dev \
+    libnlopt-dev \
+    libgmp-dev \
+    libmpfr-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy environment configuration
+# Copy environment.yml file
 COPY environment.yml /tmp/environment.yml
 
-# Create conda environment
-RUN conda config --add channels conda-forge && \
-    conda config --add channels bioconda && \
-    conda config --add channels r && \
-    conda config --set channel_priority flexible && \
-    conda env create -f /tmp/environment.yml && \
-    conda clean -afy
+# Create conda environment and install all dependencies using mamba
+# Set conda channels to use Tsinghua mirror for faster downloads
+RUN conda config --set show_channel_urls yes && \
+    # Configure conda to use Tsinghua mirror
+    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/ && \
+    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/ && \
+    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ && \
+    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/bioconda/ && \
+    mamba env create -f /tmp/environment.yml && \
+    # Clean conda cache to reduce image size
+    mamba clean -afy && \
+    # Remove temporary files
+    rm -rf /tmp/* && \
+    # Verify key Python packages are installed successfully
+    conda run -n phylosolid_env python -c "import sys, numpy, pandas, scanpy, torch; print(f'Python: {sys.version}\nNumPy: {numpy.__version__}\nPandas: {pandas.__version__}\nScanpy: {scanpy.__version__}\nPyTorch: {torch.__version__}')"
 
-# Set conda environment path
-ENV PATH="/opt/conda/envs/phylosolid_env/bin:${PATH}"
+# Clone PhyloSOLID repository - using v1.0.0 tag for stability
+RUN git clone --branch v1.0.0 --depth 1 https://github.com/douymLab/PhyloSOLID.git /opt/PhyloSOLID
 
-# Set shell to use conda environment
-SHELL ["conda", "run", "-n", "phylosolid_env", "/bin/bash", "-c"]
+# Set working directory to PhyloSOLID project
+WORKDIR /opt/PhyloSOLID
 
-# Install additional R packages
-RUN R -e "install.packages(c('Seurat', 'SeuratDisk', 'scATOMIC', 'Polychrome', 'ggnewscale', 'ggtext', 'gsubfn', 'paletteer', 'ggforce'), repos='https://cloud.r-project.org/')" && \
-    R -e "if (!requireNamespace('BiocManager', quietly = TRUE)) install.packages('BiocManager'); BiocManager::install(c('ggtreeExtra', 'ComplexHeatmap'))"
+# Run PhyloSOLID installation script
+RUN bash install.sh && \
+    # Install PhyloSOLID package in development mode using pip
+    conda run -n phylosolid_env pip install -e . && \
+    # Verify phylosolid command is available
+    conda run -n phylosolid_env phylosolid --help
 
-# Create directory structure
-RUN mkdir -p /app/src /app/data /app/output /app/logs /app/module /app/utils
+# ============ Install PhyloSOLIDvis R package ============
+# Set R CRAN and Bioconductor mirrors (using Tsinghua mirror for faster access)
+RUN conda run -n phylosolid_env R -e "\
+    # Set CRAN and Bioconductor mirrors using Tsinghua mirror\
+    options(repos = c(CRAN = 'https://mirrors.tuna.tsinghua.edu.cn/CRAN/'));\
+    options(BioC_mirror = 'https://mirrors.tuna.tsinghua.edu.cn/bioconductor');\
+    # Increase timeout for large package downloads\
+    options(timeout = 600);\
+    # Install BiocManager if not already installed\
+    if (!requireNamespace('BiocManager', quietly = TRUE)) {\
+        install.packages('BiocManager', quiet = TRUE);\
+    }\
+    # Install remotes if not already installed\
+    if (!requireNamespace('remotes', quietly = TRUE)) {\
+        install.packages('remotes', quiet = TRUE);\
+    }\
+    # Install converTree (a dependency of PhyloSOLIDvis)\
+    remotes::install_github('xiayh17/converTree', quiet = TRUE);\
+    # Install PhyloSOLIDvis itself with all dependencies\
+    remotes::install_github('TsingYang1112/PhyloSOLIDvis', dependencies = TRUE, quiet = TRUE);\
+    " \
+    # Verify PhyloSOLIDvis installation
+    && conda run -n phylosolid_env R -e "\
+    library(ggplot2);\
+    library(PhyloSOLIDvis);\
+    print('PhyloSOLIDvis installed successfully!');\
+    "
 
-# Copy project files (uncomment and modify as needed)
-# COPY ./src /app/src/
-# COPY ./module /app/module/
-# COPY ./utils /app/utils/
-# COPY ./*.py /app/
+# Configure conda environment to activate automatically at container startup
+RUN echo "conda activate phylosolid_env" >> ~/.bashrc && \
+    echo "cd /workspace" >> ~/.bashrc && \
+    # Set R library path
+    echo "export R_LIBS_USER=/opt/conda/envs/phylosolid_env/lib/R/library" >> ~/.bashrc
 
-# Set working directory
-WORKDIR /app
+# Create mount point directories
+RUN mkdir -p /workspace /data /resources /output
 
-# Expose ports
-EXPOSE 8888
-EXPOSE 8050
+# Set default working directory
+WORKDIR /workspace
 
-# Default command
-CMD ["python", "main.py"]
+# Set entrypoint script to ensure conda environment is always activated
+COPY --chmod=755 <<-"EOF" /usr/local/bin/entrypoint.sh
+#!/bin/bash
+source /opt/conda/etc/profile.d/conda.sh
+conda activate phylosolid_env
+export R_LIBS_USER=/opt/conda/envs/phylosolid_env/lib/R/library
+exec "$@"
+EOF
 
-# Alternative: interactive shell
-# CMD ["/bin/bash"]
-
-# Build instructions:
-# docker build -t phylosolid:latest .
-# docker run -it --rm -v $(pwd)/data:/app/data -v $(pwd)/output:/app/output phylosolid:latest
-
-# GPU support (uncomment if needed)
-# FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu20.04
-# Then add GPU-specific configurations
-
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]

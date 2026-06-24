@@ -2095,7 +2095,7 @@ M_full_initial = M_current_filtered.copy()
 T_full = copy.deepcopy(T_current)
 M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
 
-logger.info("Final scaffold tree:")
+logger.info("Final full-resolved tree:")
 print_tree(T_full)
 # └─ ROOT
 #   └─ chr17_7578893_G_T
@@ -2132,7 +2132,7 @@ print_tree(T_full)
 #   └─ chr5_128188419_C_A
 #   └─ chr1_171541779_G_T
 
-logger.info(f"Final scaffold matrix shape: {M_full.shape}")
+logger.info(f"Final full-resolved matrix shape: {M_full.shape}")
 
 
 # ------------------------------
