@@ -100,8 +100,8 @@ The Figshare repository contains the following files:
 
 | File | Description | Size |
 |:-----|:------------|------:|
-| `Org4S15D63.bam` | Demo BAM file for testing the pipeline | 330.77 MB |
-| `Org4S15D63.bam.bai` | BAM index file | 2.68 MB |
+| `demo_scrna.bam` | Demo BAM file for testing the pipeline | 53.3 MB |
+| `demo_scrna.bam.bai` | BAM index file | 315 KB |
 
 **Download and Setup Instructions:**
 
@@ -124,8 +124,8 @@ gunzip COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz
 ```
 
 **Important:** 
-- The BAM file (`Org4S15D63.bam`) and its index (`Org4S15D63.bam.bai`) are **demo data** for testing the pipeline. They are not required for running PhyloSOLID on your own data.
-- If you want to test the pipeline with the provided demo data, place the BAM files in the `demo/input/Org4S15D63/01_rawdata/` directory.
+- The BAM file (`demo_scrna.bam`) and its index (`demo_scrna.bam.bai`) are **demo data** for testing the pipeline. They are not required for running PhyloSOLID on your own data.
+- If you want to test the pipeline with the provided demo data, place the BAM files in the `demo/scrna/input/` directory.
 
 ### Step 4: Configure paths.yaml
 
@@ -244,7 +244,7 @@ phylosolid --workdir ./results scrna \
     --mutation-list mutations.txt \
     --bam sample.bam \
     --barcode barcodes.txt \
-    --read-len 100 \
+    --read-len 120 \
     --cellnum 155
 ```
 
@@ -256,7 +256,7 @@ phylosolid --workdir ./results scrna \
     --bam sample.bam \
     --barcode barcodes.txt \
     --metadata metadata.txt \
-    --read-len 100 \
+    --read-len 120 \
     --cellnum 155 \
     --threads 8 \
     --workdir ./results \
@@ -291,7 +291,7 @@ phylosolid --workdir ./results scdna \
     --mutation-list mutations.txt \
     --bam sample.bam \
     --barcode barcodes.txt \
-    --read-len 100 \
+    --read-len 120 \
     --cellnum 155
 ```
 
@@ -311,7 +311,7 @@ phylosolid --workdir ./results spacetracer \
     --mutation-list mutations.txt \
     --bam sample.bam \
     --barcode barcodes.txt \
-    --read-len 100 \
+    --read-len 120 \
     --cellnum 155
 ```
 
@@ -323,7 +323,7 @@ phylosolid --workdir ./results spacetracer \
     --bam sample.bam \
     --barcode barcodes.txt \
     --metadata metadata.txt \
-    --read-len 100 \
+    --read-len 120 \
     --cellnum 155 \
     --threads 8 \
     --config config/paths.yaml
@@ -397,16 +397,170 @@ workdir/
     └── pipeline_summary.yaml       # Pipeline execution summary
 ```
 
+## Visualization
+
+PhyloSOLID provides a dedicated R package **PhyloSOLIDvis** for generating publication-ready circular (circos-style) phylogenetic tree visualizations.
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/TsingYang1112/PhyloSOLIDvis/master/inst/demo_circos.png" alt="Example circos plot from PhyloSOLIDvis" width="800">
+  <br>
+  <em>Figure 2: Example circos plot generated from PhyloSOLID output (351 cells, 17 mutations)</em>
+</div>
+
+### Installation
+
+```r
+remotes::install_github("TsingYang1112/PhyloSOLIDvis", dependencies = TRUE)
+```
+
+### Quick Start
+
+> **⚠️ Important:** `ggplot2` must be loaded **before** `PhyloSOLIDvis` to avoid namespace conflicts.
+
+```r
+library(ggplot2)
+library(PhyloSOLIDvis)
+
+# Run the complete pipeline
+results <- run_all(
+  inputpath = "path/to/workdir/sampleid/03_tree_building/mutation_integrator/phylo/",
+  outputpath = "path/to/output/",
+  annotation_file = "path/to/annotations.txt"
+)
+```
+
+### Locating the correct input directory
+
+After running the PhyloSOLID pipeline with `--workdir ./results` and `--sample SAMPLE_ID`, the required files are located in:
+
+```
+workdir/
+└── SAMPLE_ID/
+    └── 03_tree_building/
+        └── mutation_integrator/
+            └── phylo/
+                ├── final_cleaned_I_full_withNA3_for_circosPlot.txt
+                ├── final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix
+                ├── df_flipping_count_for_each_mut.txt
+                └── df_total_flipping_count.txt
+```
+
+**Set `inputpath` to this `phylo/` directory.**
+
+### Required Input Files
+
+| File | Description |
+|------|-------------|
+| `final_cleaned_I_full_withNA3_for_circosPlot.txt` | Input genotype matrix |
+| `final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix` | Conflict-free matrix |
+| `df_flipping_count_for_each_mut.txt` | Per-mutation flipping statistics |
+| `df_total_flipping_count.txt` | Total flipping statistics |
+
+### Annotation File Format (Optional)
+
+The annotation file (TSV format) should contain a `barcode` column matching cell IDs in the PhyloSOLID output. Optional columns include:
+
+| Column | Description |
+|--------|-------------|
+| `cluster_info` | Cell cluster assignments |
+| `cell_type` | Cell type annotations |
+| `sample` | Sample identifiers |
+| `tumor_score` | Numeric tumor scores |
+| `B_cell_prop` | B cell proportions |
+
+**Note:** `annotation_file` is optional. If not provided, the plot will be generated without annotation layers (tree + heatmap only).
+
+### Output Files
+
+After running `run_all()` or `plot_circos()`, the following files are generated:
+
+| File | Description |
+|------|-------------|
+| `No_target.circle_tree_output_as_point.*.svg/pdf` | Main circular plot |
+| `legend_components.circos_annotation.svg/pdf` | Circos annotation legend |
+| `legend_components.total_flipping_count.svg/pdf` | Flipping count legend |
+| `sorted_cf_matrix.txt` | Sorted mutation matrix |
+| `ordered_metadata_for_heatmap.txt` | Heatmap ordering data |
+| `heatmap_and_histograms_for_our_tree.pdf` | Heatmap plot |
+| `phylo_tree.rds` | Phylogenetic tree object |
+
+### Usage Examples
+
+**Basic usage with annotation:**
+```r
+library(ggplot2)
+library(PhyloSOLIDvis)
+
+result <- plot_circos(
+  inputpath = "results/demo_scrna/03_tree_building/mutation_integrator/phylo/",
+  outputpath = "figures/circos/",
+  annotation_file = "data/annotations.txt"
+)
+```
+
+**With custom parameters:**
+```r
+library(ggplot2)
+library(PhyloSOLIDvis)
+
+result <- plot_circos(
+  inputpath = "results/demo_scrna/03_tree_building/mutation_integrator/phylo/",
+  outputpath = "figures/circos/",
+  annotation_file = "data/annotations.txt",
+  target_mut = "chr11_65426524_T_C",
+  tip_label_offset = 8,
+  tip_label_size = 3,
+  heatmap_width = 0.3,
+  flipping_point_size = 1.3,
+  plot_height = 12,
+  plot_width = 18,
+  verbose = TRUE
+)
+```
+
+**Complete pipeline (matrix ordering + circos plot + heatmap):**
+```r
+library(ggplot2)
+library(PhyloSOLIDvis)
+
+results <- run_all(
+  inputpath = "results/demo_scrna/03_tree_building/mutation_integrator/phylo/",
+  outputpath = "figures/",
+  annotation_file = "data/annotations.txt",
+  target_mut = "chr11_65426524_T_C",
+  run_adjusted = TRUE,
+  adjusted_tip_label_offset = 6,
+  adjusted_flipping_point_size = 1.3,
+  verbose = TRUE
+)
+```
+
+### For Complete Documentation
+
+> **📘 For detailed parameter descriptions, advanced usage, and troubleshooting, please visit the PhyloSOLIDvis GitHub repository:**
+> 
+> **[https://github.com/TsingYang1112/PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)**
+
+### Quick Troubleshooting for Visualization
+
+| Issue | Solution |
+|-------|----------|
+| `could not find function "plot_circos"` | Run `library(ggplot2)` then `library(PhyloSOLIDvis)` |
+| `cannot open file '.../phylo/final_cleaned_I_...'` | Verify `inputpath` points to the exact `phylo/` subdirectory |
+| Missing `annotation_file` column | Ensure file has a `barcode` column matching cell IDs |
+| Plot renders with overlapping labels | Adjust `tip_label_offset` (increase for more space) |
+| Network issues during installation | Set CRAN/BioC mirrors and retry |
+
 ## Demo Example
 
-A complete demo with test data is available in the `demo/` directory. The demo uses the `Org4S15D63` sample data.
+A complete demo with test data is available in the `demo/` directory.
 
 **Demo data files:**
-- `demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam` - BAM file (downloaded from Figshare)
-- `demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam.bai` - BAM index file (downloaded from Figshare)
-- `demo/input/Org4S15D63/02_identifier/identifier.txt` - Mutation list
-- `demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt` - Barcode list
-- `demo/input/Org4S15D63/03_celltype/celltype_file_for_Org4S15D63.txt` - Cell type metadata (optional)
+- `demo/scrna/input/demo_scrna.bam` - BAM file (53.3 MB)
+- `demo/scrna/input/demo_scrna.bam.bai` - BAM index file (315 KB)
+- `demo/scrna/input/identifier.txt` - Mutation list
+- `demo/scrna/input/barcodes.txt` - Barcode list
+- `demo/scrna/input/celltype.txt` - Cell type metadata (optional)
 
 **To run the demo:**
 
@@ -415,58 +569,60 @@ cd demo
 ./run_demo.sh
 ```
 
-**Note:** The BAM files are not included in the GitHub repository due to their size. They must be downloaded from Figshare separately and placed in the `demo/input/Org4S15D63/01_rawdata/` directory before running the demo.
+**Note:** The BAM files are not included in the GitHub repository due to their size. They must be downloaded from Figshare separately and placed in the `demo/scrna/input/` directory before running the demo.
 
 ### Run individual steps with demo data
 
 **1. Feature extraction**
 
 ```bash
-phylosolid --workdir demo/expected_output scrna \
-    --sample Org4S15D63 \
-    --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
-    --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
-    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
+phylosolid --workdir demo/scrna/output scrna \
+    --sample demo_scrna \
+    --mutation-list demo/scrna/input/identifier.txt \
+    --bam demo/scrna/input/demo_scrna.bam \
+    --barcode demo/scrna/input/barcodes.txt \
     --threads 4 \
-    --read-len 100 \
+    --read-len 120 \
+    --cellnum 3319 \
     --steps feature_extraction
 ```
 
 **2. Tree input generation**
 
 ```bash
-phylosolid --workdir demo/expected_output scrna \
-    --sample Org4S15D63 \
-    --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
-    --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
-    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
-    --cellnum 155 \
+phylosolid --workdir demo/scrna/output scrna \
+    --sample demo_scrna \
+    --mutation-list demo/scrna/input/identifier.txt \
+    --bam demo/scrna/input/demo_scrna.bam \
+    --barcode demo/scrna/input/barcodes.txt \
+    --cellnum 3319 \
     --steps tree_input
 ```
 
 **3. Tree building**
 
 ```bash
-phylosolid --workdir demo/expected_output scrna \
-    --sample Org4S15D63 \
-    --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
-    --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
-    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
-    --celltype-file demo/input/Org4S15D63/03_celltype/celltype_file_for_Org4S15D63.txt \
+phylosolid --workdir demo/scrna/output scrna \
+    --sample demo_scrna \
+    --mutation-list demo/scrna/input/identifier.txt \
+    --bam demo/scrna/input/demo_scrna.bam \
+    --barcode demo/scrna/input/barcodes.txt \
+    --celltype-file demo/scrna/input/celltype.txt \
     --steps tree_building
 ```
 
 **Complete pipeline with demo data**
 
 ```bash
-phylosolid --workdir demo/test_output scrna \
-    --sample Org4S15D63 \
-    --mutation-list demo/input/Org4S15D63/02_identifier/identifier.txt \
-    --bam demo/input/Org4S15D63/01_rawdata/Org4S15D63.bam \
-    --barcode demo/input/Org4S15D63/01_rawdata/Org4S15D63_CB.txt \
+phylosolid --workdir demo/scrna/output scrna \
+    --sample demo_scrna \
+    --mutation-list demo/scrna/input/identifier.txt \
+    --bam demo/scrna/input/demo_scrna.bam \
+    --barcode demo/scrna/input/barcodes.txt \
+    --celltype-file demo/scrna/input/celltype.txt \
     --threads 4 \
-    --read-len 100 \
-    --cellnum 155
+    --read-len 120 \
+    --cellnum 3319
 ```
 
 ## Troubleshooting
@@ -555,4 +711,3 @@ Please respect the licenses of these dependencies when using PhyloSOLID.
 For questions and support, please contact:  
 Qing Yang: yangqing@westlake.edu.cn  
 Yanmei Dou: yanmeidou@westlake.edu.cn
-

@@ -20,7 +20,7 @@ INPUT_DIR="$SCRIPT_DIR/scrna/input"
 
 # Input files
 MUTATION_LIST="$INPUT_DIR/identifier.txt"
-BAM_FILE="$INPUT_DIR/target_reads.bam"
+BAM_FILE="$INPUT_DIR/demo_scrna.bam"
 BARCODE_FILE="$INPUT_DIR/barcodes.txt"
 CELLTYPE_FILE="$INPUT_DIR/celltype.txt"
 
@@ -55,7 +55,7 @@ if [ $MISSING -eq 1 ]; then
     echo "Error: Missing input files!"
     echo "Please ensure demo/scrna/input/ contains:"
     echo "  - identifier.txt"
-    echo "  - target_reads.bam"
+    echo "  - demo_scrna.bam"
     echo "  - barcodes.txt"
     echo "  - celltype.txt"
     exit 1
