@@ -213,7 +213,7 @@ df_features = pd.DataFrame([
 df_features_new, empty_mutations = update_features_matrix(I_somatic, df_reads_somatic, df_features, params["mcf_cutoff"])
 df_features_new = add_mutation_proportions_to_features(df_features_new, I_somatic)
 
-somatic_mutations = list(I_raw.columns)
+somatic_mutations = list((reorder_columns_by_mutant_stats(I_raw, df_features_new)[0]).columns)
 
 # ------------------------------
 # Step 2: Scaffold builder

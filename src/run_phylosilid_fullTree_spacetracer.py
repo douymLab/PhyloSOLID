@@ -192,13 +192,8 @@ logger.info("===== Step1: Loading data ...")
 data = load_all(inputpath)
 P_raw, V_raw, C_raw, A_raw = data["P"], data["V"], data["C"], data["A"]
 df_features = data['features']
-df_reads = data['df_reads']
+df_reads_raw = data['df_reads']
 I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
-all_mutations = list(I_raw.columns)
-
-P, V, C, A, I = P_raw.copy(), V_raw.copy(), C_raw.copy(), A_raw.copy(), I_raw.copy()
-
-df_features_new, empty_mutations = update_features_matrix(I, df_reads, df_features, params["mcf_cutoff"])
 
 logger.info(f"Loaded data: {len(P)} cells, {len(I_raw.columns)} mutations")
 
@@ -294,6 +289,23 @@ output_bulk_df = pd.DataFrame(output_bulk_data)
 output_bulk_df.to_csv(os.path.join(outputpath, "input_BULK.txt"), sep='\t', index=False)
 
 
+##### 去掉所有没有 1 的行/细胞
+I_filtered = I_raw[I_raw.eq(1).any(axis=1)]
+I = reorder_columns_by_mutant_stats(I_filtered, df_features)[0]
+all_mutations = list(I.columns)
+
+# 同步其他数据框
+cells_in_I = I.index
+cols_in_I = I.columns
+P = P_raw.loc[cells_in_I, cols_in_I]
+V = V_raw.loc[cells_in_I, cols_in_I]
+C = C_raw.loc[cells_in_I, cols_in_I]
+A = A_raw.loc[cells_in_I, cols_in_I]
+bulk_row = df_reads_raw.loc[['bulk']]
+df_reads_cells = df_reads_raw.loc[cells_in_I, cols_in_I]
+df_reads = pd.concat([bulk_row, df_reads_cells])
+
+df_features_new, empty_mutations = update_features_matrix(I, df_reads, df_features, params["mcf_cutoff"])
 
 
 # ------------------------------
@@ -331,8 +343,6 @@ I_candidate = I[candidate_mutations].copy()
 df_reads_candidate = df_reads[candidate_mutations].copy()
 
 
-
-
 # ------------------------------
 # Step 3. Germline filtering
 # ------------------------------
@@ -360,23 +370,15 @@ removed_germline_mutations = [i for i in predicted_germline_mutations if i not i
 
 
 logging.info(f"Identified {len(predicted_germline_mutations)} germline variants")
-# 100k: {'chr4_78610227_T_G', 'chr8_123681204_C_T', 'chr19_46838237_G_A'}
-# 10k: 
-# P6_merged: {'chr2_187412173_G_C', 'chr16_67944430_G_C', 'chr14_106276454_C_G', 'chr20_45109473_A_G'}
-# 151674: set()
-# P4_merged: set()
-# P6_merged:  {'chr20_45109473_A_G', 'chr19_4815978_C_A', 'chr2_187412173_G_C', 'chr14_106276454_C_G', 'chr16_67944430_G_C'}
 
 
 # heatmap 中展示鉴定结果
 plot_heatmap_with_germline_mutations(I, predicted_germline_mutations, os.path.join(outputpath_germline, sampleid+".heatmap_with_predicted_germline_mutations_and_histograms.pdf"))
-# predicted_germline_mutations = set()
-
-# 去掉 predicted_germline_mutations 中的突变（只保留 somatic）
-# removed_artifact_mutations = ['chr17_41690997_C_T', 'chr15_55317839_C_G']
-# removed_artifact_mutations = ['chr17_41690997_C_T', 'chr15_55317839_C_G', 'chr5_139341854_G_T', 'chr13_44433526_T_C', 'chr7_24698525_G_T', 'chr16_57231300_G_A']
 removed_artifact_mutations = []
-somatic_mutations = [i for i in all_mutations if i not in removed_germline_mutations and i not in removed_artifact_mutations]
+somatic_mutations_init = [i for i in all_mutations if i not in removed_germline_mutations and i not in removed_artifact_mutations]
+# sort mutations
+somatic_mutations = list((reorder_columns_by_mutant_stats(I[somatic_mutations_init], df_features_new)[0]).columns)
+# extract dataframe
 P_somatic = P[somatic_mutations].copy()
 V_somatic = V[somatic_mutations].copy()
 A_somatic = A[somatic_mutations].copy()
@@ -387,8 +389,6 @@ df_reads_somatic = df_reads[somatic_mutations].copy()
 I_somatic_withNA3 = I_somatic.replace({np.nan: 3}).astype(int)
 I_somatic_withNA3.to_csv(os.path.join(outputpath_germline, "I_somatic_withNA3.txt"), sep="\t")
 df_features_new = add_mutation_proportions_to_features(df_features_new, I_somatic)
-
-
 
 
 # ------------------------------
