@@ -146,6 +146,8 @@ def main():
     parser.add_argument('--workdir', '-w', type=Path, default='./phylosolid_work',
                        help='Working directory (default: ./phylosolid_work)')
     parser.add_argument('--config', '-c', type=Path, help='Configuration file (YAML)')
+    parser.add_argument('--seed', type=int, default=42, 
+                       help='Random seed for reproducibility (default: 42)')    
     
     # Subcommands
     subparsers = parser.add_subparsers(dest='mode', required=True, help='Analysis mode')

@@ -44,6 +44,7 @@ from anytree import Node, RenderTree
 from src.germline_filter import pairwise_counts, jaccard_index, are_mutations_correlated, reorder_columns_by_mutant_stats
 from src.scaffold_builder import TreeNode, tree_to_dict, print_tree_dict
 from src.scaffold_builder import print_tree, add_new_mutation_to_tree_independent, split_merged_columns, WriteTfile, compute_bayesian_penalty_each_pos, compute_bayesian_penalty_each_chain_mut_by_pos, build_lineage_parent_dict_from_tree
+from src.reproducibility import set_seed, deterministic_permutation, get_seed
 import scphylo as scp
 from scphylo.pl._helper import (
     _add_barplot,
@@ -2982,138 +2983,6 @@ def assign_clone_labels(M_full: pd.DataFrame, mutation_clones: dict) -> pd.DataF
                 result_df = pd.concat([result_df, new_row], ignore_index=True)
     
     return result_df
-
-
-def reorder_columns_by_mutant_stats(df_values, df_features_new, 
-                                    min_cell_threshold=30, bin_size=5, 
-                                    descending=True, return_stats=True):
-    """
-    最优化的列重排序函数：按mutant cell number分组，组内按mutant cell fraction排序
-    （完全确定性排序版本）
-    
-    Parameters:
-    -----------
-    df_values : DataFrame
-        包含0,1,NA的原始数据框 (rows: cells, columns: mutations)
-    df_features_new : DataFrame
-        包含突变统计信息的数据框
-    min_cell_threshold : int
-        最小细胞数阈值，大于等于此值的突变单独作为高优先级组
-    bin_size : int
-        阈值以下的分组间隔大小
-    descending : bool
-        True: 从大到小排序 (高mutant cell number在前)  
-        False: 从小到大排序
-    return_stats : bool
-        是否返回排序统计信息
-    
-    Returns:
-    --------
-    df_reordered : DataFrame
-        重新排序列后的数据框
-    sorting_stats : DataFrame (可选)
-        列的排序统计信息
-    """
-    
-    # 1. 获取两个数据框列的交集（按字母顺序排序确保确定性）
-    common_columns = sorted(list(set(df_values.columns) & set(df_features_new.columns)))
-    print(f"原始df_values列数: {len(df_values.columns)}")
-    print(f"原始df_features_new列数: {len(df_features_new.columns)}")
-    print(f"共同列数: {len(common_columns)}")
-    
-    if len(common_columns) == 0:
-        raise ValueError("两个数据框没有共同的列！")
-    
-    # 2. 筛选共同列
-    df_values_common = df_values[common_columns]
-    
-    # 3. 提取关键统计信息（只针对共同列）
-    mutant_cell_num = df_features_new[common_columns].loc['mutant_cellnum'].astype(int)
-    mutant_cell_frac = df_features_new[common_columns].loc['mutant_cell_fraction'].astype(float)
-    
-    # 4. 创建排序统计DataFrame
-    stats_df = pd.DataFrame({
-        'column_name': mutant_cell_num.index,
-        'mutant_cell_num': mutant_cell_num.values,
-        'mutant_cell_frac': mutant_cell_frac.values
-    })
-    
-    # 5. 定义分组逻辑
-    def create_mutant_group(num):
-        """创建mutant cell number分组标签"""
-        if num >= min_cell_threshold:
-            return f'≥{min_cell_threshold}'
-        else:
-            lower = (num // bin_size) * bin_size
-            upper = lower + bin_size - 1
-            return f'{lower:02d}-{upper:02d}'
-    
-    stats_df['mutant_group'] = stats_df['mutant_cell_num'].apply(create_mutant_group)
-    
-    # 6. 定义分组排序顺序
-    # 高mutant cell number的组在前
-    high_priority_groups = [f'≥{min_cell_threshold}']
-    
-    # 低mutant cell number的组，从大到小
-    low_priority_groups = []
-    for i in range(min_cell_threshold - bin_size, -1, -bin_size):
-        lower = i
-        upper = i + bin_size - 1
-        if lower >= 0:
-            low_priority_groups.append(f'{lower:02d}-{upper:02d}')
-    
-    group_order = high_priority_groups + low_priority_groups
-    
-    # 7. 转换为有序分类变量
-    stats_df['mutant_group'] = pd.Categorical(
-        stats_df['mutant_group'], 
-        categories=group_order, 
-        ordered=True
-    )
-    
-    # 8. 完全确定性排序：先按分组，再按mutant cell fraction，最后按列名
-    if descending:
-        # 从大到小：高mutant number + 高fraction在前，列名按字母顺序
-        stats_df_sorted = stats_df.sort_values(
-            ['mutant_group', 'mutant_cell_frac', 'column_name'], 
-            ascending=[True, False, True]  # 分组用分类顺序，分数降序，列名升序
-        )
-    else:
-        # 从小到大：低mutant number + 低fraction在前，列名按字母顺序
-        stats_df_sorted = stats_df.sort_values(
-            ['mutant_group', 'mutant_cell_frac', 'column_name'], 
-            ascending=[True, True, True]   # 分组用分类顺序，分数升序，列名升序
-        )
-    
-    # 9. 获取排序后的列名
-    sorted_columns = stats_df_sorted['column_name'].tolist()
-    
-    # 10. 重新排列数据框列（只针对共同列）
-    df_reordered = df_values_common[sorted_columns]
-    
-    # 11. 重置索引以便查看
-    stats_df_sorted = stats_df_sorted.reset_index(drop=True)
-    stats_df_sorted['final_order'] = stats_df_sorted.index + 1
-    
-    print(f"最终重排序列数: {len(sorted_columns)}")
-    print(f"分组统计:")
-    group_counts = stats_df_sorted['mutant_group'].value_counts().sort_index()
-    for group, count in group_counts.items():
-        print(f"  {group}: {count}个突变")
-    
-    if return_stats:
-        return df_reordered, stats_df_sorted
-    else:
-        return df_reordered
-
-# # 使用示例
-# I_attached, sorting_stats_of_I_attached = reorder_columns_by_mutant_stats(
-#     I_attached_split, 
-#     df_features_new,
-#     min_cell_threshold=30,  # ≥30的作为高优先级组
-#     bin_size=5,             # 30以下每5个一组
-#     descending=True         # 从大到小排序
-# )
 
 
 def get_first_level_backbone_nodes(root: TreeNode) -> List[str]:

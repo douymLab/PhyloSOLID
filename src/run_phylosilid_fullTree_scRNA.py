@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import os
+os.environ['PYTHONHASHSEED'] = '42'
+
 
 # Date: 2025/09/16
 # Update: 2025/10/13
@@ -11,12 +14,9 @@ import time
 start_time = time.perf_counter()
 
 
-
-
 ################################################################################################
 ########################################## PhyloSOLID #########################################
 ################################################################################################
-import os
 import logging
 import copy
 import random
@@ -35,22 +35,6 @@ from src.scaffold_builder import build_scaffold_tree
 from src.scaffold_builder import *
 from src.mutation_integrator import *
 
-# 设置所有随机种子
-RANDOM_SEED = 42  # 可以任意指定
-random.seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-
-# 如果有使用其他库也设置种子
-try:
-    import torch
-    torch.manual_seed(RANDOM_SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(RANDOM_SEED)
-        torch.cuda.manual_seed_all(RANDOM_SEED)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-except ImportError:
-    pass
 
 # ------------------------------
 # 配置 logging
@@ -60,7 +44,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ------------------------------
 # 项目参数与文件路径设置
 # ------------------------------
-
 import multiprocessing as mp
 import argparse
 from argparse import ArgumentParser
@@ -74,7 +57,13 @@ parser.add_argument("--features_file", default=None, type=str, help="The feature
 parser.add_argument("--is_predict_germ", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to predict germline mutations.")
 parser.add_argument("--is_detect_passtree_by_dp", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to run Dynamic programing step.")
 parser.add_argument("--is_filter_quality", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to filter mutations in scaffold steps by coverage quality.")
+parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
+
 args = parser.parse_args()
+
+# 设置所有随机种子（统一管理）
+from src.reproducibility import set_seed, deterministic_choice
+set_seed(args.seed)
 
 
 # get parameters
@@ -196,15 +185,10 @@ logger.info("===== Step1: Loading data ...")
 data = load_all(inputpath)
 P_raw, V_raw, C_raw, A_raw = data["P"], data["V"], data["C"], data["A"]
 df_features = data['features']
-df_reads = data['df_reads']
+df_reads_raw = data['df_reads']
 I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
-all_mutations = list(I_raw.columns)
 
-P, V, C, A, I = P_raw.copy(), V_raw.copy(), C_raw.copy(), A_raw.copy(), I_raw.copy()
-
-df_features_new, empty_mutations = update_features_matrix(I, df_reads, df_features, params["mcf_cutoff"])
-
-logger.info(f"Loaded data: {len(P)} cells, {len(I_raw.columns)} mutations")
+logger.info(f"Loaded data: {len(P_raw)} cells, {len(I_raw.columns)} mutations")
 
 ##### Output binary matrix with NA=0
 I_raw_withNA0 = I_raw.replace({np.nan: 0}).astype(int)
@@ -219,7 +203,7 @@ I_raw_withNA3_T.to_csv(os.path.join(outputpath, "I_raw_withNA3_T.txt"), sep="\t"
 
 ##### Output for BSCITE bulk input
 # 获取 pseudo bulk 数据
-df_corrected = df_reads.copy()
+df_corrected = df_reads_raw.copy()
 
 # 分割数据并转换为数值
 def split_and_sum(series):
@@ -251,7 +235,7 @@ sample2 = 'bulk'
 
 # 从剩下的细胞中随机选一个（排除pseudo_bulk和bulk）
 remaining_cells = [idx for idx in df_corrected.index if idx not in ['pseudo_bulk', 'bulk']]
-sample3 = random.choice(remaining_cells)
+sample3 = deterministic_choice(remaining_cells, salt="scRNA_bulk_sample")
 
 print(f"使用样本: {sample1}, {sample2}, {sample3}")
 
@@ -298,6 +282,23 @@ output_bulk_df = pd.DataFrame(output_bulk_data)
 output_bulk_df.to_csv(os.path.join(outputpath, "input_BULK.txt"), sep='\t', index=False)
 
 
+##### 去掉所有没有 1 的行/细胞
+I_filtered = I_raw[I_raw.eq(1).any(axis=1)]
+I = reorder_columns_by_mutant_stats(I_filtered, df_features)[0]
+all_mutations = list(I.columns)
+
+# 同步其他数据框
+cells_in_I = I.index
+cols_in_I = I.columns
+P = P_raw.loc[cells_in_I, cols_in_I]
+V = V_raw.loc[cells_in_I, cols_in_I]
+C = C_raw.loc[cells_in_I, cols_in_I]
+A = A_raw.loc[cells_in_I, cols_in_I]
+bulk_row = df_reads_raw.loc[['bulk']]
+df_reads_cells = df_reads_raw.loc[cells_in_I, cols_in_I]
+df_reads = pd.concat([bulk_row, df_reads_cells])
+
+df_features_new, empty_mutations = update_features_matrix(I, df_reads, df_features, params["mcf_cutoff"])
 
 
 # ------------------------------
@@ -335,8 +336,6 @@ I_candidate = I[candidate_mutations].copy()
 df_reads_candidate = df_reads[candidate_mutations].copy()
 
 
-
-
 # ------------------------------
 # Step 3. Germline filtering
 # ------------------------------
@@ -364,23 +363,15 @@ removed_germline_mutations = [i for i in predicted_germline_mutations if i not i
 
 
 logging.info(f"Identified {len(predicted_germline_mutations)} germline variants")
-# 100k: {'chr4_78610227_T_G', 'chr8_123681204_C_T', 'chr19_46838237_G_A'}
-# 10k: 
-# P6_merged: {'chr2_187412173_G_C', 'chr16_67944430_G_C', 'chr14_106276454_C_G', 'chr20_45109473_A_G'}
-# 151674: set()
-# P4_merged: set()
-# P6_merged:  {'chr20_45109473_A_G', 'chr19_4815978_C_A', 'chr2_187412173_G_C', 'chr14_106276454_C_G', 'chr16_67944430_G_C'}
 
 
 # heatmap 中展示鉴定结果
 plot_heatmap_with_germline_mutations(I, predicted_germline_mutations, os.path.join(outputpath_germline, sampleid+".heatmap_with_predicted_germline_mutations_and_histograms.pdf"))
-# predicted_germline_mutations = set()
-
-# 去掉 predicted_germline_mutations 中的突变（只保留 somatic）
-# removed_artifact_mutations = ['chr17_41690997_C_T', 'chr15_55317839_C_G']
-# removed_artifact_mutations = ['chr17_41690997_C_T', 'chr15_55317839_C_G', 'chr5_139341854_G_T', 'chr13_44433526_T_C', 'chr7_24698525_G_T', 'chr16_57231300_G_A']
 removed_artifact_mutations = []
-somatic_mutations = [i for i in all_mutations if i not in removed_germline_mutations and i not in removed_artifact_mutations]
+somatic_mutations_init = [i for i in all_mutations if i not in removed_germline_mutations and i not in removed_artifact_mutations]
+# sort mutations
+somatic_mutations = list((reorder_columns_by_mutant_stats(I[somatic_mutations_init], df_features_new)[0]).columns)
+# extract dataframe
 P_somatic = P[somatic_mutations].copy()
 V_somatic = V[somatic_mutations].copy()
 A_somatic = A[somatic_mutations].copy()
@@ -391,8 +382,6 @@ df_reads_somatic = df_reads[somatic_mutations].copy()
 I_somatic_withNA3 = I_somatic.replace({np.nan: 3}).astype(int)
 I_somatic_withNA3.to_csv(os.path.join(outputpath_germline, "I_somatic_withNA3.txt"), sep="\t")
 df_features_new = add_mutation_proportions_to_features(df_features_new, I_somatic)
-
-
 
 
 # ------------------------------
@@ -428,7 +417,7 @@ results_of_scaffold = build_scaffold_tree(
     df_features_new = df_features_new,
     params = params,
     is_filter_quality = is_filter_quality,
-    outputpath = outputpath_scaffold,
+    outputpath_scaffold = outputpath_scaffold,
     sampleid = sampleid,
     df_celltype = df_celltype,
     immune_mutations = immune_mutations

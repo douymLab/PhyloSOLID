@@ -53,6 +53,7 @@ from scphylo.pl._helper import (
 )
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.germline_filter import reorder_columns_by_mutant_stats
+from src.reproducibility import set_seed, deterministic_permutation, get_seed
 
 # Try to import optional dependencies
 try:
@@ -350,7 +351,8 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     
     # --- Union ---
     final_scaffold_mutations = list(set(step1_mutations) | set(step2_mutations))
-    print("=====> Final scaffold mutations (union):", len(final_scaffold_mutations))
+    final_scaffold_mutations_sorted = [i for i in kept_mutations if i in final_scaffold_mutations]
+    print("=====> Final scaffold mutations (union):", len(final_scaffold_mutations_sorted))
     
     # --- Summary ---
     df_cv_stats = pd.DataFrame({
@@ -361,7 +363,7 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     })
     df_cv_stats["pass_CV"] = df_cv_stats.index.isin(step2_mutations)
     df_cv_stats["pass_NA"] = df_cv_stats.index.isin(step1_mutations)
-    df_cv_stats["pass_cov"] = df_cv_stats.index.isin(final_scaffold_mutations)
+    df_cv_stats["pass_cov"] = df_cv_stats.index.isin(final_scaffold_mutations_sorted)
     
     df_summary = pd.concat([df_cv_stats, df_NA_prop], axis=1)
     
@@ -369,7 +371,7 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     if outputpath is not None:
         os.makedirs(outputpath, exist_ok=True)
         df_summary.to_csv(os.path.join(outputpath, "Summary_df_in_scaffold_filtration.csv"))
-    return final_scaffold_mutations, df_summary
+    return final_scaffold_mutations_sorted, df_summary
 
 
 def calculate_cv_for_subgrouping(df_reads_resolved, mutations, cv_threshold=6, logger=None):
@@ -457,7 +459,7 @@ def compute_clone_conter(muts, corr_cache, n_shuffle=100):
     for ref in muts:
         other_muts = [m for m in muts if m != ref]
         for _ in range(n_shuffle):
-            shuffled = list(np.random.permutation(other_muts))
+            shuffled = list(deterministic_permutation(other_muts))
             remaining = [ref] + shuffled.copy()
             while remaining:
                 curr_ref = remaining[0]
@@ -497,7 +499,7 @@ def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100):
         ref_clone_counter = defaultdict(int)  # 记录当前 reference 下每个 clone 的计数
         
         for _ in range(n_shuffle):
-            shuffled = list(np.random.permutation(other_muts))
+            shuffled = list(deterministic_permutation(other_muts))
             remaining = [ref] + shuffled.copy()
             
             while remaining:
@@ -553,7 +555,6 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
         clone_weights: dict mapping clone tuples to weight
         pair_weights: dict mapping mutation pairs to weight
     """
-    np.random.seed(seed)
     muts = list(I_S.columns)
     n_mut = len(muts)
     
@@ -590,7 +591,9 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
 
 import matplotlib.pyplot as plt
 import networkx as nx
-def plot_mutation_graph(G_ig, mutation_group, pdf_file, figsize=(8,8), edge_scale=0.2, seed=42):
+import numpy as np
+def plot_mutation_graph(G_ig, mutation_group, pdf_file, figsize=(8,8), edge_scale=0.2, seed=42,
+                        ordered_mutations=None):
     """
     可视化 mutation graph，节点颜色表示群组，边宽表示权重。
     
@@ -600,12 +603,17 @@ def plot_mutation_graph(G_ig, mutation_group, pdf_file, figsize=(8,8), edge_scal
         已构建的 igraph 图
     mutation_group : dict
         {mutation_id: group_id} 每个 mutation 对应的群组
+    pdf_file : str
+        输出 PDF 文件路径
     figsize : tuple
         图像大小
     edge_scale : float
         边权重放大系数
     seed : int
         布局随机种子
+    ordered_mutations : list, optional
+        预定义的 mutation 顺序列表。如果提供，将按照此顺序绘制节点；
+        如果不提供，则按字母序排序（确保确定性）
     """
     # 1. 转换为 NetworkX 图
     G_nx = nx.Graph()
@@ -616,73 +624,113 @@ def plot_mutation_graph(G_ig, mutation_group, pdf_file, figsize=(8,8), edge_scal
         m2 = G_ig.vs[e.target]['name']
         G_nx.add_edge(m1, m2, weight=float(e['weight']))
     
-    # 2. 节点颜色
-    groups = [mutation_group[n] for n in G_nx.nodes()]
-    unique_groups = list(set(groups))
+    # ===== 按照 ordered_mutations 的顺序排序节点 =====
+    if ordered_mutations is not None:
+        ordered_mutations_set = set(ordered_mutations)
+        nodes_in_graph = set(G_nx.nodes())
+        sorted_nodes = [mut for mut in ordered_mutations if mut in nodes_in_graph]
+        extra_nodes = sorted([mut for mut in nodes_in_graph if mut not in ordered_mutations_set])
+        sorted_nodes = sorted_nodes + extra_nodes
+    else:
+        sorted_nodes = sorted(G_nx.nodes())
+    
+    # 2. 节点颜色（使用排序后的节点列表）
+    groups = [mutation_group[n] for n in sorted_nodes]
+    unique_groups = sorted(set(groups))
     color_map = plt.cm.get_cmap('tab20', len(unique_groups))
     node_colors = [color_map(g) for g in groups]
     
-    # 3. 边宽
-    edges = G_nx.edges()
-    edge_weights = [G_nx[u][v]['weight'] for u,v in edges]
-    edge_widths = [w*edge_scale for w in edge_weights]
+    # 3. 边宽（使用排序后的边列表）
+    sorted_edges = sorted(G_nx.edges())
+    edge_weights = [G_nx[u][v]['weight'] for u, v in sorted_edges]
+    edge_widths = [w * edge_scale for w in edge_weights]
     
-    # 4. 布局
-    pos = nx.spring_layout(G_nx, seed=seed, k=0.5)  # k 控制节点间距
+    # 4. 布局（使用固定随机种子）
+    pos = nx.spring_layout(G_nx, seed=seed, k=0.5)
     
-    # 5. 绘制
+    # 5. 绘制（使用排序后的节点和边列表）
     plt.figure(figsize=figsize)
-    nx.draw_networkx_nodes(G_nx, pos, node_color=node_colors, node_size=200)  # 节点小一点
-    nx.draw_networkx_edges(G_nx, pos, width=edge_widths, alpha=0.7)
+    nx.draw_networkx_nodes(G_nx, pos, nodelist=sorted_nodes, node_color=node_colors, node_size=200)
+    nx.draw_networkx_edges(G_nx, pos, edgelist=sorted_edges, width=edge_widths, alpha=0.7)
     nx.draw_networkx_labels(G_nx, pos, font_size=10, font_color='black')
     plt.title("Mutation Graph with Leiden Groups")
     plt.axis('off')
-    plt.margins(x=0.2, y=0.2)        # 给四周加 margin
-    plt.tight_layout(pad=2.0)        # 额外空白
+    plt.margins(x=0.2, y=0.2)
+    plt.tight_layout(pad=2.0)
     plt.savefig(pdf_file, dpi=300)
     plt.close()
 
 
 import igraph as ig
 import leidenalg
-def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, seed=42):
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
+
+def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, seed=42, 
+                           ordered_mutations=None):
     """
     根据 clone_weights 和 pair_weights 构建加权共现图，并使用 Leiden 算法划分 mutation group。
     
     Parameters
     ----------
     clone_weights : dict
-        {tuple(mutations): weight}  每个 clone 的全局权重，包括单节点 clone
+        {tuple(mutations): weight} 每个 clone 的全局权重
     pair_weights : dict
-        {tuple(m1,m2): weight}  每个 mutation pair 的权重（只考虑长度>=2的 clone）
+        {tuple(m1,m2): weight} 每个 mutation pair 的权重
+    pdf_file : str
+        输出 PDF 文件路径
     resolution : float
         Leiden 算法分辨率参数
     seed : int
         随机种子
+    ordered_mutations : list, optional
+        预定义的 mutation 顺序列表。如果提供，将按照此顺序排序节点；
+        如果不提供，则按字母序排序（确保确定性）
     
     Returns
     -------
     mutation_group : dict
         {mutation_id: group_id} 每个 mutation 对应的群组
     partition : leidenalg VertexPartition
-        Leiden 算法返回的 partition 对象（可用于可视化等）
+        Leiden 算法返回的 partition 对象
     G_ig : igraph Graph
         构建的 igraph 图
     """
-    # 1. 收集所有 mutation（包括孤立节点）
+    # 1. 收集所有 mutation
     all_mutations = set()
     for clone in clone_weights.keys():
         all_mutations.update(clone)
     
-    # 2. 构建 igraph 图
-    G_ig = ig.Graph()
-    G_ig.add_vertices(list(all_mutations))  # 所有 mutation 作为节点
+    # ===== 按照 ordered_mutations 的顺序排序 =====
+    if ordered_mutations is not None:
+        # 只保留在 ordered_mutations 中出现的 mutation
+        # 并且按照 ordered_mutations 的顺序排列
+        ordered_mutations_set = set(ordered_mutations)
+        all_mutations = [mut for mut in ordered_mutations if mut in all_mutations]
+        # 如果有 mutation 在 all_mutations 但不在 ordered_mutations 中，追加到末尾
+        extra_mutations = sorted([mut for mut in all_mutations if mut not in ordered_mutations_set])
+        all_mutations = all_mutations + extra_mutations
+    else:
+        # 如果没有提供 ordered_mutations，按字母序排序（确保确定性）
+        all_mutations = sorted(list(all_mutations))
     
-    # 添加边（只考虑长度>=2的 clone）
-    for (m1, m2), w in pair_weights.items():
+    # 2. 构建 igraph 图，节点顺序确定
+    G_ig = ig.Graph()
+    G_ig.add_vertices(all_mutations)
+    
+    # 3. 添加边，确保顺序确定
+    # 按 mutation 名称排序 pair_weights
+    sorted_pairs = sorted(pair_weights.items())
+    for (m1, m2), w in sorted_pairs:
         G_ig.add_edge(m1, m2, weight=float(w))
     
-    # 3. 运行 Leiden 算法
+    # 4. 设置随机种子
+    random.seed(seed)
+    np.random.seed(seed)
+    
+    # 5. 运行 Leiden 算法
     partition = leidenalg.find_partition(
         G_ig,
         leidenalg.RBConfigurationVertexPartition,
@@ -691,14 +739,15 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
         seed=seed
     )
     
-    # 4. 输出 mutation -> group 字典
+    # 6. 输出 mutation -> group 字典
     mutation_group = {}
     for idx, community in enumerate(partition):
         for v in community:
             mutation_group[G_ig.vs[v]['name']] = idx
     
-    # 5. 绘图
-    plot_mutation_graph(G_ig, mutation_group, pdf_file)
+    # 7. 绘图（传递 ordered_mutations 给绘图函数）
+    plot_mutation_graph(G_ig, mutation_group, pdf_file, seed=seed, 
+                       ordered_mutations=all_mutations)
     
     return mutation_group, partition, G_ig
 
@@ -5346,7 +5395,9 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                 mutation_subgroup, partition_sub, G_ig_sub = leiden_mutation_groups(
                     clone_weights_sub, pair_weights_sub, 
                     dir_subgroup + "/" + sampleid + f".group_{group_id}_subgraph.pdf", 
-                    params['resolution_of_graph']
+                    params['resolution_of_graph'],
+                    seed=get_seed(),
+                    ordered_mutations=I_group_final.columns.tolist()
                 )
                 external_mutations_outgroup = [i for i in valid_mutations if i not in list(mutation_subgroup.keys())]
                 external_mutations.extend(external_mutations_outgroup)
@@ -5415,7 +5466,9 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                             mutation_dehubgroup, partition_dehub, G_ig_dehub = leiden_mutation_groups(
                                 clone_weights_dehub, pair_weights_dehub, 
                                 dir_subgroup + "/" + sampleid + f".group_{group_id}_for_group_exclude_hub_cluster.pdf", 
-                                params['resolution_of_graph']
+                                params['resolution_of_graph'],
+                                seed=get_seed(),
+                                ordered_mutations=I_group_dehub.columns.tolist()
                             )
                             hub_clusters_dehub, cluster_degrees_dehub = detect_hub_clusters(G_ig_dehub, mutation_dehubgroup)
                             
@@ -5461,7 +5514,9 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                                     mutation_maxsubgroup, partition_maxsub, G_ig_maxsub = leiden_mutation_groups(
                                         clone_weights_maxsub, pair_weights_maxsub, 
                                         dir_subgroup + "/" + sampleid + f".group_{group_id}_for_more90percent_group.pdf", 
-                                        params['resolution_of_graph']
+                                        params['resolution_of_graph'],
+                                        seed=get_seed(),
+                                        ordered_mutations=I_group_maxsub.columns.tolist()
                                     )
                                     hub_clusters_maxsub, cluster_degrees_maxsub = detect_hub_clusters(G_ig_maxsub, mutation_maxsubgroup)
                                     
@@ -5649,7 +5704,7 @@ def build_scaffold_tree(
     df_features_new: pd.DataFrame,
     params: Dict[str, Any],
     is_filter_quality: str,
-    outputpath: str,
+    outputpath_scaffold: str,
     sampleid: str,
     immune_mutations: list,
     df_celltype: Optional[str] = None
@@ -5673,7 +5728,7 @@ def build_scaffold_tree(
         Reads dataframe
     params : Dict[str, Any]
         Parameters dictionary
-    outputpath : str
+    outputpath_scaffold : str
         Output directory path
     sampleid : str
         Sample ID
@@ -5693,33 +5748,54 @@ def build_scaffold_tree(
     # Set up logger
     logger = logging.getLogger(__name__)
     
+    # ===== 辅助函数：获取排序后的 mutation 列表 =====
+    def get_ordered_mutations(df_values, df_features, min_cell_threshold=30, bin_size=5):
+        """从 DataFrame 获取排序后的 mutation 列表（MCN → MCF → name）"""
+        df_reordered, _ = reorder_columns_by_mutant_stats(
+            df_values, df_features, 
+            min_cell_threshold=min_cell_threshold, 
+            bin_size=bin_size, 
+            descending=True, 
+            return_stats=True
+        )
+        return df_reordered.columns.tolist()
+    
+    # ===== 设置随机种子 =====
+    set_seed(params.get('random_seed', 42))
+    
     # ------------------------------
     # Step 1: Check Celltype Data
     # ------------------------------
     logger.info("Running scaffold builder ...")
-    
     logger.info(f"Celltype data loaded: {df_celltype.shape[0]} cells")
     
-    if is_filter_quality=="yes":
+    if is_filter_quality == "yes":
         # ------------------------------
         # Step 2: Initial Filtration
         # ------------------------------
         logger.info("Starting initial filtration (Step 3.1) ...")
-        kept_cells, kept_mutations, P_sub, V_sub, A_sub, C_sub, I_sub = initial_filter(P_somatic, V_somatic, A_somatic, C_somatic, I_somatic, params)
+        kept_cells, kept_mutations, P_sub, V_sub, A_sub, C_sub, I_sub = initial_filter(
+            P_somatic, V_somatic, A_somatic, C_somatic, I_somatic, params
+        )
         
         # ------------------------------
         # Step 3: Coverage-Based Filtration
         # ------------------------------
         logger.info("Running coverage-based filtration (Step 3.2) ...")
-        scaffold_mutations, df_summary_filtration = coverage_filters(kept_mutations, df_reads_somatic, df_celltype, params, outputpath)
+        scaffold_mutations, df_summary_filtration = coverage_filters(
+            kept_mutations, df_reads_somatic, df_celltype, params, outputpath_scaffold
+        )
         
         if not scaffold_mutations:
             raise ValueError("No mutations passed coverage filtration after removing germline variants")
         
+        # coverage_filters 返回的 scaffold_mutations 已经是排序好的（通过 kept_mutations 的顺序）
         logger.info(f"Final scaffold set has {len(scaffold_mutations)} mutations")
     else:
         P_sub, V_sub, A_sub, C_sub, I_sub = P_somatic.copy(), V_somatic.copy(), A_somatic.copy(), C_somatic.copy(), I_somatic.copy()
-        scaffold_mutations = list(I_somatic.columns)
+        # ===== 对 scaffold_mutations 排序 =====
+        scaffold_mutations = get_ordered_mutations(I_sub, df_features_new)
+        logger.info(f"Using all {len(scaffold_mutations)} mutations (no filtration)")
     
     # ------------------------------
     # Step 4: Create Final Scaffold Matrices
@@ -5739,31 +5815,55 @@ def build_scaffold_tree(
     I_resolved, P_resolved, V_resolved, A_resolved, C_resolved, df_reads_resolved, spots_to_split = resolved_spots_by_immune_mutations(
         I_scaffold, immune_mutations, P_scaffold, V_scaffold, A_scaffold, C_scaffold, df_reads_scaffold, p_threshold=0.5
     )
-    I_somatic_resolved, P_somatic_resolved = split_spots_by_immune_mutations_scaffold(spots_to_split, [i for i in immune_mutations if i in I_somatic.columns], I_somatic, P_somatic)
+    I_somatic_resolved, P_somatic_resolved = split_spots_by_immune_mutations_scaffold(
+        spots_to_split, [i for i in immune_mutations if i in I_somatic.columns], I_somatic, P_somatic
+    )
     I_somatic_resolved_withNA3 = I_somatic_resolved.replace({np.nan: 3}).astype(int)
-    I_somatic_resolved_withNA3.to_csv(os.path.join(outputpath, "I_somatic_resolved_withNA3.txt"), sep="\t")
+    I_somatic_resolved_withNA3.to_csv(os.path.join(outputpath_scaffold, "I_somatic_resolved_withNA3.txt"), sep="\t")
     final_cleaned_I_somatic_resolved = I_somatic_resolved.loc[:, (I_somatic_resolved == 1).any(axis=0)]
     final_cleaned_I_somatic_resolved = final_cleaned_I_somatic_resolved.loc[(final_cleaned_I_somatic_resolved == 1).any(axis=1)]
     final_cleaned_I_somatic_resolved_withNA3 = final_cleaned_I_somatic_resolved.replace({np.nan: 3}).astype(int)
-    final_cleaned_I_somatic_resolved_withNA3.to_csv(os.path.join(outputpath, "final_cleaned_I_somatic_resolved_withNA3.txt"), sep="\t")
+    final_cleaned_I_somatic_resolved_withNA3.to_csv(os.path.join(outputpath_scaffold, "final_cleaned_I_somatic_resolved_withNA3.txt"), sep="\t")
     
     # ------------------------------
     # Step 6: Mutation Grouping with Leiden Algorithm
     # ------------------------------
     logger.info("Performing mutation grouping using Leiden algorithm ...")
-    if is_filter_quality=="yes":
+    if is_filter_quality == "yes":
         cutoff_mcf_for_graph = 0.05
         cutoff_mcn_for_graph = 5
     else:
         cutoff_mcf_for_graph = 0
         cutoff_mcn_for_graph = 0
     
-    clone_weights, pair_weights = get_correlation_graph_elements(I_resolved, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph)
-    mutation_group, partition, G_ig = leiden_mutation_groups(clone_weights, pair_weights, outputpath + "/" + sampleid + ".graph_for_mut_grouping.pdf", params['resolution_of_graph'])
+    clone_weights, pair_weights = get_correlation_graph_elements(
+        I_resolved, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph
+    )
+    
+    # ===== 传入排序后的 scaffold_mutations =====
+    mutation_group, partition, G_ig = leiden_mutation_groups(
+        clone_weights, pair_weights, 
+        outputpath_scaffold + "/" + sampleid + ".graph_for_mut_grouping.pdf", 
+        params['resolution_of_graph'], 
+        seed=get_seed(), 
+        ordered_mutations=scaffold_mutations
+    )
+    
+    # ===== 对 mutation_group 重新排序 =====
+    sorted_mutation_names = get_ordered_mutations(I_resolved, df_features_new)
+    mutation_group = {mut: mutation_group[mut] for mut in sorted_mutation_names if mut in mutation_group}
+    
     group_mutations = list(mutation_group.keys())
-    I_selected_and_sorted, mut_df_sorted, group_to_muts, final_order = sort_I_hierarchical_freeze_ones_fixed(I_resolved, mutation_group)
+    
+    I_selected_and_sorted, mut_df_sorted, group_to_muts, final_order = sort_I_hierarchical_freeze_ones_fixed(
+        I_resolved, mutation_group
+    )
     df_celltype_sub = df_celltype[df_celltype['barcode'].isin(I_selected_and_sorted.index)].copy()
-    plot_heatmap_with_celltype_by_your_sorting(I_selected_and_sorted, df_celltype_sub, mutation_group, list(mut_df_sorted['mutation']), os.path.join(outputpath, sampleid+".heatmap_with_celltype_right_in_I_selected_and_sorted_after_graph_grouping.pdf"))
+    plot_heatmap_with_celltype_by_your_sorting(
+        I_selected_and_sorted, df_celltype_sub, mutation_group, 
+        list(mut_df_sorted['mutation']), 
+        os.path.join(outputpath_scaffold, sampleid + ".heatmap_with_celltype_right_in_I_selected_and_sorted_after_graph_grouping.pdf")
+    )
     logger.info(f"Total mutation groups: {len(mutation_group)}")
     
     # ------------------------------
@@ -5771,25 +5871,43 @@ def build_scaffold_tree(
     # ------------------------------
     logger.info("Selecting backbone mutations ...")
     backbones_of_group = select_founder_mutations(I_selected_and_sorted, mutation_group)
-    backbone_mutations = list(backbones_of_group.values())
+    
+    # ===== 对 backbone_mutations 排序 =====
+    backbone_mutations = sorted(list(backbones_of_group.values()))
+    # 重新构建 backbones_of_group，保持与 backbone_mutations 一致的顺序
+    backbone_to_group = {v: k for k, v in backbones_of_group.items()}
+    backbones_of_group = {backbone_to_group[mut]: mut for mut in backbone_mutations}
+    
     # Check if the group assigned for mutation is correct
-    mutation_list_under_backbone_mutations = {backbone: [mutation for mutation, value in mutation_group.items() if value == mutation_group[backbone]] for backbone in backbone_mutations}
+    mutation_list_under_backbone_mutations = {
+        backbone: [mutation for mutation, value in mutation_group.items() if value == mutation_group[backbone]] 
+        for backbone in backbone_mutations
+    }
     misgroup_mutations = []
     for check_mut in [i for i in list(mutation_group.keys()) if i not in backbone_mutations]:
         graph_key = next(key for key, mutations in mutation_list_under_backbone_mutations.items() if check_mut in mutations)
-        best_backbone, intersection_counts = find_best_backbone_for_new_mutation_scaffold(mutation_list_under_backbone_mutations, I_somatic_resolved, I_somatic_resolved, check_mut)
+        best_backbone, intersection_counts = find_best_backbone_for_new_mutation_scaffold(
+            mutation_list_under_backbone_mutations, I_somatic_resolved, I_somatic_resolved, check_mut
+        )
         if graph_key != best_backbone:
             misgroup_mutations.append(check_mut)
     
     checked_mutation_group = {k: v for k, v in mutation_group.items() if k not in misgroup_mutations}
-    mutation_list_under_backbone_mutations = {backbone: [mutation for mutation, value in checked_mutation_group.items() if value == checked_mutation_group[backbone]] for backbone in backbone_mutations}
+    
+    # ===== 对 checked_mutation_group 重新排序 =====
+    checked_mutation_group = {mut: checked_mutation_group[mut] for mut in sorted_mutation_names if mut in checked_mutation_group}
+    
+    mutation_list_under_backbone_mutations = {
+        backbone: [mutation for mutation, value in checked_mutation_group.items() if value == checked_mutation_group[backbone]] 
+        for backbone in backbone_mutations
+    }
     
     logger.info(f"Found backbone mutations: {list(backbones_of_group.values())}")
     
     # ------------------------------
     # Step 8: Build Backbone Tree
     # ------------------------------
-    dir_backbone = os.path.join(outputpath, "phylo_backbone_tree")
+    dir_backbone = os.path.join(outputpath_scaffold, "phylo_backbone_tree")
     if not os.path.exists(dir_backbone):
         os.makedirs(dir_backbone)
     
@@ -5802,14 +5920,18 @@ def build_scaffold_tree(
     M_B, cell_assignments = impute_backbone_clones(I_selected_and_sorted, backbone_mutations, checked_mutation_group)
     
     scp.ul.is_conflict_free_gusfield(M_B)
-    WriteTfile(os.path.join(dir_backbone, "M_backbone_basedPivots.filtered_sites_inferred"), 
-               M_B, M_B.index.tolist(), M_B.columns.tolist(), judge="yes")
+    WriteTfile(
+        os.path.join(dir_backbone, "M_backbone_basedPivots.filtered_sites_inferred"), 
+        M_B, M_B.index.tolist(), M_B.columns.tolist(), judge="yes"
+    )
     
     # Clean M_B: remove all zeros columns(muts) or rows(cells)
-    final_cleaned_M_B = M_B.loc[:, (M_B != 0).any(axis=0)]  # 移除全0列
-    final_cleaned_M_B = final_cleaned_M_B.loc[(final_cleaned_M_B != 0).any(axis=1)]  # 移除全0行
-    WriteTfile(os.path.join(dir_backbone, "final_cleaned_M_B_basedPivots.filtered_sites_inferred"), 
-               final_cleaned_M_B, final_cleaned_M_B.index.tolist(), final_cleaned_M_B.columns.tolist(), judge="yes")
+    final_cleaned_M_B = M_B.loc[:, (M_B != 0).any(axis=0)]
+    final_cleaned_M_B = final_cleaned_M_B.loc[(final_cleaned_M_B != 0).any(axis=1)]
+    WriteTfile(
+        os.path.join(dir_backbone, "final_cleaned_M_B_basedPivots.filtered_sites_inferred"), 
+        final_cleaned_M_B, final_cleaned_M_B.index.tolist(), final_cleaned_M_B.columns.tolist(), judge="yes"
+    )
     kept_rows = final_cleaned_M_B.index
     kept_cols = final_cleaned_M_B.columns
     final_cleaned_I_B_withNA3 = I_B_withNA3.loc[kept_rows, kept_cols]
@@ -5821,6 +5943,7 @@ def build_scaffold_tree(
     # ------------------------------
     
     # 为后续的操作准备数据
+    # ===== 使用排序后的 checked_mutation_group keys =====
     I_selected = I_selected_and_sorted[list(checked_mutation_group.keys())]
     P_selected = P_resolved.loc[I_selected.index, I_selected.columns]
     V_selected = V_resolved.loc[I_selected.index, I_selected.columns]
@@ -5842,13 +5965,11 @@ def build_scaffold_tree(
     group_but_backbone_mutations = [i for i in list(checked_mutation_group.keys()) if i not in backbone_mutations]
     all_mutations = I_somatic.columns.tolist()
     
-    # resorted_I_selected_and_sorted, sorting_stats_of_resorted_I_selected_and_sorted = reorder_columns_by_mutant_stats(I_selected_and_sorted, df_features_new)
-    # sorted_selected_but_backbone_mutations = [i for i in resorted_I_selected_and_sorted.columns if i in group_but_backbone_mutations]
-    
     ##### 鉴定 hub clusters 并且同时利用 penalty function 实现突变挂树
     root_mutations = []
     sorted_I_resolved, sorting_stats_of_I_resolved = reorder_columns_by_mutant_stats(I_resolved, df_features_new)
     sorted_P_resolved, sorting_stats_of_P_resolved = reorder_columns_by_mutant_stats(P_resolved, df_features_new)
+    
     results_of_subgrouping = perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(
         sorted_I_resolved, 
         sorted_P_resolved, 
@@ -5858,7 +5979,7 @@ def build_scaffold_tree(
         backbones_of_group, 
         df_reads_resolved, 
         df_features_new, 
-        outputpath, 
+        outputpath_scaffold, 
         sampleid, 
         logger, 
         params, 
@@ -5872,13 +5993,16 @@ def build_scaffold_tree(
     # ------------------------------
     # Step 10: Calculate Penalty and Refine Placement
     # ------------------------------
-    # 能放到树上的就是属于 scaffold mutations 的了
-    # 如果还有未处理的突变，再次处理
     remained_mutations = []
     if len(external_mutations) > 0:
         logger.info(f"Reprocessing {len(external_mutations)} external mutations...")
+        
+        # ===== 对 external_mutations 排序 =====
+        sorted_external_mutations = get_ordered_mutations(I_selected, df_features_new)
+        external_mutations_sorted = [mut for mut in sorted_external_mutations if mut in external_mutations]
+        
         remained_mutations, T_current, M_current = integrate_mutations_to_scaffold_within_group(
-            sorted_attached_mutations=external_mutations,
+            sorted_attached_mutations=external_mutations_sorted,
             T_current=T_current,
             M_current=M_current,
             I_attached=I_selected,
@@ -5909,19 +6033,21 @@ def build_scaffold_tree(
     logger.info("Outputting results ...")
     
     # Create output directory
-    dir_scaffold = os.path.join(outputpath, "phylo_scaffold_tree")
+    dir_scaffold = os.path.join(outputpath_scaffold, "phylo_scaffold_tree")
     if not os.path.exists(dir_scaffold):
         os.makedirs(dir_scaffold)
     
     # Prepare binary matrix with NA=3
     I_selected_withNA3 = I_selected.replace({np.nan: 3}).astype(int)
     I_selected_withNA3.to_csv(os.path.join(dir_scaffold, "I_scaffold_withNA3.txt"), sep="\t")
-    WriteTfile(os.path.join(dir_scaffold, "M_scaffold_basedPivots.filtered_sites_inferred"), 
-               M_scaffold, M_scaffold.index.tolist(), M_scaffold.columns.tolist(), judge="yes")
+    WriteTfile(
+        os.path.join(dir_scaffold, "M_scaffold_basedPivots.filtered_sites_inferred"), 
+        M_scaffold, M_scaffold.index.tolist(), M_scaffold.columns.tolist(), judge="yes"
+    )
     
     # Clean M_scaffold: remove all zeros columns(muts) or rows(cells)
-    final_cleaned_M_scaffold = M_scaffold.loc[:, (M_scaffold != 0).any(axis=0)]  # 移除全0列
-    final_cleaned_M_scaffold = final_cleaned_M_scaffold.loc[(final_cleaned_M_scaffold != 0).any(axis=1)]  # 移除全0行
+    final_cleaned_M_scaffold = M_scaffold.loc[:, (M_scaffold != 0).any(axis=0)]
+    final_cleaned_M_scaffold = final_cleaned_M_scaffold.loc[(final_cleaned_M_scaffold != 0).any(axis=1)]
     
     # 获取保留的行列名
     kept_rows = final_cleaned_M_scaffold.index
@@ -5930,8 +6056,10 @@ def build_scaffold_tree(
     # 从 I_selected_withNA3 提取
     final_cleaned_I_selected_withNA3 = I_selected_withNA3.loc[kept_rows, kept_cols]
     
-    WriteTfile(os.path.join(dir_scaffold, "final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred"), 
-               final_cleaned_M_scaffold, final_cleaned_M_scaffold.index.tolist(), final_cleaned_M_scaffold.columns.tolist(), judge="yes")
+    WriteTfile(
+        os.path.join(dir_scaffold, "final_cleaned_M_scaffold_basedPivots.filtered_sites_inferred"), 
+        final_cleaned_M_scaffold, final_cleaned_M_scaffold.index.tolist(), final_cleaned_M_scaffold.columns.tolist(), judge="yes"
+    )
     final_cleaned_I_selected_withNA3.to_csv(os.path.join(dir_scaffold, "final_cleaned_I_scaffold_withNA3_for_circosPlot.txt"), sep="\t")
     
     # ------------------------------
@@ -6016,29 +6144,20 @@ def build_scaffold_tree(
     # 直接返回字符串文本格式并且保存
     T_scaffold.save_to_file(os.path.join(dir_scaffold, 'T_scaffold.txt'))
     
-    return T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, checked_mutation_group, spots_to_split, list(checked_mutation_group.keys()), remained_mutations, high_cv_mutations
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return (
+        T_scaffold, 
+        M_scaffold, 
+        df_flipping_spots, 
+        df_total_flipping_count, 
+        final_cleaned_I_selected_withNA3, 
+        final_cleaned_M_scaffold, 
+        backbone_mutations, 
+        checked_mutation_group, 
+        spots_to_split, 
+        list(checked_mutation_group.keys()), 
+        remained_mutations, 
+        high_cv_mutations
+    )
 
 
 

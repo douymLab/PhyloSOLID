@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import os
+os.environ['PYTHONHASHSEED'] = '42'
+
 
 # Date: 2025/09/16
 # Update: 2025/10/13
@@ -10,13 +13,11 @@
 import time
 start_time = time.perf_counter()
 
-import sys
-sys.path.append('/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/src')
 
 ################################################################################################
 ########################################## PhyloSOLID #########################################
 ################################################################################################
-import os
+import sys
 import logging
 import copy
 import random
@@ -28,30 +29,13 @@ from copy import deepcopy
 logger = logging.getLogger(__name__)
 
 # from phylosolid import config
-from phylosolid.data_loader import load_all
-from phylosolid.scdna_classifier import real_time_classifier_predict
-from phylosolid.germline_filter import identify_germline_variants
-from phylosolid.germline_filter import *
-from phylosolid.scaffold_builder import build_scaffold_tree
-from phylosolid.scaffold_builder import *
-from phylosolid.mutation_integrator import *
-
-# 设置所有随机种子
-RANDOM_SEED = 42  # 可以任意指定
-random.seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-
-# 如果有使用其他库也设置种子
-try:
-    import torch
-    torch.manual_seed(RANDOM_SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(RANDOM_SEED)
-        torch.cuda.manual_seed_all(RANDOM_SEED)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-except ImportError:
-    pass
+from src.data_loader import load_all
+from src.scdna_classifier import real_time_classifier_predict
+from src.germline_filter import identify_germline_variants
+from src.germline_filter import *
+from src.scaffold_builder import build_scaffold_tree
+from src.scaffold_builder import *
+from src.mutation_integrator import *
 
 # ------------------------------
 # 配置 logging
@@ -61,7 +45,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ------------------------------
 # 项目参数与文件路径设置
 # ------------------------------
-
 import multiprocessing as mp
 import argparse
 from argparse import ArgumentParser
@@ -75,8 +58,13 @@ parser.add_argument("--features_file", default=None, type=str, help="The feature
 parser.add_argument("--is_predict_germ", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to predict germline mutations.")
 parser.add_argument("--is_detect_passtree_by_dp", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to run Dynamic programing step."),
 parser.add_argument("--is_filter_quality", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to filter mutations in scaffold steps by coverage quality.")
+parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 
 args = parser.parse_args()
+
+# 设置所有随机种子（统一管理）
+from src.reproducibility import set_seed, deterministic_choice
+set_seed(args.seed)
 
 
 # get parameters
@@ -253,7 +241,7 @@ sample2 = 'bulk'
 
 # 从剩下的细胞中随机选一个（排除pseudo_bulk和bulk）
 remaining_cells = [idx for idx in df_corrected.index if idx not in ['pseudo_bulk', 'bulk']]
-sample3 = random.choice(remaining_cells)
+sample3 = deterministic_choice(remaining_cells, salt="scRNA_bulk_sample")
 
 print(f"使用样本: {sample1}, {sample2}, {sample3}")
 

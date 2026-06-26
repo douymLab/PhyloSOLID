@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import os
+os.environ['PYTHONHASHSEED'] = '42'
+
 
 # Date: 2026/03/13
 # Update: 2026/06/18
@@ -10,10 +13,10 @@
 import time
 start_time = time.perf_counter()
 
+
 ################################################################################################
 ########################################## PhyloSOLID #########################################
 ################################################################################################
-import os
 import logging
 import copy
 import random
@@ -24,9 +27,6 @@ from copy import deepcopy
 from pathlib import Path
 import shutil
 import json
-import multiprocessing as mp
-import argparse
-from argparse import ArgumentParser
 
 logger = logging.getLogger(__name__)
 
@@ -35,21 +35,6 @@ from src.scaffold_builder import build_scaffold_tree
 from src.scaffold_builder import *
 from src.mutation_integrator import *
 
-# Set random seed for reproducibility
-RANDOM_SEED = 42
-random.seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-
-try:
-    import torch
-    torch.manual_seed(RANDOM_SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(RANDOM_SEED)
-        torch.cuda.manual_seed_all(RANDOM_SEED)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-except ImportError:
-    pass
 
 # ------------------------------
 # Logging configuration
@@ -59,13 +44,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ------------------------------
 # Parse command line arguments
 # ------------------------------
+import multiprocessing as mp
+import argparse
+from argparse import ArgumentParser
 parser = argparse.ArgumentParser()
 
 parser.add_argument("-s", "--sampleid", default="", type=str, help="Sample ID")
 parser.add_argument("-o", "--outputpath", default="./output", type=str, help="Output path for results")
 parser.add_argument("-i", "--inputfile", default="", type=str, help="Input binary matrix file (rows=cells, columns=mutations)")
+parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 
 args = parser.parse_args()
+
+# 设置所有随机种子（统一管理）
+from src.reproducibility import set_seed, deterministic_choice
+set_seed(args.seed)
+
 
 # Get parameters
 sampleid = args.sampleid

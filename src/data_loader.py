@@ -33,6 +33,7 @@ import math
 import numpy as np
 import pandas as pd
 from typing import Tuple, Optional, Dict, Any
+from src.reproducibility import set_seed, deterministic_permutation
 
 # -------------------------
 # Low-level parsing helpers
