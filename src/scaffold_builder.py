@@ -2856,31 +2856,28 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
     
     logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut} in the same mutation group {target_group}")
     
-    # 5. 预先创建基础树的深拷贝
-    base_tree_copy = deepcopy(T_current)
-    
-    # 6. 只在这些相关节点上生成候选位置
+    # 5. 只在这些相关节点上生成候选位置
     candidate_positions = []
     
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             continue
             
-        node = base_tree_copy.find(node_name)
+        node = T_current.find(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
         
         # --- 1) 放在 node 上 ---
-        candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_on_node_candidate_fast_scaffold(node, new_mut))
         
         # --- 2) 新 leaf ---
-        candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(node, new_mut))
         
         # --- 3) 放在每条 edge 上 ---
         for child in node.children:
             if child.name in all_path_nodes:  # 只考虑路径上的子节点
-                candidate_positions.append(_create_on_edge_candidate_fast_scaffold(base_tree_copy, node, child, new_mut))
+                candidate_positions.append(_create_on_edge_candidate_fast_scaffold(node, child, new_mut))
         
         # --- 4) 新 parent merge 多个子节点 ---
         if len(node.children) >= 2:
@@ -2890,7 +2887,7 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
                 # 限制组合数量避免爆炸
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
-                        candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
+                        candidate_positions.append(_create_merge_candidate_fast_scaffold(node, combo, new_mut))
     
     logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
@@ -2919,40 +2916,37 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
     
     logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
-    # 4. 预先创建基础树的深拷贝
-    base_tree_copy = deepcopy(T_current)
-    
     # 5. 只在这些相关节点上生成候选位置
     candidate_positions = []
     
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             # 保留 ROOT 上的 on_node 类型的 position
-            node = base_tree_copy.find(node_name)
+            node = T_current.find(node_name)
             if node is None:
                 logger.warning(f"Node {node_name} not found in tree")
                 continue
             
             # 生成 ROOT 上的 on_node 类型的候选位置
-            candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+            candidate_positions.append(_create_on_node_candidate_fast_scaffold(node, new_mut))
             
             continue  # ROOT 的其他类型位置仍然跳过
         
-        node = base_tree_copy.find(node_name)
+        node = T_current.find(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
         
         # --- 1) 放在 node 上 ---
-        candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_on_node_candidate_fast_scaffold(node, new_mut))
         
         # --- 2) 新 leaf ---
-        candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(node, new_mut))
         
         # --- 3) 放在每条 edge 上 ---
         for child in node.children:
             if child.name in all_path_nodes:  # 只考虑路径上的子节点
-                candidate_positions.append(_create_on_edge_candidate_fast_scaffold(base_tree_copy, node, child, new_mut))
+                candidate_positions.append(_create_on_edge_candidate_fast_scaffold(node, child, new_mut))
         
         # --- 4) 新 parent merge 多个子节点 ---
         if len(node.children) >= 2:
@@ -2962,7 +2956,7 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
                 # 限制组合数量避免爆炸
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
-                        candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
+                        candidate_positions.append(_create_merge_candidate_fast_scaffold(node, combo, new_mut))
     
     logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     
@@ -3000,40 +2994,37 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
     
     logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
-    # 4. 预先创建基础树的深拷贝
-    base_tree_copy = deepcopy(T_current)
-    
     # 5. 只在这些相关节点上生成候选位置
     candidate_positions = []
     
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             # 保留 ROOT 上的 on_node 类型的 position
-            node = base_tree_copy.find(node_name)
+            node = T_current.find(node_name)
             if node is None:
                 logger.warning(f"Node {node_name} not found in tree")
                 continue
             
             # 生成 ROOT 上的 on_node 类型的候选位置
-            candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+            candidate_positions.append(_create_on_node_candidate_fast_scaffold(node, new_mut))
             
             continue  # ROOT 的其他类型位置仍然跳过
         
-        node = base_tree_copy.find(node_name)
+        node = T_current.find(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
         
         # --- 1) 放在 node 上 ---
-        candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_on_node_candidate_fast_scaffold(node, new_mut))
         
         # --- 2) 新 leaf ---
-        candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(node, new_mut))
         
         # --- 3) 放在每条 edge 上 ---
         for child in node.children:
             if child.name in all_path_nodes:  # 只考虑路径上的子节点
-                candidate_positions.append(_create_on_edge_candidate_fast_scaffold(base_tree_copy, node, child, new_mut))
+                candidate_positions.append(_create_on_edge_candidate_fast_scaffold(node, child, new_mut))
         
         # --- 4) 新 parent merge 多个子节点 ---
         if len(node.children) >= 2:
@@ -3043,7 +3034,7 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
                 # 限制组合数量避免爆炸
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
-                        candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
+                        candidate_positions.append(_create_merge_candidate_fast_scaffold(node, combo, new_mut))
     
     logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
@@ -3116,87 +3107,46 @@ def build_tree_parent_dict_scaffold(tree):
     return parent_dict
 
 
-def _create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut):
+def _create_on_node_candidate_fast_scaffold(node, new_mut):
     """快速创建放在节点上的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    anchor_node = new_tree.find(node.name)
-    
-    # 替换节点逻辑
-    new_node = TreeNode(new_mut)
-    for child in anchor_node.children:
-        new_node.add_child(deepcopy(child))
-    
-    if anchor_node.parent:
-        parent = anchor_node.parent
-        for i, child in enumerate(parent.children):
-            if child.name == node.name:
-                parent.children[i] = new_node
-                new_node.parent = parent
-                break
-    else:
-        new_tree = new_node
-    
     return {
         "placement_type": "on_node",
         "anchor": node.name,
         "meta": {},
-        "nodes": _extract_nodes_info_sacffold(new_tree),
-        "edges": _extract_edges_info_scaffold(new_tree)
+        "sibling_nodes": [],
     }
 
 
-def _create_new_leaf_candidate_fast_scaffold(base_tree_copy, node, new_mut):
+def _create_new_leaf_candidate_fast_scaffold(node, new_mut):
     """快速创建新叶子的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    anchor_node = new_tree.find(node.name)
-    new_leaf = TreeNode(new_mut)
-    anchor_node.add_child(new_leaf)
-    
+    child_nodes = [child.name for child in node.children]
     return {
         "placement_type": "new_leaf",
         "anchor": node.name,
         "meta": {},
-        "nodes": _extract_nodes_info_sacffold(new_tree),
-        "edges": _extract_edges_info_scaffold(new_tree)
+        "child_nodes": child_nodes,
+        "sibling_nodes": child_nodes,
     }
 
 
-def _create_on_edge_candidate_fast_scaffold(base_tree_copy, parent_node, child_node, new_mut):
+def _create_on_edge_candidate_fast_scaffold(parent_node, child_node, new_mut):
     """快速创建放在边上的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    parent = new_tree.find(parent_node.name)
-    child = new_tree.find(child_node.name)
-    new_node = TreeNode(new_mut)
-    parent.remove_child(child)
-    parent.add_child(new_node)
-    new_node.add_child(child)
-    
     return {
         "placement_type": "on_edge",
         "anchor": parent_node.name,
         "meta": {"child": child_node.name},
-        "nodes": _extract_nodes_info_sacffold(new_tree),
-        "edges": _extract_edges_info_scaffold(new_tree)
+        "sibling_nodes": [child.name for child in parent_node.children if child.name != child_node.name],
     }
 
 
-def _create_merge_candidate_fast_scaffold(base_tree_copy, parent_node, children_combo, new_mut):
+def _create_merge_candidate_fast_scaffold(parent_node, children_combo, new_mut):
     """快速创建合并子节点的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    parent = new_tree.find(parent_node.name)
-    combo_nodes = [new_tree.find(child.name) for child in children_combo]
-    new_parent = TreeNode(new_mut)
-    for cn in combo_nodes:
-        parent.remove_child(cn)
-        new_parent.add_child(cn)
-    parent.add_child(new_parent)
-    
+    merge_children = [child.name for child in children_combo]
     return {
         "placement_type": "new_parent_merge",
         "anchor": parent_node.name,
-        "meta": {"merge_children": [child.name for child in children_combo]},
-        "nodes": _extract_nodes_info_sacffold(new_tree),
-        "edges": _extract_edges_info_scaffold(new_tree)
+        "meta": {"merge_children": merge_children},
+        "sibling_nodes": [child.name for child in parent_node.children if child.name not in merge_children],
     }
 
 
@@ -3500,8 +3450,7 @@ def compute_binary_penalty_for_positions(new_mut, refined_positions, M_current, 
             imputed_vec = new_mut_bin_vector & vec_parent
             
             # 获取子节点信息
-            child_nodes = [node['name'] for node in pos['nodes'] if node['parent'] == parent]
-            child_nodes = [i for i in child_nodes if i != new_mut]
+            child_nodes = pos.get('child_nodes', [])
             
             # 确保 new_mut 与子节点互斥
             for child in child_nodes:
@@ -3532,9 +3481,7 @@ def compute_binary_penalty_for_positions(new_mut, refined_positions, M_current, 
             vec_child = M_current[child]
             
             # 获取 parent 下的所有其他 child (siblings)
-            sibling_nodes = [node['name'] for node in pos['nodes'] 
-                            if node['parent'] == parent and node['name'] != child]
-            sibling_nodes = [i for i in sibling_nodes if i != new_mut]
+            sibling_nodes = pos.get('sibling_nodes', [])
             
             # 初始化 imputed_vec：包含目标 child，且在 parent 范围内
             imputed_vec = vec_child.copy()
@@ -3579,9 +3526,7 @@ def compute_binary_penalty_for_positions(new_mut, refined_positions, M_current, 
             
             # 关键：排除所有其他 sibling 节点的细胞（互斥）
             # 获取 parent 下的所有其他 child (siblings)，不包括要合并的 children
-            sibling_nodes = [node['name'] for node in pos['nodes'] 
-                            if node['parent'] == parent and node['name'] not in merge_children]
-            sibling_nodes = [i for i in sibling_nodes if i != new_mut]
+            sibling_nodes = pos.get('sibling_nodes', [])
             
             for sibling in sibling_nodes:
                 if sibling not in M_current.columns:
@@ -3739,7 +3684,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
+            sibling_nodes = pos.get('sibling_nodes', [])
             
             # 获取lineage之外的所有冲突节点
             lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
@@ -3760,7 +3705,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
+            sibling_nodes = pos.get('sibling_nodes', [])
             
             # 获取lineage之外的所有冲突节点
             lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
@@ -3783,7 +3728,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             vec_child = M_current[child]
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in [child,new_mut]]
+            sibling_nodes = pos.get('sibling_nodes', [])
             
             # 获取lineage之外的所有冲突节点
             lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
@@ -3810,7 +3755,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 vec_children |= M_current[c]
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in merge_children+[new_mut]]
+            sibling_nodes = pos.get('sibling_nodes', [])
             
             # 获取lineage之外的所有冲突节点（排除merge_children）
             lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns, exclude_nodes=merge_children)
@@ -4357,7 +4302,7 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
         vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
         
         # 获取直系sibling冲突节点
-        sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
+        sibling_nodes = pos.get('sibling_nodes', [])
         
         # 获取lineage之外的所有冲突节点
         lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
@@ -4383,7 +4328,7 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
         vec_child = M_current[child]
         
         # 获取直系sibling冲突节点
-        sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in [child,new_mut]]
+        sibling_nodes = pos.get('sibling_nodes', [])
         
         # 获取lineage之外的所有冲突节点
         lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
@@ -4413,7 +4358,7 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
             vec_children |= M_current[c]
         
         # 获取直系sibling冲突节点
-        sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in merge_children+[new_mut]]
+        sibling_nodes = pos.get('sibling_nodes', [])
         
         # 获取lineage之外的所有冲突节点（排除merge_children）
         lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns, exclude_nodes=merge_children)
