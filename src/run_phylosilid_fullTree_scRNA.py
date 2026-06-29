@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 os.environ['PYTHONHASHSEED'] = '42'
 
 
@@ -20,6 +21,7 @@ start_time = time.perf_counter()
 import logging
 import copy
 import random
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -41,6 +43,103 @@ from src.mutation_integrator import *
 # ------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+def write_bulk_input_from_counts(
+    A: pd.DataFrame,
+    C: pd.DataFrame,
+    output_file: str,
+) -> str:
+    """Build BSCITE bulk input directly from parsed count matrices."""
+    if "bulk" not in A.index or "bulk" not in C.index:
+        raise KeyError(
+            "'bulk' row is required to generate input_BULK.txt. "
+            f"Available rows sample: {list(A.index[:5])}"
+        )
+
+    remaining_cells = [idx for idx in A.index if idx != "bulk"]
+    if not remaining_cells:
+        raise ValueError("No single-cell rows available for BSCITE bulk input generation")
+
+    sample3 = deterministic_choice(remaining_cells, salt="scRNA_bulk_sample")
+    pseudo_alt = A.sum(axis=0).astype(np.int64)
+    pseudo_total = C.sum(axis=0).astype(np.int64)
+    bulk_alt = A.loc["bulk"].astype(np.int64)
+    bulk_total = C.loc["bulk"].astype(np.int64)
+    sample_alt = A.loc[sample3].astype(np.int64)
+    sample_total = C.loc[sample3].astype(np.int64)
+
+    output_bulk_data = []
+    for i, snp_name in enumerate(A.columns):
+        chromosome, position = get_random_chromosome_position(snp_name)
+        output_bulk_data.append({
+            "ID": f"mut{i}",
+            "Chromosome": chromosome,
+            "Position": position,
+            "MutantCount": f"{pseudo_alt[snp_name]};{bulk_alt[snp_name]};{sample_alt[snp_name]}",
+            "ReferenceCount": f"{pseudo_total[snp_name]};{bulk_total[snp_name]};{sample_total[snp_name]}",
+        })
+
+    pd.DataFrame(output_bulk_data).to_csv(output_file, sep="\t", index=False)
+    return sample3
+
+def write_int_matrix_tsv(
+    output_file: str,
+    row_labels,
+    col_labels,
+    values: np.ndarray,
+) -> None:
+    """Write an integer matrix to TSV faster than pandas.to_csv for dense matrices."""
+    if sys.gettrace() is not None:
+        array_to_write = np.empty((values.shape[0], values.shape[1] + 1), dtype=object)
+        array_to_write[:, 0] = row_labels
+        array_to_write[:, 1:] = values.astype(str, copy=False)
+        with open(output_file, "w", encoding="utf-8", buffering=1024 * 1024) as fh:
+            fh.write("\t" + "\t".join(map(str, col_labels)) + "\n")
+            np.savetxt(fh, array_to_write, fmt="%s", delimiter="\t")
+        return
+
+    value_bytes = [str(i).encode("utf-8") for i in range(10)]
+    encoded_rows = [str(label).encode("utf-8") for label in row_labels]
+    encoded_cols = [str(label).encode("utf-8") for label in col_labels]
+    header = b"\t" + b"\t".join(encoded_cols) + b"\n"
+    with open(output_file, "wb", buffering=1024 * 1024) as fh:
+        fh.write(header)
+        for label, row in zip(encoded_rows, values):
+            fh.write(label)
+            fh.write(b"\t")
+            fh.write(b"\t".join(value_bytes[int(v)] for v in row))
+            fh.write(b"\n")
+
+def export_i_raw_matrices(
+    I_raw: pd.DataFrame,
+    outputpath: str,
+    export_workers: int = 2,
+) -> None:
+    """Export Step1 binary matrices using numpy-backed writers."""
+    raw_values = I_raw.to_numpy(copy=False)
+    missing_mask = np.isnan(raw_values)
+    values_na0 = np.where(missing_mask, 0, raw_values).astype(np.int8, copy=False)
+    values_na3 = np.where(missing_mask, 3, raw_values).astype(np.int8, copy=False)
+    row_labels = I_raw.index.to_numpy(dtype=str)
+    col_labels = I_raw.columns.to_numpy(dtype=str)
+
+    tasks = [
+        (os.path.join(outputpath, "I_raw_withNA0.txt"), row_labels, col_labels, values_na0),
+        (os.path.join(outputpath, "I_raw_withNA0_T.txt"), col_labels, row_labels, values_na0.T),
+        (os.path.join(outputpath, "I_raw_withNA3.txt"), row_labels, col_labels, values_na3),
+        (os.path.join(outputpath, "I_raw_withNA3_T.txt"), col_labels, row_labels, values_na3.T),
+    ]
+
+    worker_count = max(1, min(int(export_workers), len(tasks)))
+    if worker_count == 1:
+        for task in tasks:
+            write_int_matrix_tsv(*task)
+        return
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(write_int_matrix_tsv, *task) for task in tasks]
+        for future in futures:
+            future.result()
+
 # ------------------------------
 # 项目参数与文件路径设置
 # ------------------------------
@@ -58,6 +157,8 @@ parser.add_argument("--is_predict_germ", default="no", choices=["yes", "no"], ty
 parser.add_argument("--is_detect_passtree_by_dp", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to run Dynamic programing step.")
 parser.add_argument("--is_filter_quality", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to filter mutations in scaffold steps by coverage quality.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
+parser.add_argument("--load_workers", default=None, type=int, help="Worker threads for Step1 allele-count parsing. Omit to auto-select.")
+parser.add_argument("--export_workers", default=2, type=int, help="Worker threads for Step1 matrix export.")
 
 args = parser.parse_args()
 
@@ -97,6 +198,8 @@ logger.info(f"features_file: {features_file}")
 logger.info(f"is_predict_germ: {is_predict_germ}")
 logger.info(f"is_detect_passtree_by_dp: {is_detect_passtree_by_dp}")
 logger.info(f"is_filter_quality: {is_filter_quality}")
+logger.info(f"load_workers: {args.load_workers if args.load_workers else 'auto'}")
+logger.info(f"export_workers: {args.export_workers}")
 
 
 # ------------------------------
@@ -182,8 +285,9 @@ params = SETTING_PARAMS
 # Step 1: Load data
 # ------------------------------
 logger.info("===== Step1: Loading data ...")
-data = load_all(inputpath)
+data = load_all(inputpath, load_workers=args.load_workers)
 P_raw, V_raw, C_raw, A_raw = data["P"], data["V"], data["C"], data["A"]
+C_raw_reads, A_raw_reads = data["C_raw_reads"], data["A_raw_reads"]
 df_features = data['features']
 df_reads_raw = data['df_reads']
 I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
@@ -191,95 +295,15 @@ I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
 logger.info(f"Loaded data: {len(P_raw)} cells, {len(I_raw.columns)} mutations")
 
 ##### Output binary matrix with NA=0
-I_raw_withNA0 = I_raw.replace({np.nan: 0}).astype(int)
-I_raw_withNA0.to_csv(os.path.join(outputpath, "I_raw_withNA0.txt"), sep="\t")
-I_raw_withNA0_T = I_raw_withNA0.T
-I_raw_withNA0_T.to_csv(os.path.join(outputpath, "I_raw_withNA0_T.txt"), sep="\t")
-
-I_raw_withNA3 = I_raw.replace({np.nan: 3}).astype(int)
-I_raw_withNA3.to_csv(os.path.join(outputpath, "I_raw_withNA3.txt"), sep="\t")
-I_raw_withNA3_T = I_raw_withNA3.T
-I_raw_withNA3_T.to_csv(os.path.join(outputpath, "I_raw_withNA3_T.txt"), sep="\t")
+export_i_raw_matrices(I_raw, outputpath, export_workers=args.export_workers)
 
 ##### Output for BSCITE bulk input
-# 获取 pseudo bulk 数据
-df_corrected = df_reads_raw.copy()
-
-# 分割数据并转换为数值
-def split_and_sum(series):
-    before_sum = 0
-    after_sum = 0
-    
-    for value in series:
-        if pd.notna(value) and '/' in str(value):
-            parts = str(value).split('/')
-            if len(parts) == 2:
-                try:
-                    before_sum += int(parts[0])
-                    after_sum += int(parts[1])
-                except ValueError:
-                    continue
-                    
-    return f"{before_sum}/{after_sum}"
-
-# 对每一列应用函数
-for col in df_corrected.columns:
-    df_corrected.loc['pseudo_bulk', col] = split_and_sum(df_corrected[col])
-
-# 产生 bulk input file
-output_bulk_data = []
-
-# 选择三个样本：pseudo_bulk, bulk, 和一个随机细胞
-sample1 = 'pseudo_bulk'
-sample2 = 'bulk'
-
-# 从剩下的细胞中随机选一个（排除pseudo_bulk和bulk）
-remaining_cells = [idx for idx in df_corrected.index if idx not in ['pseudo_bulk', 'bulk']]
-sample3 = deterministic_choice(remaining_cells, salt="scRNA_bulk_sample")
-
-print(f"使用样本: {sample1}, {sample2}, {sample3}")
-
-for i, snp_name in enumerate(df_corrected.columns):
-    # 获取三个样本的数据
-    sample1_value = df_corrected.loc[sample1, snp_name]
-    sample2_value = df_corrected.loc[sample2, snp_name] 
-    sample3_value = df_corrected.loc[sample3, snp_name]
-    
-    samples_mutant = []
-    samples_reference = []
-    
-    # 处理每个样本的数据
-    for value in [sample1_value, sample2_value, sample3_value]:
-        if pd.isna(value):
-            # 如果数据缺失，使用0/0
-            samples_mutant.append(0)
-            samples_reference.append(0)
-        elif '/' in str(value):
-            mutant, reference = str(value).split('/')
-            samples_mutant.append(int(mutant))
-            samples_reference.append(int(reference))
-        else:
-            # 如果格式不对，使用0/0
-            samples_mutant.append(0)
-            samples_reference.append(0)
-    
-    # 组合三个样本的数据
-    mutant_counts = f"{samples_mutant[0]};{samples_mutant[1]};{samples_mutant[2]}"
-    reference_counts = f"{samples_reference[0]};{samples_reference[1]};{samples_reference[2]}"
-    
-    # 获取染色体和位置信息
-    chromosome, position = get_random_chromosome_position(snp_name)
-    
-    output_bulk_data.append({
-        'ID': f'mut{i}',
-        'Chromosome': chromosome,
-        'Position': position,
-        'MutantCount': mutant_counts,
-        'ReferenceCount': reference_counts
-    })
-
-output_bulk_df = pd.DataFrame(output_bulk_data)
-output_bulk_df.to_csv(os.path.join(outputpath, "input_BULK.txt"), sep='\t', index=False)
+sample3 = write_bulk_input_from_counts(
+    A=A_raw_reads,
+    C=C_raw_reads,
+    output_file=os.path.join(outputpath, "input_BULK.txt"),
+)
+logger.info("Using samples for BSCITE bulk input: pseudo_bulk, bulk, %s", sample3)
 
 
 ##### 去掉所有没有 1 的行/细胞
