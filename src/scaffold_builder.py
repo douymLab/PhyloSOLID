@@ -3661,8 +3661,16 @@ def compute_bayesian_penalty_for_positions_scaffold(
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
     new_mut_mask = _as_bool_mask(new_mut_bin_vector, M_current.index)
     new_mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    matrix_columns = M_current.columns
     positive_cells_cache = {}
     children_cache = {}
+    lineage_parent_cache = {}
+    lineage_conflict_cache = {}
+    conflict_mask_cache = {}
+    full_chain_cache = {}
+    mutation_input_cache = {new_mut: I_selected[new_mut].replace({pd.NA: np.nan})}
+    mutation_posterior_cache = {new_mut: P_selected[new_mut]}
+    node_mutations_cache = {}
     non_root_columns = [col for col in M_current.columns if col != 'ROOT']
 
     def get_positive_cells(column_name):
@@ -3678,9 +3686,72 @@ def compute_bayesian_penalty_for_positions_scaffold(
             cached = find_children_of_node_scaffold(anchor_name, M_current.columns, parent_dict)
             children_cache[anchor_name] = cached
         return cached
+
+    def get_lineage_parent(anchor_name):
+        cached = lineage_parent_cache.get(anchor_name)
+        if cached is None:
+            cached = build_lineage_parent_dict_from_tree(T_current, anchor_name)
+            lineage_parent_cache[anchor_name] = cached
+        return cached
+
+    def get_lineage_conflict_nodes(anchor_name, exclude_nodes=()):
+        exclude_key = tuple(exclude_nodes) if exclude_nodes else ()
+        cache_key = (anchor_name, exclude_key)
+        cached = lineage_conflict_cache.get(cache_key)
+        if cached is None:
+            cached = tuple(
+                get_all_conflict_nodes_outside_lineage_scaffold(
+                    anchor_name,
+                    get_lineage_parent(anchor_name),
+                    matrix_columns,
+                    list(exclude_key),
+                )
+            )
+            lineage_conflict_cache[cache_key] = cached
+        return cached
+
+    def get_conflict_mask(anchor_name, sibling_nodes, exclude_nodes=()):
+        sibling_key = tuple(sibling_nodes) if sibling_nodes else ()
+        exclude_key = tuple(exclude_nodes) if exclude_nodes else ()
+        cache_key = (anchor_name, sibling_key, exclude_key)
+        cached = conflict_mask_cache.get(cache_key)
+        if cached is None:
+            lineage_conflict_nodes = get_lineage_conflict_nodes(anchor_name, exclude_key)
+            all_conflict_nodes = list(set(sibling_key + lineage_conflict_nodes))
+            cached = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
+            conflict_mask_cache[cache_key] = cached
+        return cached
+
+    def get_full_chain(anchor_name):
+        cached = full_chain_cache.get(anchor_name)
+        if cached is None:
+            cached = tuple(get_full_mutnode_chain_with_anchor_scaffold(anchor_name, parent_dict))
+            full_chain_cache[anchor_name] = cached
+        return cached
+
+    def get_mutation_input(mutation_name):
+        cached = mutation_input_cache.get(mutation_name)
+        if cached is None:
+            cached = I_selected[mutation_name].replace({pd.NA: np.nan})
+            mutation_input_cache[mutation_name] = cached
+        return cached
+
+    def get_mutation_posterior(mutation_name):
+        cached = mutation_posterior_cache.get(mutation_name)
+        if cached is None:
+            cached = P_selected[mutation_name]
+            mutation_posterior_cache[mutation_name] = cached
+        return cached
+
+    def get_node_mutations(node_name):
+        cached = node_mutations_cache.get(node_name)
+        if cached is None:
+            cached = tuple(node_name.split("|"))
+            node_mutations_cache[node_name] = cached
+        return cached
     
     # 计算突变的特征用于动态调整惩罚
-    input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
+    input_binary_vec_full = mutation_input_cache[new_mut]
     na_ratio = input_binary_vec_full.isna().mean()
     mut_ratio = input_binary_vec_full.fillna(0).mean()
     N_nodes_beforeT = len(T_current.all_nodes())
@@ -3703,15 +3774,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [])
-            
-            # 获取lineage之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
+            vec_conflicts = get_conflict_mask(parent, sibling_nodes)
             
             # 正确的逻辑：现有节点的向量与清理后的new_mut合并
             new_mut_cleaned = new_mut_mask & ~vec_conflicts
@@ -3724,15 +3787,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [])
-            
-            # 获取lineage之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
+            vec_conflicts = get_conflict_mask(parent, sibling_nodes)
             
             # 正确的逻辑：先排除所有冲突，再与parent交集
             new_mut_cleaned = new_mut_mask & ~vec_conflicts
@@ -3747,15 +3802,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [])
-            
-            # 获取lineage之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
+            vec_conflicts = get_conflict_mask(parent, sibling_nodes)
             
             # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
             new_mut_cleaned = new_mut_mask & ~vec_conflicts
@@ -3774,15 +3821,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [])
-            
-            # 获取lineage之外的所有冲突节点（排除merge_children）
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns, exclude_nodes=merge_children)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
+            vec_conflicts = get_conflict_mask(parent, sibling_nodes, merge_children)
             
             # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
             new_mut_cleaned = new_mut_mask & ~vec_conflicts
@@ -3797,11 +3836,12 @@ def compute_bayesian_penalty_for_positions_scaffold(
         # 计算完整突变链的总罚分
         # -------------------------
         # 获取从锚点到ROOT的完整突变链
-        full_mutnode_chain = get_full_mutnode_chain_with_anchor_scaffold(anchor, parent_dict)
+        full_mutnode_chain = get_full_chain(anchor)
         
         # 计算new_mut本身的罚分
-        posterior_vec = P_selected[new_mut]
+        posterior_vec = mutation_posterior_cache[new_mut]
         input_binary_vec = I_selected[new_mut]
+        cells_should_be_1 = imputed_vec[imputed_vec == 1].index
         
         # 基于实际NA翻转比例计算惩罚
         new_mut_penalty, actual_na_flip_ratio, refined_ω_NA, φ_adjusted, weight_na_to_1, weight_na_to_0 = compute_dynamic_penalty_scaffold(
@@ -3818,21 +3858,20 @@ def compute_bayesian_penalty_for_positions_scaffold(
             if node == 'ROOT':
                 continue
             
-            mutations_on_node = node.split("|")
+            mutations_on_node = get_node_mutations(node)
             
             for mutation in mutations_on_node:
                 if mutation == new_mut:  # 跳过new_mut本身，因为已经计算过了
                     continue
                     
                 # 获取该突变的原始数据
-                mut_input_binary_vec = I_selected[mutation].replace({pd.NA: np.nan})
-                mut_posterior_vec = P_selected[mutation]
+                mut_input_binary_vec = get_mutation_input(mutation)
+                mut_posterior_vec = get_mutation_posterior(mutation)
                 chain_mutations_count += 1
                 
                 # 计算该突变在new_mut放置后的新向量
                 # 对于split_full_mutmutation_chain_mutations中的突变，如果它们在final_imputed_vec为1的细胞中当前为0或NA，需要翻转为1
                 mut_new_vec = M_current[node].copy()
-                cells_should_be_1 = imputed_vec[imputed_vec == 1].index
                 # 找出要计算的额外发生翻转的 index
                 cells_to_flip = []
                 for cell in cells_should_be_1:
