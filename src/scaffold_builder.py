@@ -2791,19 +2791,19 @@ def split_merged_columns(merged_matrix: pd.DataFrame, mut_list: list):
     """
     根据mut_list拆分合并的列
     """
-    out = {}
-    for mut in mut_list:
-        # 找到包含该mutation的合并列
-        found = False
-        for merged_col in merged_matrix.columns:
-            if mut in merged_col.split("|"):
-                out[mut] = merged_matrix[merged_col].copy()
-                found = True
-                break
-        if not found:
-            # 如果没找到，创建全NA列
-            out[mut] = pd.Series([pd.NA] * len(merged_matrix), index=merged_matrix.index)
-    
+    mutation_to_merged_col = {}
+    for merged_col in merged_matrix.columns:
+        for mutation in merged_col.split("|"):
+            mutation_to_merged_col.setdefault(mutation, merged_col)
+
+    missing_series = pd.Series(pd.NA, index=merged_matrix.index)
+    out = {
+        mut: merged_matrix[mutation_to_merged_col[mut]]
+        if mut in mutation_to_merged_col
+        else missing_series
+        for mut in mut_list
+    }
+
     return pd.DataFrame(out, index=merged_matrix.index)[mut_list]
 
 # # 测试数据

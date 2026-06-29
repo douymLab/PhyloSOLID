@@ -1293,6 +1293,11 @@ if len(external_mutations_fpfnratio_across_tree) > 0:
 
 logging.info(f"The number of final_external_mutations_fpfnratio_across_tree is: {len(final_external_mutations_fpfnratio_across_tree)}")
 
+step66_rehang_attempted = bool(
+    sorted_rehanged_mutations_all_fpfnratio_across_tree
+    or sorted_fn_mutations_fpfnratio_across_tree
+)
+
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
 M_test = M_test.drop(columns=['ROOT'], errors='ignore')
@@ -1306,14 +1311,18 @@ final_cleaned_M_test.shape
 
 
 ##### 计算 T_current 中每一个 mutations 的 fp_ratio 和 fn_ratio (across tree)
-T_checkpoint_fpfnratio_across_tree_v2 = copy.deepcopy(T_current)
-M_checkpoint_fpfnratio_across_tree_v2 = M_current.copy()
+if step66_rehang_attempted:
+    T_checkpoint_fpfnratio_across_tree_v2 = copy.deepcopy(T_current)
+    M_checkpoint_fpfnratio_across_tree_v2 = M_current.copy()
 
-M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = M_checkpoint_fpfnratio_across_tree_v2.drop(columns=['ROOT'], errors='ignore')
-mutations_on_T_current_fpfnratio_across_tree_v2 = M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, mutations_on_T_current_fpfnratio_across_tree_v2)
+    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = M_checkpoint_fpfnratio_across_tree_v2.drop(columns=['ROOT'], errors='ignore')
+    mutations_on_T_current_fpfnratio_across_tree_v2 = M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+    M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = split_merged_columns(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, mutations_on_T_current_fpfnratio_across_tree_v2)
 
-df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, fp_mutations_dict_fpfnratio_across_tree_v2 = calculate_fp_fn_ratios_across_tree(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, I_attached)
+    df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, fp_mutations_dict_fpfnratio_across_tree_v2 = calculate_fp_fn_ratios_across_tree(M_for_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2, I_attached)
+else:
+    df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2 = df_fp_ratio_and_fn_ratio_fpfnratio_across_tree.copy()
+    fp_mutations_dict_fpfnratio_across_tree_v2 = fp_mutations_dict_fpfnratio_across_tree.copy()
 df_fp_ratio_and_fn_ratio_fpfnratio_across_tree_v2
 #              identifier  fp_ratio  fn_ratio
 # 0     chr17_7578893_G_T  0.362069  0.760684

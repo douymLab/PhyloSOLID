@@ -2280,73 +2280,66 @@ def calculate_fp_fn_ratios_across_tree(M_checkpoint, I_attached):
     DataFrame: 包含每个突变的fp_ratio和fn_ratio
     dict: 包含每个突变对应的fp>0的其他突变列表
     """
-    mutations = M_checkpoint.columns
-    results = []
-    fp_mutations_dict = {}  # 存储每个突变对应的fp>0的其他突变
-    
-    for mut in mutations:
-        # 1. 计算fp_ratio
-        mutant_cells = M_checkpoint[M_checkpoint[mut] == 1].index
-        fp_ratios = []
-        fp_positive_muts = []  # 存储当前突变fp>0的其他突变
-        
-        for other_mut in mutations:
-            if other_mut == mut:
-                continue
-                
-            # 在当前突变的clone中计算其他突变的FP
-            other_original = I_attached.loc[mutant_cells, other_mut]
-            other_imputed = M_checkpoint.loc[mutant_cells, other_mut]
-            # FP: 原始为1但imputed为0
-            fp_count = ((other_original == 1) & (other_imputed == 0)).sum()
-            
-            # 在所有 cells 中计算其他突变的FP
-            total_other_original = I_attached.loc[:, other_mut]
-            total_other_imputed = M_checkpoint.loc[:, other_mut]
-            total_fp_count = ((total_other_original == 1) & (total_other_imputed == 0)).sum()
-            
-            if total_fp_count > 0:
-                fp_ratio = fp_count / total_fp_count
-                fp_ratios.append(fp_ratio)
-                
-                # 如果fp_ratio > 0，记录这个other_mut
-                if fp_ratio > 0:
-                    fp_positive_muts.append(other_mut)
-            else:
-                fp_ratios.append(0)
-        
-        # 将当前突变的fp>0的其他突变存入字典
-        fp_mutations_dict[mut] = fp_positive_muts
-        
-        avg_fp_ratio = np.mean(fp_ratios) if fp_ratios else 0
-        
-        # 2. 计算fn_ratio (保持不变)
-        mut_original = I_attached.loc[mutant_cells, mut]
-        mut_imputed = M_checkpoint.loc[mutant_cells, mut]
-        
-        # 该突变在原始数据中为0的细胞
-        zero_cells = mut_original[mut_original == 0].index
-        
-        # 计算与其他突变有intersection的细胞数
-        I_attached_sub_mut = I_attached.loc[mutant_cells, :]
-        row_counts = I_attached_sub_mut.eq(1).sum(axis=1)
-        intersect_cells = mut_original[(mut_original == 1) & (row_counts > 1)]
-        
-        total_zeros = len(zero_cells)
-        total_intersect = len(intersect_cells)
-        
-        if (total_zeros + total_intersect) > 0:
-            fn_ratio = total_zeros / (total_zeros + total_intersect)
-        else:
-            fn_ratio = 0
-        
-        results.append({
-            'identifier': mut,
-            'fp_ratio': avg_fp_ratio,
-            'fn_ratio': fn_ratio
-        })
-    
-    return pd.DataFrame(results), fp_mutations_dict
+    mutations = list(M_checkpoint.columns)
+    if not mutations:
+        return pd.DataFrame(columns=["identifier", "fp_ratio", "fn_ratio"]), {}
+
+    i_aligned = I_attached.reindex(index=M_checkpoint.index)
+    i_original = i_aligned.reindex(columns=mutations)
+
+    m_values = M_checkpoint.to_numpy(copy=False)
+    m_is_one = np.asarray(m_values == 1, dtype=bool)
+    m_is_zero = np.asarray(m_values == 0, dtype=bool)
+    i_is_one = np.asarray(i_original.eq(1).to_numpy(copy=False), dtype=bool)
+    fp_events = i_is_one & m_is_zero
+
+    # fp_count_matrix[i, j] = mutation i 的 clone 中，mutation j 的 FP 个数
+    fp_count_matrix = m_is_one.T.astype(np.int32) @ fp_events.astype(np.int32)
+    total_fp_counts = fp_events.sum(axis=0, dtype=np.int32)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fp_ratio_matrix = np.divide(
+            fp_count_matrix,
+            total_fp_counts[np.newaxis, :],
+            out=np.zeros_like(fp_count_matrix, dtype=np.float64),
+            where=total_fp_counts[np.newaxis, :] > 0,
+        )
+
+    if len(mutations) > 1:
+        fp_ratio_sum = fp_ratio_matrix.sum(axis=1) - np.diag(fp_ratio_matrix)
+        avg_fp_ratios = fp_ratio_sum / (len(mutations) - 1)
+    else:
+        avg_fp_ratios = np.zeros(1, dtype=np.float64)
+
+    row_one_counts = np.asarray(i_aligned.eq(1).sum(axis=1).to_numpy(copy=False), dtype=np.int32)
+    orig_mut_is_zero = np.asarray(i_original.eq(0).to_numpy(copy=False), dtype=bool)
+    total_zeros = (m_is_one & orig_mut_is_zero).sum(axis=0, dtype=np.int32)
+    total_intersect = (m_is_one & i_is_one & (row_one_counts[:, None] > 1)).sum(axis=0, dtype=np.int32)
+    fn_denominator = total_zeros + total_intersect
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fn_ratios = np.divide(
+            total_zeros,
+            fn_denominator,
+            out=np.zeros_like(total_zeros, dtype=np.float64),
+            where=fn_denominator > 0,
+        )
+
+    fp_mutations_dict = {}
+    for idx, mut in enumerate(mutations):
+        fp_mutations_dict[mut] = [
+            other_mut
+            for j, other_mut in enumerate(mutations)
+            if j != idx and fp_ratio_matrix[idx, j] > 0
+        ]
+
+    results = pd.DataFrame(
+        {
+            "identifier": mutations,
+            "fp_ratio": avg_fp_ratios,
+            "fn_ratio": fn_ratios,
+        }
+    )
+    return results, fp_mutations_dict
 
 # # 使用
 # ratios_df, fp_mutations_dict = calculate_fp_fn_ratios_across_tree(M_checkpoint, I_attached)
