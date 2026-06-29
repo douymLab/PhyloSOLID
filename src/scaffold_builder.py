@@ -71,6 +71,31 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _as_bool_mask(series, index):
+    aligned = pd.Series(series, index=index) if not isinstance(series, pd.Series) else series.reindex(index)
+    values = aligned.to_numpy(copy=False)
+
+    if np.issubdtype(values.dtype, np.bool_):
+        return pd.Series(values, index=index, copy=False)
+
+    if np.issubdtype(values.dtype, np.integer):
+        return pd.Series(values != 0, index=index)
+
+    if np.issubdtype(values.dtype, np.floating):
+        return pd.Series(np.isfinite(values) & (values != 0), index=index)
+
+    numeric = pd.to_numeric(aligned, errors="coerce")
+    numeric_values = numeric.to_numpy(dtype=np.float64, na_value=np.nan)
+    return pd.Series(np.isfinite(numeric_values) & (numeric_values != 0), index=index)
+
+
+def _build_conflict_mask(matrix, conflict_nodes, index):
+    vec_conflicts = pd.Series(False, index=index)
+    for conflict in conflict_nodes:
+        vec_conflicts |= _as_bool_mask(matrix[conflict], index)
+    return vec_conflicts
+
+
 
 
 def get_random_chromosome_position(snp_name):
@@ -3689,6 +3714,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
         return None, None, pd.DataFrame(), M_current
     
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
+    new_mut_mask = _as_bool_mask(new_mut_bin_vector, M_current.index)
     
     # 计算突变的特征用于动态调整惩罚
     input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
@@ -3722,12 +3748,10 @@ def compute_bayesian_penalty_for_positions_scaffold(
             all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
             
             # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
             
             # 正确的逻辑：现有节点的向量与清理后的new_mut合并
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = (M_current[anchor] | new_mut_cleaned).astype(int)
             N_nodes = N_nodes_beforeT + 1
             
@@ -3745,12 +3769,10 @@ def compute_bayesian_penalty_for_positions_scaffold(
             all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
             
             # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
             
             # 正确的逻辑：先排除所有冲突，再与parent交集
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = new_mut_cleaned.astype(int)
             N_nodes = N_nodes_beforeT + 2
             
@@ -3770,12 +3792,10 @@ def compute_bayesian_penalty_for_positions_scaffold(
             all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
             
             # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
             
             # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = (vec_child | new_mut_cleaned).astype(int)
             N_nodes = N_nodes_beforeT + 2
             
@@ -3799,12 +3819,10 @@ def compute_bayesian_penalty_for_positions_scaffold(
             all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
             
             # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
             
             # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = (vec_children | new_mut_cleaned).astype(int)
             merge_penalty = np.log(len(merge_children)) * 0.5
             N_nodes = N_nodes_beforeT + 2
@@ -4321,6 +4339,7 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
     
     # 获取新突变的二进制向量
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
+    new_mut_mask = _as_bool_mask(new_mut_bin_vector, M_current.index)
     
     # 默认 imputed vector
     imputed_vec = pd.Series(0, index=M_current.index)
@@ -4347,12 +4366,10 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
         all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
         
         # 构建冲突向量
-        vec_conflicts = pd.Series(0, index=M_current.index)
-        for conflict in all_conflict_nodes:
-            vec_conflicts |= M_current[conflict]
+        vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
         
         # 正确的逻辑：先排除所有冲突，再与parent交集
-        new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+        new_mut_cleaned = new_mut_mask & ~vec_conflicts
         imputed_vec = new_mut_cleaned.astype(int)
         
         # 添加新叶子节点
@@ -4375,12 +4392,10 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
         all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
         
         # 构建冲突向量
-        vec_conflicts = pd.Series(0, index=M_current.index)
-        for conflict in all_conflict_nodes:
-            vec_conflicts |= M_current[conflict]
+        vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
         
         # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-        new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+        new_mut_cleaned = new_mut_mask & ~vec_conflicts
         imputed_vec = (vec_child | new_mut_cleaned).astype(int)
         
         # 在边上插入新节点
@@ -4407,12 +4422,10 @@ def add_new_mutation_to_tree_conflict_free(new_mut, T_current, pos, M_current, p
         all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
         
         # 构建冲突向量
-        vec_conflicts = pd.Series(0, index=M_current.index)
-        for conflict in all_conflict_nodes:
-            vec_conflicts |= M_current[conflict]
+        vec_conflicts = _build_conflict_mask(M_current, all_conflict_nodes, M_current.index)
         
         # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-        new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+        new_mut_cleaned = new_mut_mask & ~vec_conflicts
         imputed_vec = (vec_children | new_mut_cleaned).astype(int)
         
         # 创建新父节点并合并子节点

@@ -196,11 +196,166 @@ def _coerce_bool_array(series, index):
     return series.reindex(index, fill_value=0).fillna(0).to_numpy(dtype=bool, copy=False)
 
 
+def _coerce_float_array(series, index):
+    return pd.to_numeric(series.reindex(index), errors="coerce").to_numpy(
+        dtype=np.float64,
+        na_value=np.nan,
+    )
+
+
 def _log_tree_snapshot(active_logger, label, tree):
     if not _VERBOSE_TREE_UPDATES:
         return
     active_logger.info(label)
     print_tree(tree)
+
+
+def _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label, sample_limit=5):
+    values = matrix.to_numpy(copy=False)
+    try:
+        finite_mask = np.isfinite(values)
+        numeric_values = values.astype(np.float64, copy=False)
+    except TypeError:
+        numeric_values = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(
+            dtype=np.float64,
+            copy=False,
+            na_value=np.nan,
+        )
+        finite_mask = np.isfinite(numeric_values)
+
+    if bool(finite_mask.all()):
+        return matrix
+
+    invalid_positions = np.argwhere(~finite_mask)
+    samples = [
+        f"{matrix.index[row]}::{matrix.columns[col]}={numeric_values[row, col]}"
+        for row, col in invalid_positions[:sample_limit]
+    ]
+    active_logger.warning(
+        "%s sanitizing matrix before conflict check: non_finite=%d sample=%s",
+        context_label,
+        int((~finite_mask).sum()),
+        samples,
+    )
+
+    sanitized_values = np.nan_to_num(
+        numeric_values,
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0,
+        copy=True,
+    )
+    binary_values = (sanitized_values > 0).astype(np.int8, copy=False)
+    return pd.DataFrame(binary_values, index=matrix.index, columns=matrix.columns)
+
+
+def _is_conflict_free_gusfield_safe(matrix, active_logger=None, context_label="ConflictCheck"):
+    if active_logger is None:
+        active_logger = logger
+    try:
+        return scp.ul.is_conflict_free_gusfield(matrix)
+    except (pd.errors.IntCastingNaNError, ValueError, TypeError) as exc:
+        active_logger.warning(
+            "%s conflict check retry after non-binary/non-finite matrix error: %s",
+            context_label,
+            exc,
+        )
+        matrix_for_check = _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label)
+        return scp.ul.is_conflict_free_gusfield(matrix_for_check)
+
+
+def _resolve_touched_columns_for_conflict_check(final_position, parent_dict, matrix_columns, new_mut):
+    """Return the matrix columns whose updates could introduce new conflicts."""
+    placement_type = final_position.get("placement_type")
+    anchor = final_position.get("anchor")
+    matrix_column_set = set(matrix_columns)
+    touched_columns = []
+    seen = set()
+
+    if anchor is not None:
+        for node in get_full_mutnode_chain_with_anchor(anchor, parent_dict):
+            if node == "ROOT":
+                continue
+            resolved_node = node
+            if placement_type == "on_node" and node == anchor and anchor != "ROOT":
+                resolved_node = f"{anchor}|{new_mut}"
+            if resolved_node in matrix_column_set and resolved_node not in seen:
+                touched_columns.append(resolved_node)
+                seen.add(resolved_node)
+
+    if placement_type != "on_node" and new_mut in matrix_column_set and new_mut not in seen:
+        touched_columns.append(new_mut)
+
+    return touched_columns
+
+
+def _is_conflict_free_local_update(matrix, touched_columns, active_logger=None, context_label="LocalConflictCheck", sample_limit=5):
+    """
+    Exact local conflict check using the four-gamete criterion.
+
+    Only pairs involving touched columns can introduce a new conflict because
+    untouched-vs-untouched pairs are unchanged by the latest placement step.
+    """
+    if active_logger is None:
+        active_logger = logger
+
+    if not touched_columns:
+        return True
+
+    missing = [col for col in touched_columns if col not in matrix.columns]
+    if missing:
+        active_logger.warning(
+            "%s touched columns missing from matrix; falling back to full check. sample=%s",
+            context_label,
+            missing[:sample_limit],
+        )
+        return _is_conflict_free_gusfield_safe(matrix, active_logger, context_label)
+
+    values = matrix.to_numpy(copy=False)
+    if np.issubdtype(values.dtype, np.bool_):
+        bool_values = values
+    elif np.issubdtype(values.dtype, np.integer):
+        bool_values = values > 0
+    elif np.issubdtype(values.dtype, np.floating):
+        bool_values = np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0, copy=True) > 0
+    else:
+        numeric_values = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(
+            dtype=np.float64,
+            copy=False,
+            na_value=np.nan,
+        )
+        bool_values = np.nan_to_num(numeric_values, nan=0.0, posinf=1.0, neginf=0.0, copy=True) > 0
+
+    all_columns = matrix.columns
+    touched_indices = all_columns.get_indexer(touched_columns)
+    if np.any(touched_indices < 0):
+        unresolved = [touched_columns[i] for i, idx in enumerate(touched_indices) if idx < 0]
+        active_logger.warning(
+            "%s unresolved touched indices; falling back to full check. sample=%s",
+            context_label,
+            unresolved[:sample_limit],
+        )
+        return _is_conflict_free_gusfield_safe(matrix, active_logger, context_label)
+
+    for touched_name, touched_idx in zip(touched_columns, touched_indices):
+        col = bool_values[:, touched_idx][:, None]
+        has10 = np.any(col & ~bool_values, axis=0)
+        has01 = np.any(~col & bool_values, axis=0)
+        has11 = np.any(col & bool_values, axis=0)
+        conflict_mask = has10 & has01 & has11
+        conflict_mask[touched_idx] = False
+        if bool(conflict_mask.any()):
+            conflict_indices = np.flatnonzero(conflict_mask)[:sample_limit]
+            conflict_columns = [all_columns[i] for i in conflict_indices]
+            active_logger.warning(
+                "%s detected local conflict: touched=%s conflicts=%s",
+                context_label,
+                touched_name,
+                conflict_columns,
+            )
+            return False
+
+    return True
 
 
 
@@ -1376,21 +1531,55 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
     new_mut, selected_positions, T_current, M_current, I_selected, P_selected, parent_dict, intersection_nodes, 
     ω_NA=0.001, fnfp_ratio=0.1, φ=1
 ):
-    import copy
     import pandas as pd
     import numpy as np
     results = []
-    matrix_index = M_current.index
-    lineage_parent_cache = {}
-    conflict_mask_cache = {}
     
     # 如果没有候选位置，直接返回 None
     if len(selected_positions) == 0:
         logger.warning(f"No selected positions for mutation {new_mut}")
         return None, None, pd.DataFrame(), M_current
     
-    new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
-    new_mut_mask = as_binary_mask(new_mut_bin_vector, matrix_index)
+    matrix_index = M_current.index
+    matrix_columns = M_current.columns
+    matrix_column_count = len(matrix_columns)
+    log_matrix_column_count = np.log(matrix_column_count)
+    new_mut_input_vector = I_selected[new_mut].replace({pd.NA: np.nan})
+    new_mut_mask = as_binary_mask(new_mut_input_vector.fillna(0).astype(int), matrix_index)
+    new_mut_mask_array = new_mut_mask.to_numpy(dtype=bool, copy=False)
+    mut_cells_new_mut = set(matrix_index[new_mut_mask_array])
+    non_root_columns_set = {col for col in matrix_columns if col != 'ROOT'}
+    m_current_bool_cache = {}
+    m_current_array_cache = {}
+    lineage_parent_cache = {}
+    conflict_nodes_cache = {}
+    conflict_vector_cache = {}
+    full_chain_cache = {}
+    node_mutations_cache = {}
+    cell_set_cache = {}
+    children_cache = {}
+    i_selected_cache = {new_mut: new_mut_input_vector}
+    i_selected_array_cache = {
+        new_mut: pd.to_numeric(new_mut_input_vector.reindex(matrix_index), errors="coerce").to_numpy(
+            dtype=np.float64,
+            na_value=np.nan,
+        )
+    }
+    p_selected_cache = {new_mut: P_selected[new_mut]}
+
+    def get_m_current_bool(column_name):
+        cached = m_current_bool_cache.get(column_name)
+        if cached is None:
+            cached = _coerce_bool_array(M_current[column_name], matrix_index)
+            m_current_bool_cache[column_name] = cached
+        return cached
+
+    def get_m_current_array(column_name):
+        cached = m_current_array_cache.get(column_name)
+        if cached is None:
+            cached = _coerce_float_array(M_current[column_name], matrix_index)
+            m_current_array_cache[column_name] = cached
+        return cached
 
     def get_lineage_parent_dict(anchor_name):
         cached = lineage_parent_cache.get(anchor_name)
@@ -1403,7 +1592,7 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         exclude_nodes = tuple(exclude_nodes or ())
         sibling_key = tuple(sorted(sibling_nodes))
         cache_key = (anchor_name, sibling_key, exclude_nodes)
-        cached = conflict_mask_cache.get(cache_key)
+        cached = conflict_nodes_cache.get(cache_key)
         if cached is None:
             lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
                 anchor_name,
@@ -1411,16 +1600,76 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
                 M_current.columns,
                 exclude_nodes=list(exclude_nodes),
             )
-            all_conflict_nodes = tuple(set(sibling_nodes + lineage_conflict_nodes))
-            vec_conflicts = pd.Series(False, index=matrix_index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= as_binary_mask(M_current[conflict], matrix_index)
-            cached = (all_conflict_nodes, vec_conflicts)
-            conflict_mask_cache[cache_key] = cached
+            cached = tuple(set(sibling_nodes + lineage_conflict_nodes))
+            conflict_nodes_cache[cache_key] = cached
+        return cached
+
+    def build_conflict_vector(conflict_nodes):
+        conflict_key = tuple(conflict_nodes)
+        cached = conflict_vector_cache.get(conflict_key)
+        if cached is not None:
+            return cached
+
+        vec_conflicts = np.zeros(len(matrix_index), dtype=bool)
+        for conflict in conflict_nodes:
+            np.logical_or(vec_conflicts, get_m_current_bool(conflict), out=vec_conflicts)
+        conflict_vector_cache[conflict_key] = vec_conflicts
+        return vec_conflicts
+
+    def get_full_chain(anchor_name):
+        cached = full_chain_cache.get(anchor_name)
+        if cached is None:
+            cached = get_full_mutnode_chain_with_anchor(anchor_name, parent_dict)
+            full_chain_cache[anchor_name] = cached
+        return cached
+
+    def get_i_selected_vector(mutation):
+        cached = i_selected_cache.get(mutation)
+        if cached is None:
+            cached = I_selected[mutation].replace({pd.NA: np.nan})
+            i_selected_cache[mutation] = cached
+        return cached
+
+    def get_i_selected_array(mutation):
+        cached = i_selected_array_cache.get(mutation)
+        if cached is None:
+            cached = pd.to_numeric(get_i_selected_vector(mutation).reindex(matrix_index), errors="coerce").to_numpy(
+                dtype=np.float64,
+                na_value=np.nan,
+            )
+            i_selected_array_cache[mutation] = cached
+        return cached
+
+    def get_p_selected_vector(mutation):
+        cached = p_selected_cache.get(mutation)
+        if cached is None:
+            cached = P_selected[mutation]
+            p_selected_cache[mutation] = cached
+        return cached
+
+    def get_mutations_on_node(node_name):
+        cached = node_mutations_cache.get(node_name)
+        if cached is None:
+            cached = tuple(node_name.split("|"))
+            node_mutations_cache[node_name] = cached
+        return cached
+
+    def get_cell_set(node_name):
+        cached = cell_set_cache.get(node_name)
+        if cached is None:
+            cached = set(matrix_index[get_m_current_bool(node_name)])
+            cell_set_cache[node_name] = cached
+        return cached
+
+    def get_children(node_name):
+        cached = children_cache.get(node_name)
+        if cached is None:
+            cached = find_children_of_node(node_name, matrix_columns, parent_dict)
+            children_cache[node_name] = cached
         return cached
         
     # 计算突变的特征用于动态调整惩罚
-    input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
+    input_binary_vec_full = new_mut_input_vector
     na_ratio = input_binary_vec_full.isna().mean()
     mut_ratio = input_binary_vec_full.fillna(0).mean()
     N_nodes_beforeT = len(T_current.all_nodes())
@@ -1430,7 +1679,7 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         anchor = pos['anchor']
         
         # 默认 imputed vector
-        imputed_vec = pd.Series(0, index=M_current.index)
+        imputed_bool = np.zeros(len(matrix_index), dtype=bool)
         merge_penalty = 0
         
         # -------------------------
@@ -1438,62 +1687,63 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         # -------------------------
         if placement_type == 'on_node':
             parent = anchor
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] != new_mut])
-            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes)
+            all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes)
+            vec_conflicts = build_conflict_vector(all_conflict_nodes)
             
             # 正确的逻辑：现有节点的向量与清理后的new_mut合并
-            new_mut_cleaned = new_mut_mask & ~vec_conflicts
-            imputed_vec = (M_current[anchor] | new_mut_cleaned).astype(int)
+            anchor_mask = np.ones(len(matrix_index), dtype=bool) if anchor == 'ROOT' else get_m_current_bool(anchor)
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = anchor_mask | new_mut_cleaned
             N_nodes = N_nodes_beforeT + 1
             
         elif placement_type == 'new_leaf':
             parent = anchor
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] != new_mut])
-            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes)
+            all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes)
+            vec_conflicts = build_conflict_vector(all_conflict_nodes)
             
             # 正确的逻辑：先排除所有冲突，再与parent交集
-            new_mut_cleaned = new_mut_mask & ~vec_conflicts
-            imputed_vec = new_mut_cleaned.astype(int)
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = new_mut_cleaned
             N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'on_edge':
             parent = anchor
             child = pos['meta']['child']
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
-            vec_child = M_current[child]
+            vec_child = get_m_current_bool(child)
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] not in [child, new_mut]])
-            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes)
+            all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes)
+            vec_conflicts = build_conflict_vector(all_conflict_nodes)
             
             # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_mask & ~vec_conflicts
-            imputed_vec = (vec_child | new_mut_cleaned).astype(int)
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = vec_child | new_mut_cleaned
             N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'new_parent_merge':
             parent = anchor
             merge_children = pos['meta']['merge_children']
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 构建children的联合向量
-            vec_children = pd.Series(0, index=M_current.index)
+            vec_children = np.zeros(len(matrix_index), dtype=bool)
             for c in merge_children:
-                vec_children |= M_current[c]
+                np.logical_or(vec_children, get_m_current_bool(c), out=vec_children)
             
             # 获取直系sibling冲突节点
             sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] not in merge_children + [new_mut]])
-            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes, exclude_nodes=merge_children)
+            all_conflict_nodes = get_conflict_nodes(parent, sibling_nodes, exclude_nodes=merge_children)
+            vec_conflicts = build_conflict_vector(all_conflict_nodes)
             
             # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_mask & ~vec_conflicts
-            imputed_vec = (vec_children | new_mut_cleaned).astype(int)
+            new_mut_cleaned = new_mut_mask_array & ~vec_conflicts
+            imputed_bool = vec_children | new_mut_cleaned
             merge_penalty = np.log(len(merge_children)) * 0.5
             N_nodes = N_nodes_beforeT + 2
             
@@ -1504,11 +1754,12 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         # 计算完整突变链的总罚分
         # -------------------------
         # 获取从锚点到ROOT的完整突变链
-        full_mutnode_chain = get_full_mutnode_chain_with_anchor(anchor, parent_dict)
+        full_mutnode_chain = get_full_chain(anchor)
+        imputed_vec = pd.Series(imputed_bool.astype(int, copy=False), index=matrix_index, copy=False)
         
         # 计算new_mut本身的罚分
-        posterior_vec = P_selected[new_mut]
-        input_binary_vec = I_selected[new_mut]
+        posterior_vec = get_p_selected_vector(new_mut)
+        input_binary_vec = get_i_selected_vector(new_mut)
         
         new_mut_penalty, actual_na_flip_ratio, refined_ω_NA, φ_adjusted, weight_na_to_1, weight_na_to_0 = compute_dynamic_penalty(
             input_binary_vec, posterior_vec, imputed_vec, fnfp_ratio, ω_NA, φ,
@@ -1517,37 +1768,32 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         
         # 计算完整突变链中其他突变的罚分
         chain_penalty = 0
-        chain_na_flip_ratio = 0
         chain_mutations_count = 0
         
         for node in full_mutnode_chain:
             if node == 'ROOT':
                 continue
             
-            mutations_on_node = node.split("|")
+            mutations_on_node = get_mutations_on_node(node)
+            node_values = get_m_current_array(node)
+            cells_to_flip_mask = imputed_bool & ((node_values == 0) | np.isnan(node_values))
+            if not bool(cells_to_flip_mask.any()):
+                continue
+            imputed_ones = np.ones(int(cells_to_flip_mask.sum()), dtype=np.int8)
             
             for mutation in mutations_on_node:
                 if mutation == new_mut:  # 跳过new_mut本身，因为已经计算过了
                     continue
                     
-                # 获取该突变的原始数据
-                mut_input_binary_vec = I_selected[mutation].replace({pd.NA: np.nan})
-                mut_posterior_vec = P_selected[mutation]
-                
-                # 计算该突变在new_mut放置后的新向量
-                # 对于split_full_mutmutation_chain_mutations中的突变，如果它们在final_imputed_vec为1的细胞中当前为0或NA，需要翻转为1
-                mut_new_vec = M_current[node].copy()
-                cells_should_be_1 = imputed_vec[imputed_vec == 1].index
-                # 找出要计算的额外发生翻转的 index
-                cells_to_flip = []
-                for cell in cells_should_be_1:
-                    if mut_new_vec[cell] == 0 or pd.isna(mut_new_vec[cell]):
-                        cells_to_flip.append(cell)
-                        mut_new_vec[cell] = 1
-                
                 # 计算该突变的罚分
+                mut_input_binary_vec = get_i_selected_array(mutation)
                 mut_penalty = compute_bayesian_penalty_each_chain_mut_by_pos(
-                    mut_input_binary_vec[cells_to_flip], mut_posterior_vec[cells_to_flip], mut_new_vec[cells_to_flip], weight_na_to_1, weight_na_to_0, fnfp_ratio
+                    mut_input_binary_vec[cells_to_flip_mask],
+                    None,
+                    imputed_ones,
+                    weight_na_to_1,
+                    weight_na_to_0,
+                    fnfp_ratio,
                 )
                 
                 chain_penalty += mut_penalty
@@ -1570,11 +1816,33 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         # 添加基于intersection模式和层级的精细调整
         # -------------------------
         intersection_penalty = compute_intersection_based_penalty(
-            new_mut, pos, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio
+            new_mut,
+            pos,
+            intersection_nodes,
+            M_current,
+            I_selected,
+            na_ratio,
+            mut_ratio,
+            actual_na_flip_ratio,
+            mut_cells=mut_cells_new_mut,
+            anchor_cells_cache=cell_set_cache,
+            non_root_columns_set=non_root_columns_set,
+            column_count=matrix_column_count,
+            log_column_count=log_matrix_column_count,
         )
         
         hierarchy_penalty = compute_hierarchy_penalty(
-            new_mut, pos, M_current, I_selected, parent_dict, na_ratio, mut_ratio, actual_na_flip_ratio
+            new_mut,
+            pos,
+            M_current,
+            I_selected,
+            parent_dict,
+            na_ratio,
+            mut_ratio,
+            actual_na_flip_ratio,
+            mut_cells=mut_cells_new_mut,
+            cell_set_cache=cell_set_cache,
+            children_cache=children_cache,
         )
         
         total_penalty = base_total_penalty + intersection_penalty + hierarchy_penalty
@@ -1830,7 +2098,21 @@ def compute_dynamic_bic_penalty(base_φ, na_ratio, mut_ratio, actual_na_flip_rat
     return max(φ_adjusted, 0.1)  # 确保不会降得太低
 
 
-def compute_intersection_based_penalty(new_mut, position, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio):
+def compute_intersection_based_penalty(
+    new_mut,
+    position,
+    intersection_nodes,
+    M_current,
+    I_selected,
+    na_ratio,
+    mut_ratio,
+    actual_na_flip_ratio,
+    mut_cells=None,
+    anchor_cells_cache=None,
+    non_root_columns_set=None,
+    column_count=None,
+    log_column_count=None,
+):
     """
     根据intersection模式和实际NA翻转调整罚分
     """
@@ -1839,45 +2121,72 @@ def compute_intersection_based_penalty(new_mut, position, intersection_nodes, M_
     anchor = position['anchor']
     
     # 获取new_mut的mutant cells
-    mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    if mut_cells is None:
+        mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    if anchor_cells_cache is None:
+        anchor_cells_cache = {}
+    if non_root_columns_set is None:
+        non_root_columns_set = {n for n in M_current.columns if n != 'ROOT'}
+    if column_count is None:
+        column_count = len(M_current.columns)
+    if log_column_count is None:
+        log_column_count = np.log(column_count)
+
+    def get_anchor_cells(node_name):
+        cached = anchor_cells_cache.get(node_name)
+        if cached is None:
+            cached = set(M_current.index[M_current[node_name] == 1])
+            anchor_cells_cache[node_name] = cached
+        return cached
     
     if placement_type == 'on_node':
-        anchor_cells = set(M_current.index[M_current[anchor] == 1])
+        anchor_cells = get_anchor_cells(anchor)
         
         # 情况1：如果new_mut只与一个节点强相交，但被放在不同的early node
         if len(intersection_nodes) == 1:
             sole_intersection = list(intersection_nodes)[0]
-            if anchor != sole_intersection and anchor in [n for n in M_current.columns if n != 'ROOT']:
+            if anchor != sole_intersection and anchor in non_root_columns_set:
                 # 结合实际翻转比例调整惩罚
                 flip_based_multiplier = 1.0 + actual_na_flip_ratio  # 翻转越多，惩罚越重
-                extra_penalty += np.log(len(M_current.columns)) * 0.8 * flip_based_multiplier
+                extra_penalty += log_column_count * 0.8 * flip_based_multiplier
         
         # 情况2：如果anchor涵盖的细胞远多于new_mut的mutant cells
         if len(anchor_cells) > len(mut_cells) * 3:
             # 结合实际翻转比例调整FN惩罚
             fn_penalty = np.log(len(anchor_cells) - len(mut_cells)) * 0.3
             extra_penalty += fn_penalty * (1.0 + actual_na_flip_ratio)
-            
+        
         # 情况3：高NA突变被放在非相交节点上且实际翻转比例高
         if na_ratio > 0.7 and anchor not in intersection_nodes and actual_na_flip_ratio > 0.3:
-            extra_penalty += np.log(len(M_current.columns)) * 0.5
+            extra_penalty += log_column_count * 0.5
     
     elif placement_type in ['new_leaf', 'on_edge']:
         # 对于高NA小突变且实际翻转比例低的，减少开新节点的惩罚
         if na_ratio > 0.7 and mut_ratio < 0.1 and actual_na_flip_ratio < 0.2:
-            bonus = -np.log(len(M_current.columns)) * 0.4 * (1.0 - actual_na_flip_ratio)
+            bonus = -log_column_count * 0.4 * (1.0 - actual_na_flip_ratio)
             extra_penalty += bonus
             
         # 对于与多个节点相交的突变，减少开新节点的惩罚
         if len(intersection_nodes) >= 2:
-            bonus = -np.log(len(M_current.columns)) * 0.3
+            bonus = -log_column_count * 0.3
             extra_penalty += bonus
     
     return extra_penalty
 
 
-def compute_hierarchy_penalty(new_mut, position, M_current, I_selected, parent_dict, 
-                            na_ratio, mut_ratio, actual_na_flip_ratio):
+def compute_hierarchy_penalty(
+    new_mut,
+    position,
+    M_current,
+    I_selected,
+    parent_dict,
+    na_ratio,
+    mut_ratio,
+    actual_na_flip_ratio,
+    mut_cells=None,
+    cell_set_cache=None,
+    children_cache=None,
+):
     """
     计算层级合理性惩罚，考虑实际NA翻转
     """
@@ -1885,19 +2194,36 @@ def compute_hierarchy_penalty(new_mut, position, M_current, I_selected, parent_d
     placement_type = position['placement_type']
     anchor = position['anchor']
     
-    mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    if mut_cells is None:
+        mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    if cell_set_cache is None:
+        cell_set_cache = {}
+    if children_cache is None:
+        children_cache = {}
+
+    def get_cell_set(node_name):
+        cached = cell_set_cache.get(node_name)
+        if cached is None:
+            cached = set(M_current.index[M_current[node_name] == 1])
+            cell_set_cache[node_name] = cached
+        return cached
+
+    def get_children(node_name):
+        cached = children_cache.get(node_name)
+        if cached is None:
+            cached = find_children_of_node(node_name, M_current.columns, parent_dict)
+            children_cache[node_name] = cached
+        return cached
     
     if placement_type == 'on_node':
-        anchor_cells = set(M_current.index[M_current[anchor] == 1])
-        
         # 检查这个anchor是否有children
-        anchor_children = find_children_of_node(anchor, M_current.columns, parent_dict)
+        anchor_children = get_children(anchor)
         
         if anchor_children:
             # 如果anchor有children，且new_mut与children有特定模式
             children_intersection = False
             for child in anchor_children:
-                child_cells = set(M_current.index[M_current[child] == 1])
+                child_cells = get_cell_set(child)
                 if mut_cells.issubset(child_cells) and len(mut_cells) < len(child_cells) * 0.8:
                     children_intersection = True
                     break
@@ -1909,7 +2235,7 @@ def compute_hierarchy_penalty(new_mut, position, M_current, I_selected, parent_d
     
     elif placement_type == 'new_leaf':
         parent = anchor
-        parent_cells = set(M_current.index[M_current[parent] == 1])
+        parent_cells = get_cell_set(parent)
         
         # 如果new_mut的细胞是parent细胞的真子集，这是一个合理的子克隆
         if mut_cells.issubset(parent_cells) and len(mut_cells) < len(parent_cells) * 0.8:
@@ -3854,11 +4180,25 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
-        if scp.ul.is_conflict_free_gusfield(M_current):
+        touched_columns = _resolve_touched_columns_for_conflict_check(
+            final_position,
+            parent_dict,
+            M_current.columns,
+            new_mut,
+        )
+        if _is_conflict_free_local_update(
+            M_current,
+            touched_columns,
+            logger,
+            f"Step6_AttachMutations[{new_mut}]",
+        ):
             logger.info(f"Current M_current is conflict-free and shaped as: {M_current.shape}")
         else:
             raise ValueError(f"Current M_current is conflict !!! Break!!!.")
-    
+
+    if not _is_conflict_free_gusfield_safe(M_current, logger, "Step6_AttachMutations[final]"):
+        raise ValueError("Current M_current failed final conflict validation.")
+
     return external_mutations, T_current, M_current, root_mutations
 
 # # 调用函数
@@ -3994,11 +4334,25 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
         _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
-        if scp.ul.is_conflict_free_gusfield(M_current):
+        touched_columns = _resolve_touched_columns_for_conflict_check(
+            final_position,
+            parent_dict,
+            M_current.columns,
+            new_mut,
+        )
+        if _is_conflict_free_local_update(
+            M_current,
+            touched_columns,
+            logger,
+            f"Step6_RescueMutations[{new_mut}]",
+        ):
             logger.info(f"Current M_current is conflict-free and shaped as: {M_current.shape}")
         else:
             raise ValueError(f"Current M_current is conflict !!! Break!!!.")
-    
+
+    if not _is_conflict_free_gusfield_safe(M_current, logger, "Step6_RescueMutations[final]"):
+        raise ValueError("Current M_current failed final conflict validation.")
+
     return external_mutations, T_current, M_current, root_mutations
 
 # # 调用函数
@@ -4089,6 +4443,7 @@ def process_external_mutations_by_subtree_groups(
                 final_position = generate_new_leaf_on_root(T_current, subtree_mut)
                 T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
+                touched_columns = [subtree_mut] if subtree_mut in M_current.columns else []
             
             else:
                 
@@ -4142,11 +4497,22 @@ def process_external_mutations_by_subtree_groups(
                 else:
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                touched_columns = _resolve_touched_columns_for_conflict_check(
+                    final_position,
+                    parent_dict,
+                    M_current.columns,
+                    subtree_mut,
+                )
             
             _log_tree_snapshot(logger, f"Tree after adding {subtree_mut}:", T_current)
             
             # 检查冲突
-            if not scp.ul.is_conflict_free_gusfield(M_current):
+            if not _is_conflict_free_local_update(
+                M_current,
+                touched_columns,
+                logger,
+                f"Step6_SubtreeGroup[{subtree_mut}]",
+            ):
                 logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
                 
                 # 回滚操作：从矩阵中移除这个突变
@@ -4220,11 +4586,22 @@ def process_external_mutations_by_subtree_groups(
                 else:
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                touched_columns = _resolve_touched_columns_for_conflict_check(
+                    final_position,
+                    parent_dict,
+                    M_current.columns,
+                    subtree_mut,
+                )
                 
                 _log_tree_snapshot(logger, f"Updated tree after re-attaching mutation {subtree_mut}:", T_current)
                 
                 # 检查冲突
-                if not scp.ul.is_conflict_free_gusfield(M_current):
+                if not _is_conflict_free_local_update(
+                    M_current,
+                    touched_columns,
+                    logger,
+                    f"Step6_SubtreeReattach[{subtree_mut}]",
+                ):
                     logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
                     
                     # 回滚操作：从矩阵中移除这个突变
@@ -4253,10 +4630,16 @@ def process_external_mutations_by_subtree_groups(
         final_position = generate_new_leaf_on_root(T_current, subtree_mut)
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
+        touched_columns = [subtree_mut] if subtree_mut in M_current.columns else []
         
         _log_tree_snapshot(logger, f"Tree after adding singleton {subtree_mut}:", T_current)
         
-        if not scp.ul.is_conflict_free_gusfield(M_current):
+        if not _is_conflict_free_local_update(
+            M_current,
+            touched_columns,
+            logger,
+            f"Step6_SubtreeSingleton[{subtree_mut}]",
+        ):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
             
             # 回滚操作：从矩阵中移除这个突变
@@ -4270,6 +4653,9 @@ def process_external_mutations_by_subtree_groups(
     
     logger.info("All external mutations have been processed successfully.")
     logger.info(f"Remained mutations count: {len(remained_mutations)}")
+
+    if not _is_conflict_free_gusfield_safe(M_current, logger, "Step6_SubtreeGroups[final]"):
+        raise ValueError("Current M_current failed final conflict validation.")
     
     return remained_mutations, T_current, M_current, root_mutations
 
