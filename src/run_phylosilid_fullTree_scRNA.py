@@ -634,15 +634,6 @@ external_mutations_of_attached_on_scaffold, T_current, M_current, root_mutations
 )
 logging.info(f"The number of external_mutations_of_attached_on_scaffold is: {len(external_mutations_of_attached_on_scaffold)}")
 
-T_test = copy.deepcopy(T_current)
-M_test = M_current.copy()
-M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-M_test = split_merged_columns(M_test, mutations_on_T_test)
-final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-final_cleaned_M_test.shape
-# (1184, 34)
-
 
 
 
@@ -650,12 +641,6 @@ final_cleaned_M_test.shape
 # Step6.2: 处理 external_mutations_of_attached_on_scaffold, 也就是第一次在树上找不到 intersection 的 mut 再挂一次
 # -----------------------------
 logger.info("===== Step6.2: Handle 'external_mutations_of_attached_on_scaffold' after first hang mutations ...")
-
-##### external_mutations_of_attached_on_scaffold
-len(external_mutations_of_attached_on_scaffold)
-# 11
-print(external_mutations_of_attached_on_scaffold)
-# ['chr11_47268814_C_A', 'chr22_22895482_G_A', 'chr2_55866672_T_A', 'chr15_64953013_C_T', 'chr22_34670933_A_T', 'chr9_114311431_A_T', 'chr1_5862839_A_T', 'chr12_6451607_T_C', 'chr14_105707803_C_A', 'chr16_69117490_C_T', 'chr22_50526071_G_A']
 
 ##### 主处理流程，把第一次挂树没挂上的 external_mutations 重新挂一遍
 sorted_external_mutations_of_attached_on_scaffold = [i for i in I_attached.columns if i in external_mutations_of_attached_on_scaffold]
@@ -671,15 +656,6 @@ final_external_mutations_of_attached_on_scaffold, T_current, M_current, root_mut
     logger=logger,
     root_mutations=root_mutations  # 可选，如果已有根突变列表
 )
-
-T_test = copy.deepcopy(T_current)
-M_test = M_current.copy()
-M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-M_test = split_merged_columns(M_test, mutations_on_T_test)
-final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-final_cleaned_M_test.shape
-# (1184, 34)
 
 
 
@@ -714,15 +690,6 @@ if len(external_mutations) > 0:
         root_mutations=root_mutations  # 可选，如果已有根突变列表
     )
 
-T_test = copy.deepcopy(T_current)
-M_test = M_current.copy()
-M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-M_test = split_merged_columns(M_test, mutations_on_T_test)
-final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-final_cleaned_M_test.shape
-# (1184, 34)
-
 
 ##### 最后还没挂上的突变只能上 ROOT 了
 logging.info(f"The number of final_external_mutations is: {len(final_external_mutations)}")
@@ -746,15 +713,6 @@ if len(final_external_mutations)>0:
         logger=logger,
         root_mutations=root_mutations
     )
-
-T_test = copy.deepcopy(T_current)
-M_test = M_current.copy()
-M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-M_test = split_merged_columns(M_test, mutations_on_T_test)
-final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-final_cleaned_M_test.shape
-# (1184, 34)
 
 
 
@@ -784,18 +742,6 @@ if len(remained_mutations) > 0:
     )
 
 logging.info(f"The number of final_remained_mutations is: {len(final_remained_mutations)}")
-
-T_test = copy.deepcopy(T_current)
-M_test = M_current.copy()
-M_test = M_test.drop(columns=['ROOT'], errors='ignore')
-mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-M_test = split_merged_columns(M_test, mutations_on_T_test)
-final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
-final_cleaned_M_test.shape
-# (1184, 34)
-
-
-print(T_current)
 # └─ ROOT
 #   └─ chr17_7578893_G_T
 #     └─ chr8_80170791_C_T|chr7_20381814_G_T

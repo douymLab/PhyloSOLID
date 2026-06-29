@@ -68,6 +68,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+_VERBOSE_TREE_UPDATES = os.environ.get("PHYLOSOLID_VERBOSE_TREES", "").lower() in {"1", "true", "yes", "on"}
 
 # Default parameters matching Methods Section 3
 DEFAULT_PARAMS = {
@@ -166,6 +167,40 @@ def count_conditions(I_attached_col, M_current_col):
         'count_na_1': count_na_1,
         'count_na_0': count_na_0
     }
+
+
+def as_binary_mask(series, index):
+    """
+    Normalize a Series-like vector to an aligned boolean mask.
+    """
+    aligned = pd.Series(series, index=index) if not isinstance(series, pd.Series) else series.reindex(index)
+    values = aligned.to_numpy(copy=False)
+
+    if np.issubdtype(values.dtype, np.bool_):
+        return pd.Series(values, index=index, copy=False)
+
+    if np.issubdtype(values.dtype, np.integer):
+        return pd.Series(values > 0, index=index)
+
+    if np.issubdtype(values.dtype, np.floating):
+        mask = np.isfinite(values) & (values > 0)
+        return pd.Series(mask, index=index)
+
+    numeric = pd.to_numeric(aligned, errors="coerce")
+    numeric_values = numeric.to_numpy(dtype=np.float64, na_value=np.nan)
+    mask = np.isfinite(numeric_values) & (numeric_values > 0)
+    return pd.Series(mask, index=index)
+
+
+def _coerce_bool_array(series, index):
+    return series.reindex(index, fill_value=0).fillna(0).to_numpy(dtype=bool, copy=False)
+
+
+def _log_tree_snapshot(active_logger, label, tree):
+    if not _VERBOSE_TREE_UPDATES:
+        return
+    active_logger.info(label)
+    print_tree(tree)
 
 
 
@@ -795,63 +830,72 @@ def merge_mutations(M_current_each_mut, all_nodes_in_T_scaffold):
 # 配置日志
 logger = logging.getLogger(__name__)
 
-def find_intersection_positions_within_tree_directly(T_current: TreeNode, new_mut: str, matrix, min_overlap=1):
+def find_intersection_positions_within_tree_directly(
+    T_current: TreeNode,
+    new_mut: str,
+    matrix,
+    min_overlap=1,
+    intersection_nodes=None,
+    tree_parent_dict=None,
+    node_lookup=None,
+):
     """
     基于交集分析的优化版本，直接找到相关位置
     """
     # 1. 找到所有与目标突变有交集的节点
-    intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
-        T_current, matrix, new_mut, min_overlap
-    )
+    if intersection_nodes is None:
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
+            T_current, matrix, new_mut, min_overlap
+        )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug("Found %s intersection nodes for %s: %s", len(intersection_nodes), new_mut, intersection_nodes)
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
         return []  # 没有交集，返回空列表
     
     # 2. 构建树的父子关系字典
-    tree_parent_dict = build_tree_parent_dict(T_current)
+    if tree_parent_dict is None:
+        tree_parent_dict = build_tree_parent_dict(T_current)
     
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
+    logger.debug("Found %s path nodes for %s", len(all_path_nodes), new_mut)
     
-    # 4. 预先创建基础树的深拷贝
-    base_tree_copy = deepcopy(T_current)
-    
-    # 5. 只在这些相关节点上生成候选位置
+    # 4. 只在这些相关节点上生成候选位置
     candidate_positions = []
+    if node_lookup is None:
+        node_lookup = {node.name: node for node in T_current.traverse()}
     
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             # 保留 ROOT 上的 on_node 类型的 position
-            node = base_tree_copy.find(node_name)
+            node = node_lookup.get(node_name)
             if node is None:
                 logger.warning(f"Node {node_name} not found in tree")
                 continue
             
             # 生成 ROOT 上的 on_node 类型的候选位置
-            candidate_positions.append(_create_on_node_candidate_fast(base_tree_copy, node, new_mut))
+            candidate_positions.append(_create_on_node_candidate_fast(node, new_mut))
             
             continue  # ROOT 的其他类型位置仍然跳过
         
-        node = base_tree_copy.find(node_name)
+        node = node_lookup.get(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
         
         # --- 1) 放在 node 上 ---
-        candidate_positions.append(_create_on_node_candidate_fast(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_on_node_candidate_fast(node, new_mut))
         
         # --- 2) 新 leaf ---
-        candidate_positions.append(_create_new_leaf_candidate_fast(base_tree_copy, node, new_mut))
+        candidate_positions.append(_create_new_leaf_candidate_fast(node, new_mut))
         
         # --- 3) 放在每条 edge 上 ---
         for child in node.children:
             if child.name in all_path_nodes:  # 只考虑路径上的子节点
-                candidate_positions.append(_create_on_edge_candidate_fast(base_tree_copy, node, child, new_mut))
+                candidate_positions.append(_create_on_edge_candidate_fast(node, child, new_mut))
         
         # --- 4) 新 parent merge 多个子节点 ---
         if len(node.children) >= 2:
@@ -861,9 +905,9 @@ def find_intersection_positions_within_tree_directly(T_current: TreeNode, new_mu
                 # 限制组合数量避免爆炸
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
-                        candidate_positions.append(_create_merge_candidate_fast(base_tree_copy, node, combo, new_mut))
+                        candidate_positions.append(_create_merge_candidate_fast(node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug("Generated %s candidate positions for %s", len(candidate_positions), new_mut)
     return candidate_positions
 
 
@@ -876,101 +920,47 @@ def build_tree_parent_dict(tree):
     return parent_dict
 
 
-def _create_on_node_candidate_fast(base_tree_copy, node, new_mut):
+def _create_on_node_candidate_fast(node, new_mut):
     """快速创建放在节点上的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    anchor_node = new_tree.find(node.name)
-    
-    # 替换节点逻辑
-    new_node = TreeNode(new_mut)
-    for child in anchor_node.children:
-        new_node.add_child(deepcopy(child))
-    
-    if anchor_node.parent:
-        parent = anchor_node.parent
-        for i, child in enumerate(parent.children):
-            if child.name == node.name:
-                parent.children[i] = new_node
-                new_node.parent = parent
-                break
-    else:
-        new_tree = new_node
-    
     return {
         "placement_type": "on_node",
         "anchor": node.name,
         "meta": {},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "sibling_nodes": [],
     }
 
 
-def _create_new_leaf_candidate_fast(base_tree_copy, node, new_mut):
+def _create_new_leaf_candidate_fast(node, new_mut):
     """快速创建新叶子的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    anchor_node = new_tree.find(node.name)
-    new_leaf = TreeNode(new_mut)
-    anchor_node.add_child(new_leaf)
-    
+    child_nodes = [child.name for child in node.children]
     return {
         "placement_type": "new_leaf",
         "anchor": node.name,
         "meta": {},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "child_nodes": child_nodes,
+        "sibling_nodes": child_nodes,
     }
 
 
-def _create_on_edge_candidate_fast(base_tree_copy, parent_node, child_node, new_mut):
+def _create_on_edge_candidate_fast(parent_node, child_node, new_mut):
     """快速创建放在边上的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    parent = new_tree.find(parent_node.name)
-    child = new_tree.find(child_node.name)
-    new_node = TreeNode(new_mut)
-    parent.remove_child(child)
-    parent.add_child(new_node)
-    new_node.add_child(child)
-    
     return {
         "placement_type": "on_edge",
         "anchor": parent_node.name,
         "meta": {"child": child_node.name},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "sibling_nodes": [child.name for child in parent_node.children if child.name != child_node.name],
     }
 
 
-def _create_merge_candidate_fast(base_tree_copy, parent_node, children_combo, new_mut):
+def _create_merge_candidate_fast(parent_node, children_combo, new_mut):
     """快速创建合并子节点的候选"""
-    new_tree = deepcopy(base_tree_copy)
-    parent = new_tree.find(parent_node.name)
-    combo_nodes = [new_tree.find(child.name) for child in children_combo]
-    new_parent = TreeNode(new_mut)
-    for cn in combo_nodes:
-        parent.remove_child(cn)
-        new_parent.add_child(cn)
-    parent.add_child(new_parent)
-    
+    merge_children = [child.name for child in children_combo]
     return {
         "placement_type": "new_parent_merge",
         "anchor": parent_node.name,
-        "meta": {"merge_children": [child.name for child in children_combo]},
-        "nodes": _extract_nodes_info(new_tree),
-        "edges": _extract_edges_info(new_tree)
+        "meta": {"merge_children": merge_children},
+        "sibling_nodes": [child.name for child in parent_node.children if child.name not in merge_children],
     }
-
-
-def _extract_nodes_info(tree):
-    """提取节点信息"""
-    return [{"name": n.name,
-             "parent": n.parent.name if n.parent else None,
-             "children": [c.name for c in n.children]} 
-            for n in tree.traverse()]
-
-
-def _extract_edges_info(tree):
-    """提取边信息"""
-    return [(n.parent.name, n.name) for n in tree.traverse() if n.parent]
 
 
 def build_parent_dict_from_candidates(candidate_positions):
@@ -1022,41 +1012,57 @@ def build_parent_dict_from_candidates(candidate_positions):
     
 #     return intersect_muts
 
-def find_all_intersect_muts_from_tree_by_matrix(tree, matrix, target_mut, min_overlap=1):
+def find_all_intersect_muts_from_tree_by_matrix(
+    tree,
+    matrix,
+    target_mut,
+    min_overlap=1,
+    matrix_positive=None,
+    matrix_positive_values=None,
+    matrix_positive_col_to_idx=None,
+    tree_nodes=None,
+    node_to_mutations=None,
+):
     """
     返回所有与 target_mut 在 matrix 中有至少 min_overlap 个细胞共同出现的树节点集合。
     """
     intersect_nodes = set()
-    
-    # 遍历所有节点（除 ROOT）
-    for node in tree.all_nodes():
-        if node.name == "ROOT":
+    if target_mut not in matrix.columns:
+        return intersect_nodes
+
+    if matrix_positive is None and matrix_positive_values is None:
+        matrix_positive = matrix.eq(1).fillna(False)
+    if matrix_positive_values is None:
+        matrix_positive_values = matrix_positive.to_numpy(dtype=bool, copy=False)
+    if matrix_positive_col_to_idx is None:
+        source_columns = matrix_positive.columns if matrix_positive is not None else matrix.columns
+        matrix_positive_col_to_idx = {col: idx for idx, col in enumerate(source_columns)}
+
+    target_idx = matrix_positive_col_to_idx.get(target_mut)
+    if target_idx is None:
+        return intersect_nodes
+
+    target_positive = matrix_positive_values[:, target_idx]
+    if not bool(target_positive.any()):
+        return intersect_nodes
+
+    overlap_counts = matrix_positive_values[target_positive].sum(axis=0, dtype=np.int64)
+    nodes_to_scan = tree_nodes if tree_nodes is not None else tree.all_nodes()
+
+    for node in nodes_to_scan:
+        node_name = node.name if hasattr(node, "name") else node
+        if node_name == "ROOT":
             continue
-        
-        has_intersection = False
-        
-        # 检查节点中的每个突变是否与目标突变有交集
-        for mut in node.name.split("|"):
+
+        mutations_on_node = node_to_mutations.get(node_name, ()) if node_to_mutations is not None else tuple(node_name.split("|"))
+        for mut in mutations_on_node:
             if mut == target_mut:
-                continue  # 跳过自身
-            
-            if mut not in matrix.columns or target_mut not in matrix.columns:
-                continue  # 确保突变存在于矩阵中
-            
-            # 计算两突变的共现数量
-            mut_vec = matrix[mut].fillna(0)
-            target_vec = matrix[target_mut].fillna(0)
-            N11 = ((mut_vec == 1) & (target_vec == 1)).sum()
-            
-            # 如果任何一个突变有足够的共现，就标记这个节点
-            if N11 >= min_overlap:
-                has_intersection = True
-                break  # 只要节点中有一个突变有交集就够了
-        
-        # 如果节点中有任何突变与目标突变有交集，就添加整个节点
-        if has_intersection:
-            intersect_nodes.add(node.name)
-    
+                continue
+            mut_idx = matrix_positive_col_to_idx.get(mut)
+            if mut_idx is not None and int(overlap_counts[mut_idx]) >= min_overlap:
+                intersect_nodes.add(node_name)
+                break
+
     return intersect_nodes
 
 def find_all_path_nodes(intersection_nodes, tree_parent_dict):
@@ -1374,6 +1380,9 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
     import pandas as pd
     import numpy as np
     results = []
+    matrix_index = M_current.index
+    lineage_parent_cache = {}
+    conflict_mask_cache = {}
     
     # 如果没有候选位置，直接返回 None
     if len(selected_positions) == 0:
@@ -1381,6 +1390,34 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         return None, None, pd.DataFrame(), M_current
     
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
+    new_mut_mask = as_binary_mask(new_mut_bin_vector, matrix_index)
+
+    def get_lineage_parent_dict(anchor_name):
+        cached = lineage_parent_cache.get(anchor_name)
+        if cached is None:
+            cached = build_lineage_parent_dict_from_tree(T_current, anchor_name)
+            lineage_parent_cache[anchor_name] = cached
+        return cached
+
+    def get_conflict_nodes(anchor_name, sibling_nodes, exclude_nodes=None):
+        exclude_nodes = tuple(exclude_nodes or ())
+        sibling_key = tuple(sorted(sibling_nodes))
+        cache_key = (anchor_name, sibling_key, exclude_nodes)
+        cached = conflict_mask_cache.get(cache_key)
+        if cached is None:
+            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
+                anchor_name,
+                get_lineage_parent_dict(anchor_name),
+                M_current.columns,
+                exclude_nodes=list(exclude_nodes),
+            )
+            all_conflict_nodes = tuple(set(sibling_nodes + lineage_conflict_nodes))
+            vec_conflicts = pd.Series(False, index=matrix_index)
+            for conflict in all_conflict_nodes:
+                vec_conflicts |= as_binary_mask(M_current[conflict], matrix_index)
+            cached = (all_conflict_nodes, vec_conflicts)
+            conflict_mask_cache[cache_key] = cached
+        return cached
         
     # 计算突变的特征用于动态调整惩罚
     input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
@@ -1391,7 +1428,6 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
     for idx, pos in enumerate(selected_positions):
         placement_type = pos['placement_type']
         anchor = pos['anchor']
-        # N_nodes_beforeT = len([node['name'] for node in pos['nodes']])
         
         # 默认 imputed vector
         imputed_vec = pd.Series(0, index=M_current.index)
@@ -1405,21 +1441,11 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
-            
-            # 获取lineage之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] != new_mut])
+            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes)
             
             # 正确的逻辑：现有节点的向量与清理后的new_mut合并
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = (M_current[anchor] | new_mut_cleaned).astype(int)
             N_nodes = N_nodes_beforeT + 1
             
@@ -1428,21 +1454,11 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
-            
-            # 获取lineage之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] != new_mut])
+            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes)
             
             # 正确的逻辑：先排除所有冲突，再与parent交集
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = new_mut_cleaned.astype(int)
             N_nodes = N_nodes_beforeT + 2
             
@@ -1453,21 +1469,11 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
             vec_child = M_current[child]
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in [child,new_mut]]
-            
-            # 获取lineage之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] not in [child, new_mut]])
+            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes)
             
             # 正确的逻辑：child ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = (vec_child | new_mut_cleaned).astype(int)
             N_nodes = N_nodes_beforeT + 2
             
@@ -1482,21 +1488,11 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
                 vec_children |= M_current[c]
             
             # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in merge_children+[new_mut]]
-            
-            # 获取lineage之外的所有冲突节点（排除merge_children）
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns, exclude_nodes=merge_children)
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                vec_conflicts |= M_current[conflict]
+            sibling_nodes = pos.get('sibling_nodes', [n['name'] for n in pos.get('nodes', []) if n['parent'] == parent and n['name'] not in merge_children + [new_mut]])
+            all_conflict_nodes, vec_conflicts = get_conflict_nodes(parent, sibling_nodes, exclude_nodes=merge_children)
             
             # 正确的逻辑：children ∪ (清理后的new_mut ∩ parent)
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            new_mut_cleaned = new_mut_mask & ~vec_conflicts
             imputed_vec = (vec_children | new_mut_cleaned).astype(int)
             merge_penalty = np.log(len(merge_children)) * 0.5
             N_nodes = N_nodes_beforeT + 2
@@ -2847,7 +2843,17 @@ def get_mutation_clone_and_backbone_node_as_keys_by_first_level(root: TreeNode) 
     return clone_dict
 
 
-def calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut):
+def calculate_intersection_counts_under_backbone_nodes(
+    mutation_list_under_backbone_nodes,
+    M_current,
+    I_attached,
+    new_mut,
+    i_attached_positive=None,
+    i_attached_positive_values=None,
+    i_attached_positive_col_to_idx=None,
+    backbone_mutation_indices=None,
+    backbone_positive_masks=None,
+):
     """
     计算new_mut与每个backbone node下mutation list的共现数量
     
@@ -2866,40 +2872,50 @@ def calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backb
         raise ValueError(f"突变 {new_mut} 不在 I_attached 数据框中")
     
     intersection_counts = {}
-    
+    if i_attached_positive is None:
+        i_attached_positive = I_attached.reindex(index=M_current.index).eq(1).fillna(False)
+    if i_attached_positive_values is None:
+        i_attached_positive_values = i_attached_positive.to_numpy(dtype=bool, copy=False)
+    if i_attached_positive_col_to_idx is None:
+        i_attached_positive_col_to_idx = {
+            col: idx for idx, col in enumerate(i_attached_positive.columns)
+        }
+
+    new_mut_idx = i_attached_positive_col_to_idx.get(new_mut)
+    if new_mut_idx is None:
+        raise ValueError(f"突变 {new_mut} 不在 I_attached 数据框中")
+
+    new_mut_positive_mask = i_attached_positive_values[:, new_mut_idx]
+
     for backbone_node, mutation_list in mutation_list_under_backbone_nodes.items():
-        # 1. 找到当前backbone node为1的细胞
-        backbone_cells = M_current[M_current[backbone_node] == 1].index
-        
-        # 2. 过滤出同时在I_attached中的细胞
-        common_cells = backbone_cells.intersection(I_attached.index)
-        
-        if len(common_cells) == 0:
+        if backbone_node not in M_current.columns:
             intersection_counts[backbone_node] = 0
             continue
-        
-        # 3. 获取这些细胞在new_mut上的状态
-        new_mut_status = I_attached.loc[common_cells, new_mut]
-        
-        # 4. 过滤出new_mut为1的细胞
-        new_mut_positive_cells = new_mut_status[new_mut_status == 1].index
-        
-        if len(new_mut_positive_cells) == 0:
+
+        if backbone_positive_masks is not None and backbone_node in backbone_positive_masks:
+            backbone_positive_mask = backbone_positive_masks[backbone_node]
+        else:
+            backbone_positive_mask = _coerce_bool_array(M_current[backbone_node], M_current.index)
+
+        selected_rows = backbone_positive_mask & new_mut_positive_mask
+        if not bool(selected_rows.any()):
             intersection_counts[backbone_node] = 0
             continue
-        
-        # 5. 对于每个mutation in mutation_list，计算与new_mut同时为1的数量
-        total_intersection = 0
-        
-        for mutation in mutation_list:
-            if mutation in I_attached.columns:
-                # 获取当前mutation在new_mut阳性细胞中的状态
-                mut_status = I_attached.loc[new_mut_positive_cells, mutation]
-                # 计算同时为1的数量（忽略NaN值）
-                intersection_count = (mut_status == 1).sum()
-                total_intersection += intersection_count
-        
-        intersection_counts[backbone_node] = total_intersection
+
+        if backbone_mutation_indices is not None and backbone_node in backbone_mutation_indices:
+            valid_indices = backbone_mutation_indices[backbone_node]
+        else:
+            valid_indices = [
+                i_attached_positive_col_to_idx[mutation]
+                for mutation in mutation_list
+                if mutation in i_attached_positive_col_to_idx
+            ]
+
+        if not valid_indices:
+            intersection_counts[backbone_node] = 0
+            continue
+
+        intersection_counts[backbone_node] = int(i_attached_positive_values[selected_rows][:, valid_indices].sum())
     
     return intersection_counts
 
@@ -2940,13 +2956,31 @@ def find_best_backbone_node(mutation_list_under_backbone_nodes, M_current, inter
     
     return best_node
 
-def find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut):
+def find_best_backbone_for_new_mutation(
+    mutation_list_under_backbone_nodes,
+    M_current,
+    I_attached,
+    new_mut,
+    i_attached_positive=None,
+    i_attached_positive_values=None,
+    i_attached_positive_col_to_idx=None,
+    backbone_mutation_indices=None,
+    backbone_positive_masks=None,
+):
     """
     完整函数：计算共现数量并找到最佳backbone node
     """
     # 第一步：计算共现数量
     intersection_counts = calculate_intersection_counts_under_backbone_nodes(
-        mutation_list_under_backbone_nodes, M_current, I_attached, new_mut
+        mutation_list_under_backbone_nodes,
+        M_current,
+        I_attached,
+        new_mut,
+        i_attached_positive=i_attached_positive,
+        i_attached_positive_values=i_attached_positive_values,
+        i_attached_positive_col_to_idx=i_attached_positive_col_to_idx,
+        backbone_mutation_indices=backbone_mutation_indices,
+        backbone_positive_masks=backbone_positive_masks,
     )
     
     # 第二步：找到最佳backbone node
@@ -2993,6 +3027,42 @@ def get_first_level_backbone_nodes(root: TreeNode) -> List[str]:
     for child in root.children:
         first_level_nodes.append(child.name)
     return first_level_nodes
+
+
+def _build_attach_tree_state(root: TreeNode) -> Dict[str, Any]:
+    """
+    为 Step6 挂树阶段构建一次性树状态缓存，减少单个 mutation 内的重复遍历。
+    """
+    traversed_nodes = list(root.traverse())
+    node_lookup = {}
+    tree_parent_dict = {}
+    node_to_mutations = {}
+
+    for node in traversed_nodes:
+        node_lookup[node.name] = node
+        node_to_mutations[node.name] = tuple(node.name.split("|")) if node.name != "ROOT" else ("ROOT",)
+        for child in node.children:
+            tree_parent_dict[child.name] = node.name
+
+    node_list_under_backbone_nodes = {}
+    mutation_list_under_backbone_nodes = {}
+    for child in root.children:
+        node_names = []
+        mutation_names = []
+        for node in child.traverse():
+            node_names.append(node.name)
+            mutation_names.extend(node_to_mutations[node.name])
+        node_list_under_backbone_nodes[child.name] = node_names
+        mutation_list_under_backbone_nodes[child.name] = mutation_names
+
+    return {
+        "tree_nodes": traversed_nodes,
+        "node_lookup": node_lookup,
+        "tree_parent_dict": tree_parent_dict,
+        "node_to_mutations": node_to_mutations,
+        "node_list_under_backbone_nodes": node_list_under_backbone_nodes,
+        "mutation_list_under_backbone_nodes": mutation_list_under_backbone_nodes,
+    }
 
 
 
@@ -3679,28 +3749,81 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         root_mutations = []
     
     external_mutations = []
+    matrix_index = M_current.index
+    i_attached_positive = I_attached.reindex(index=matrix_index).eq(1).fillna(False)
+    i_attached_positive_values = i_attached_positive.to_numpy(dtype=bool, copy=False)
+    i_attached_positive_col_to_idx = {
+        col: idx for idx, col in enumerate(i_attached_positive.columns)
+    }
+    tree_state = None
+    tree_state_dirty = True
+
+    def ensure_tree_state():
+        nonlocal tree_state, tree_state_dirty
+        if tree_state is None or tree_state_dirty:
+            tree_state = _build_attach_tree_state(T_current)
+            backbone_positive_masks = {}
+            backbone_mutation_indices = {}
+            for backbone_node, mutation_list in tree_state["mutation_list_under_backbone_nodes"].items():
+                if backbone_node in M_current.columns:
+                    backbone_positive_masks[backbone_node] = _coerce_bool_array(
+                        M_current[backbone_node],
+                        matrix_index,
+                    )
+                backbone_mutation_indices[backbone_node] = [
+                    i_attached_positive_col_to_idx[mutation]
+                    for mutation in mutation_list
+                    if mutation in i_attached_positive_col_to_idx
+                ]
+            tree_state["backbone_positive_masks"] = backbone_positive_masks
+            tree_state["backbone_mutation_indices"] = backbone_mutation_indices
+            tree_state_dirty = False
+        return tree_state
     
     for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
         logger.info(f"Processing mutation: {new_mut}")
+        current_tree_state = ensure_tree_state()
         
         # 确定 new_mut 应该属于哪一个 backbone clone
-        mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
-        node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-        # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-        # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-        best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut)
-        assigned_nodes = node_list_under_backbone_nodes[best_backbone]
+        best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
+            current_tree_state["mutation_list_under_backbone_nodes"],
+            M_current,
+            I_attached,
+            new_mut,
+            i_attached_positive=i_attached_positive,
+            i_attached_positive_values=i_attached_positive_values,
+            i_attached_positive_col_to_idx=i_attached_positive_col_to_idx,
+            backbone_mutation_indices=current_tree_state["backbone_mutation_indices"],
+            backbone_positive_masks=current_tree_state["backbone_positive_masks"],
+        )
+        assigned_nodes = current_tree_state["node_list_under_backbone_nodes"][best_backbone]
         
         # 找到交集节点
-        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, new_mut)
-        print(len(intersection_nodes))
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
+            T_current,
+            I_attached,
+            new_mut,
+            matrix_positive=i_attached_positive,
+            matrix_positive_values=i_attached_positive_values,
+            matrix_positive_col_to_idx=i_attached_positive_col_to_idx,
+            tree_nodes=current_tree_state["tree_nodes"],
+            node_to_mutations=current_tree_state["node_to_mutations"],
+        )
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
             logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
             continue
         
         # 使用优化方法获取候选位置
-        potential_positions = find_intersection_positions_within_tree_directly(T_current, new_mut, I_attached, min_overlap=1)
+        potential_positions = find_intersection_positions_within_tree_directly(
+            T_current,
+            new_mut,
+            I_attached,
+            min_overlap=1,
+            intersection_nodes=intersection_nodes,
+            tree_parent_dict=current_tree_state["tree_parent_dict"],
+            node_lookup=current_tree_state["node_lookup"],
+        )
         parent_dict = build_parent_dict_from_candidates(potential_positions)
         selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
         
@@ -3726,10 +3849,9 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         else:
             M_current[new_mut] = final_imputed_vec
             T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
+        tree_state_dirty = True
         
-        # 打印当前树的结构
-        logger.info(f"Updated tree after mutation {new_mut}:")
-        print_tree(T_current)
+        _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
         if scp.ul.is_conflict_free_gusfield(M_current):
@@ -3809,7 +3931,13 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
             continue
         
         # 使用优化方法获取候选位置
-        potential_positions = find_intersection_positions_within_tree_directly(T_current, new_mut, I_attached, min_overlap=1)
+        potential_positions = find_intersection_positions_within_tree_directly(
+            T_current,
+            new_mut,
+            I_attached,
+            min_overlap=1,
+            intersection_nodes=intersection_nodes,
+        )
         parent_dict = build_parent_dict_from_candidates(potential_positions)
         
         # 检查是否找到候选位置（理论上这里应该有，但双重检查）
@@ -3863,9 +3991,7 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
             M_current[new_mut] = final_imputed_vec
             T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
         
-        # 打印当前树的结构
-        logger.info(f"Updated tree after mutation {new_mut}:")
-        print_tree(T_current)
+        _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
         if scp.ul.is_conflict_free_gusfield(M_current):
@@ -3982,7 +4108,13 @@ def process_external_mutations_by_subtree_groups(
                     continue
                 
                 # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly(T_current, subtree_mut, I_attached, min_overlap=1)
+                potential_positions = find_intersection_positions_within_tree_directly(
+                    T_current,
+                    subtree_mut,
+                    I_attached,
+                    min_overlap=1,
+                    intersection_nodes=intersection_nodes,
+                )
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
                 selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
                 
@@ -4011,9 +4143,7 @@ def process_external_mutations_by_subtree_groups(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
             
-            # 打印当前树结构
-            logger.info(f"Tree after adding {subtree_mut}:")
-            print_tree(T_current)
+            _log_tree_snapshot(logger, f"Tree after adding {subtree_mut}:", T_current)
             
             # 检查冲突
             if not scp.ul.is_conflict_free_gusfield(M_current):
@@ -4056,7 +4186,13 @@ def process_external_mutations_by_subtree_groups(
                     continue
                 
                 # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly(T_current, subtree_mut, I_attached, min_overlap=1)
+                potential_positions = find_intersection_positions_within_tree_directly(
+                    T_current,
+                    subtree_mut,
+                    I_attached,
+                    min_overlap=1,
+                    intersection_nodes=intersection_nodes,
+                )
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
                 selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
                 
@@ -4085,9 +4221,7 @@ def process_external_mutations_by_subtree_groups(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 
-                # 打印当前树结构
-                logger.info(f"Updated tree after re-attaching mutation {subtree_mut}:")
-                print_tree(T_current)
+                _log_tree_snapshot(logger, f"Updated tree after re-attaching mutation {subtree_mut}:", T_current)
                 
                 # 检查冲突
                 if not scp.ul.is_conflict_free_gusfield(M_current):
@@ -4120,8 +4254,7 @@ def process_external_mutations_by_subtree_groups(
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
         
-        logger.info(f"Tree after adding singleton {subtree_mut}:")
-        print_tree(T_current)
+        _log_tree_snapshot(logger, f"Tree after adding singleton {subtree_mut}:", T_current)
         
         if not scp.ul.is_conflict_free_gusfield(M_current):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
