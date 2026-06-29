@@ -96,6 +96,37 @@ def _build_conflict_mask(matrix, conflict_nodes, index):
     return vec_conflicts
 
 
+def _build_scaffold_lineage_fill_update(final_position, final_imputed_vec, parent_dict):
+    if final_position is None or final_imputed_vec is None:
+        return {"mutation_chain": (), "cells": ()}
+
+    mutation_chain = tuple(get_full_mutnode_chain_with_anchor_scaffold(final_position["anchor"], parent_dict))
+    cells = tuple(final_imputed_vec.index[final_imputed_vec == 1].tolist())
+    return {
+        "mutation_chain": mutation_chain,
+        "cells": cells,
+    }
+
+
+def _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update):
+    mutation_chain = lineage_fill_update.get("mutation_chain", ())
+    cells = lineage_fill_update.get("cells", ())
+
+    if not mutation_chain or not cells:
+        return M_current
+
+    cells_list = list(cells)
+    for mutation in mutation_chain:
+        if mutation not in M_current.columns:
+            continue
+        column_values = M_current.loc[cells_list, mutation]
+        cells_to_update = column_values.index[column_values == 0]
+        if len(cells_to_update) > 0:
+            M_current.loc[cells_to_update, mutation] = 1
+
+    return M_current
+
+
 
 
 def get_random_chromosome_position(snp_name):
@@ -3648,15 +3679,15 @@ def compute_bayesian_penalty_for_positions_scaffold(
     new_mut, selected_positions, T_current, M_current, I_selected, P_selected, parent_dict, intersection_nodes, 
     ω_NA=0.001, fnfp_ratio=0.1, φ=1
 ):
-    import copy
     import pandas as pd
     import numpy as np
     results = []
+    empty_lineage_fill_update = {"mutation_chain": (), "cells": ()}
     
     # 如果没有候选位置，直接返回 None
     if len(selected_positions) == 0:
         logger.warning(f"No selected positions for mutation {new_mut}")
-        return None, None, pd.DataFrame(), M_current
+        return None, None, pd.DataFrame(), empty_lineage_fill_update
     
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
     new_mut_mask = _as_bool_mask(new_mut_bin_vector, M_current.index)
@@ -3945,7 +3976,8 @@ def compute_bayesian_penalty_for_positions_scaffold(
             'φ_adjusted': φ_adjusted,
             'base_ω_NA': ω_NA,
             'base_φ': φ,
-            'full_mutnode_chain': full_mutnode_chain
+            'full_mutnode_chain': full_mutnode_chain,
+            'imputed_sum': int(imputed_vec.sum()),
         })
     
     # 初始化df_penalty避免作用域问题
@@ -3957,69 +3989,43 @@ def compute_bayesian_penalty_for_positions_scaffold(
         # -------------------------
         if len(results) == 0:
             logger.warning(f"No valid results for mutation {new_mut}")
-            return None, None, pd.DataFrame(), M_current
+            return None, None, pd.DataFrame(), empty_lineage_fill_update
         
         df_penalty = pd.DataFrame(results)
         
         # 检查 DataFrame 是否为空
         if df_penalty.empty:
             logger.warning(f"Empty penalty DataFrame for mutation {new_mut}")
-            return None, None, df_penalty, M_current
+            return None, None, df_penalty, empty_lineage_fill_update
         
         # 检查 total_penalty 列是否存在
         if 'total_penalty' not in df_penalty.columns:
             logger.warning(f"total_penalty column missing for mutation {new_mut}. Columns: {df_penalty.columns.tolist()}")
-            return None, None, df_penalty, M_current
+            return None, None, df_penalty, empty_lineage_fill_update
         
         # 检查 total_penalty 列是否有有效值
         if df_penalty['total_penalty'].isna().all():
             logger.warning(f"All total_penalty values are NaN for mutation {new_mut}")
-            return None, None, df_penalty, M_current
-        
-        # 查找最小 penalty 并检查 imputed_vec 是否全为 0
-        valid_results = []
-        for idx, row in df_penalty.iterrows():
-            if row['imputed_vec'].sum() == 0:
-                logger.info(f"Skipping position with all imputed_vec values as 0: {row['position']}")
-                continue
-            valid_results.append(row)
-        
-        if not valid_results:
+            return None, None, df_penalty, empty_lineage_fill_update
+
+        df_valid_penalty = df_penalty[df_penalty['imputed_sum'] > 0]
+        if df_valid_penalty.empty:
             logger.warning(f"No valid results (with non-zero imputed_vec) for mutation {new_mut}")
-            return None, None, df_penalty, M_current
-        
+            return None, None, df_penalty, empty_lineage_fill_update
+
         # 选择最小 penalty 的有效位置
-        df_valid_penalty = pd.DataFrame(valid_results)
         min_idx = df_valid_penalty['base_total_penalty'].idxmin()
         min_row = df_valid_penalty.loc[min_idx]
         
         final_position = min_row['position']
         final_imputed_vec = min_row['imputed_vec'].copy()
         
-        # -------------------------
-        # 修正：改进的M_current更新逻辑
-        # -------------------------
-        anchor = final_position['anchor']
-        
-        # 获取从锚点到ROOT的完整突变链
-        full_mutnode_chain = get_full_mutnode_chain_with_anchor_scaffold(anchor, parent_dict)
-        
-        # 找出所有在final_imputed_vec中为1的细胞
-        cells_with_final_one = final_imputed_vec[final_imputed_vec == 1].index.tolist()
-        
-        if len(cells_with_final_one) > 0:
-            # 对于每个在final_imputed_vec中为1的细胞，确保其父节点链也为1
-            for cell in cells_with_final_one:
-                for mutation in full_mutnode_chain:
-                    # 只有当该突变当前为0时才填充为1
-                    if M_current.loc[cell, mutation] == 0:
-                        M_current.loc[cell, mutation] = 1
-        
-        return final_position, final_imputed_vec.astype(int), df_penalty, M_current
+        lineage_fill_update = _build_scaffold_lineage_fill_update(final_position, final_imputed_vec, parent_dict)
+        return final_position, final_imputed_vec.astype(int), df_penalty, lineage_fill_update
     
     except Exception as e:
         logger.warning(f"Error selecting minimum penalty for mutation {new_mut}: {e}")
-        return None, None, df_penalty, M_current
+        return None, None, df_penalty, empty_lineage_fill_update
 
 
 def get_all_conflict_nodes_outside_lineage_scaffold(anchor, parent_dict, all_columns, exclude_nodes=None):
@@ -4629,10 +4635,15 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
             continue
                 
         # 计算贝叶斯罚分并更新 M_current
-        final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_scaffold(
+        final_position, final_imputed_vec, df_penalty_score, lineage_fill_update = compute_bayesian_penalty_for_positions_scaffold(
             new_mut, refined_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
             ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
         )
+        if final_position is None or final_imputed_vec is None:
+            external_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to external_mutations (no valid scoring result)")
+            continue
+        M_current = _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update)
         logger.info(f"The new_mut should be placed on position: {final_position['placement_type']}.")
         
         # 更新 M_current
@@ -4708,9 +4719,6 @@ def process_subtree_mutations_to_specific_node(
         current_group_start_node = None
         reattached_mutations = []
         for idx, subtree_mut in enumerate(tqdm(sorted_group, desc="Processing mutations in group")):
-            T_rollback = copy.deepcopy(T_current)
-            M_rollback = M_current.copy()
-            
             logger.info(f"Processing mutation {idx+1}/{len(sorted_group)}: {subtree_mut}")
             
             if idx == 0:
@@ -4724,10 +4732,17 @@ def process_subtree_mutations_to_specific_node(
                 parent_dict = build_parent_dict_from_candidates_scaffold(candidate_positions)
                 potential_positions = [p for i,p in enumerate(candidate_positions) if p['placement_type'] == 'new_leaf']
                 # T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position_list[0])
-                final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_scaffold(
+                final_position, final_imputed_vec, df_penalty_score, lineage_fill_update = compute_bayesian_penalty_for_positions_scaffold(
                     subtree_mut, potential_positions, T_current, M_current, I_selected, P_selected, parent_dict, set(list(intersection_nodes)+target_node_names), 
                     ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
                 )
+                if final_position is None or final_imputed_vec is None:
+                    reattached_mutations.append(subtree_mut)
+                    logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no valid scoring result)")
+                    continue
+                T_rollback = copy.deepcopy(T_current)
+                M_rollback = M_current.copy()
+                M_current = _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update)
                 M_current[subtree_mut] = final_imputed_vec
                 T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 
@@ -4758,10 +4773,17 @@ def process_subtree_mutations_to_specific_node(
                     continue
                 
                 # 计算贝叶斯罚分并更新 M_current
-                final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_scaffold(
+                final_position, final_imputed_vec, df_penalty_score, lineage_fill_update = compute_bayesian_penalty_for_positions_scaffold(
                     subtree_mut, potential_positions, T_current, M_current, I_selected, P_selected, parent_dict, subtree_nodes, 
                     ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
                 )
+                if final_position is None or final_imputed_vec is None:
+                    reattached_mutations.append(subtree_mut)
+                    logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no valid scoring result)")
+                    continue
+                T_rollback = copy.deepcopy(T_current)
+                M_rollback = M_current.copy()
+                M_current = _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update)
                 logger.info(f"Mutation {subtree_mut} should be placed on position: {final_position['placement_type']}")
                 
                 # 更新 M_current
@@ -4802,9 +4824,6 @@ def process_subtree_mutations_to_specific_node(
             
             sorted_reattached_mutations = [i for i in I_selected.columns if i in reattached_mutations]
             for subtree_mut in tqdm(sorted_reattached_mutations, desc="Processing re-attached mutations"):
-                T_rollback = copy.deepcopy(T_current)
-                M_rollback = M_current.copy()
-                
                 logger.info(f"Processing re-attached mutation: {subtree_mut}")
                 
                 # 仍然从当前组的起始节点开始搜索
@@ -4827,10 +4846,17 @@ def process_subtree_mutations_to_specific_node(
                     continue
                                 
                 # 计算贝叶斯罚分并更新 M_current
-                final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_scaffold(
+                final_position, final_imputed_vec, df_penalty_score, lineage_fill_update = compute_bayesian_penalty_for_positions_scaffold(
                     subtree_mut, potential_positions, T_current, M_current, I_selected, P_selected, parent_dict, subtree_nodes, 
                     ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
                 )
+                if final_position is None or final_imputed_vec is None:
+                    second_reattached_mutations.append(subtree_mut)
+                    logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no valid scoring result)")
+                    continue
+                T_rollback = copy.deepcopy(T_current)
+                M_rollback = M_current.copy()
+                M_current = _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update)
                 logger.info(f"The subtree_mut should be placed on position: {final_position['placement_type']}.")
                 
                 if final_position['placement_type'] == 'on_node':
@@ -4868,9 +4894,6 @@ def process_subtree_mutations_to_specific_node(
     logger.info(f"Processing {len(singleton_subtree_groups)} singleton groups")
     # for group_idx, group in enumerate(tqdm(singleton_subtree_groups, desc="Processing singleton subtrees")):
     for group in tqdm(singleton_subtree_groups, desc="Processing singleton subtrees"):
-        T_rollback = copy.deepcopy(T_current)
-        M_rollback = M_current.copy()
-        
         subtree_mut = group[0]
         logger.info(f"Attaching singleton mutation directly to target node {target_node_names}: {subtree_mut}")
                 
@@ -4889,10 +4912,17 @@ def process_subtree_mutations_to_specific_node(
         parent_dict = build_parent_dict_from_candidates_scaffold(candidate_positions)
         potential_positions = [p for i,p in enumerate(candidate_positions) if p['placement_type'] == 'new_leaf']
         # T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position_list[0])
-        final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_scaffold(
+        final_position, final_imputed_vec, df_penalty_score, lineage_fill_update = compute_bayesian_penalty_for_positions_scaffold(
             subtree_mut, potential_positions, T_current, M_current, I_selected, P_selected, parent_dict, set(list(intersection_nodes)+target_node_names), 
             ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
         )
+        if final_position is None or final_imputed_vec is None:
+            external_mutations.append(subtree_mut)
+            logger.info(f"Mutation {subtree_mut} added to external_mutations (no valid scoring result)")
+            continue
+        T_rollback = copy.deepcopy(T_current)
+        M_rollback = M_current.copy()
+        M_current = _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update)
         M_current[subtree_mut] = final_imputed_vec
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         
