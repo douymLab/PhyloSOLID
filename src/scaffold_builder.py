@@ -30,6 +30,7 @@ Outputs:
 """
 
 import os
+import shutil
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -493,37 +494,37 @@ def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100):
         {tuple(m1,m2): weight}  每个 mutation pair 的权重（只考虑长度≥2的 clone）
     """
     clone_weights = defaultdict(float)  # 全局 clone 权重累加
-    
+    if n_shuffle <= 0:
+        return clone_weights, defaultdict(float)
+
     for ref in muts:
         other_muts = [m for m in muts if m != ref]
         ref_clone_counter = defaultdict(int)  # 记录当前 reference 下每个 clone 的计数
-        
-        for _ in range(n_shuffle):
-            shuffled = list(deterministic_permutation(other_muts))
-            remaining = [ref] + shuffled.copy()
-            
-            while remaining:
-                curr_ref = remaining[0]
-                current_clone = [curr_ref]
-                next_remaining = []
-                
-                for m in remaining[1:]:
-                    key1 = (curr_ref, m)
-                    key2 = (m, curr_ref)
-                    # 检查 corr_cache，避免 KeyError
-                    is_corr = corr_cache.get(key1, corr_cache.get(key2, False))
-                    if is_corr:
-                        current_clone.append(m)
-                    else:
-                        next_remaining.append(m)
-                
-                # 当前 shuffle 的 clone 计数
-                ref_clone_counter[tuple(sorted(current_clone))] += 1
-                remaining = next_remaining
-        
-        # Step: normalize by n_shuffle → clone proportion for this reference
+
+        # 当前实现中的 deterministic_permutation 对同一个输入会返回相同顺序，
+        # 因而重复 n_shuffle 次与执行一次后按比例归一化的结果完全等价。
+        shuffled = list(deterministic_permutation(other_muts))
+        remaining = [ref] + shuffled.copy()
+
+        while remaining:
+            curr_ref = remaining[0]
+            current_clone = [curr_ref]
+            next_remaining = []
+
+            for m in remaining[1:]:
+                key1 = (curr_ref, m)
+                key2 = (m, curr_ref)
+                is_corr = corr_cache.get(key1, corr_cache.get(key2, False))
+                if is_corr:
+                    current_clone.append(m)
+                else:
+                    next_remaining.append(m)
+
+            ref_clone_counter[tuple(sorted(current_clone))] += 1
+            remaining = next_remaining
+
         for clone, count in ref_clone_counter.items():
-            clone_weights[clone] += count / n_shuffle  # 累加到全局
+            clone_weights[clone] += count
     
     # Step: 计算 pair 权重，只考虑长度≥2的 clone
     pair_weights = defaultdict(float)
@@ -539,6 +540,65 @@ from collections import defaultdict
 import itertools
 import numpy as np
 import pandas as pd
+
+def _build_pairwise_correlation_cache_fast(
+    I_S: pd.DataFrame,
+    muts: List[str],
+) -> Tuple[Dict[Tuple[str, str], bool], Dict[str, float], Dict[str, int]]:
+    I_numeric = I_S.loc[:, muts].apply(pd.to_numeric, errors="coerce")
+    values = I_numeric.to_numpy(copy=False)
+
+    ones = np.asarray(values == 1, dtype=np.int32, order="C")
+    zeros = np.asarray(values == 0, dtype=np.int32, order="C")
+
+    n11 = ones.T @ ones
+    n10 = ones.T @ zeros
+    n01 = zeros.T @ ones
+
+    mutant_cell_number_arr = ones.sum(axis=0).astype(np.int32, copy=False)
+    covered_cell_number_arr = (ones + zeros).sum(axis=0).astype(np.int32, copy=False)
+
+    denominator = n11 + n10 + n01
+    jaccard = np.divide(
+        n11,
+        denominator,
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=denominator > 0,
+    )
+    f_forward = np.divide(
+        n11,
+        mutant_cell_number_arr[:, None],
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=mutant_cell_number_arr[:, None] > 0,
+    )
+    f_reverse = np.divide(
+        n11,
+        mutant_cell_number_arr[None, :],
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=mutant_cell_number_arr[None, :] > 0,
+    )
+
+    corr_matrix = (n11 >= 1) & (
+        (jaccard >= 0.08) |
+        ((jaccard > 0) & (jaccard < 0.08) & (np.maximum(f_forward, f_reverse) >= 0.5))
+    )
+    np.fill_diagonal(corr_matrix, True)
+
+    mutant_cell_fraction_arr = np.divide(
+        mutant_cell_number_arr,
+        covered_cell_number_arr,
+        out=np.zeros_like(mutant_cell_number_arr, dtype=np.float64),
+        where=covered_cell_number_arr > 0,
+    )
+
+    corr_cache = {}
+    for i, u in enumerate(muts):
+        for j, v in enumerate(muts):
+            corr_cache[(u, v)] = bool(corr_matrix[i, j])
+
+    mutant_cell_fraction = dict(zip(muts, mutant_cell_fraction_arr))
+    mutant_cell_number = dict(zip(muts, mutant_cell_number_arr))
+    return corr_cache, mutant_cell_fraction, mutant_cell_number
 
 def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed: int = 42, cutoff_mcf_for_graph: float = 0.05, cutoff_mcn_for_graph: int = 5) -> Tuple[Dict[Tuple[str], float], Dict[Tuple[str,str], float]]:
     """
@@ -559,22 +619,12 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
     n_mut = len(muts)
     
     # Step 1: precompute pairwise correlation cache
-    corr_cache = {}
-    for u, v in itertools.combinations(muts, 2):
-        corr = are_mutations_correlated(I_S, u, v)
-        corr_cache[(u, v)] = corr
-        corr_cache[(v, u)] = corr
-    
-    for m in muts:
-        corr_cache[(m, m)] = True
+    corr_cache, mutant_cell_fraction, mutant_cell_number = _build_pairwise_correlation_cache_fast(I_S, muts)
     
     # Step 2: compute clone weights and pair weights
     clone_weights, pair_weights = compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=n_shuffle)
-    
+
     # Step 3: 计算每个 mutation 的突变 fraction 和突变细胞数
-    mutant_cell_fraction = {mut: I_S[mut].mean(skipna=True) for mut in muts}
-    mutant_cell_number = {mut: I_S[mut].sum(skipna=True) for mut in muts}
-    
     # Step 4: 删除低支持 singleton mutations 对应的 clone
     count = 0
     for mut in muts:
@@ -4419,7 +4469,7 @@ def get_all_conflict_nodes_outside_lineage_scaffold(anchor, parent_dict, all_col
 
 
 def WriteTfile(out_prefix, matrix, rownames, colnames, judge): # writes matrix output as an integer matrix, uses the format given in the documentary. 
-    matrix_output = matrix.astype(int)
+    matrix_output = matrix.replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
     df_output = pd.DataFrame(matrix_output)
     df_output.index = rownames
     df_output.columns = colnames
@@ -4429,8 +4479,21 @@ def WriteTfile(out_prefix, matrix, rownames, colnames, judge): # writes matrix o
         if is_cf:
             print("Current tree is conflict-free and output binary matrix and plot phylogenetic tree !")
             df_output.to_csv(out_prefix+".CFMatrix", sep="\t")
-            tree = scp.ul.to_tree(df_output)
-            scp.pl.clonal_tree(tree, output_file=out_prefix+".tree_scphylo.pdf")
+            if shutil.which("dot") is None:
+                logger.warning(
+                    "Skipping clonal tree PDF export for %s because Graphviz `dot` is not in PATH.",
+                    out_prefix,
+                )
+            else:
+                try:
+                    tree = scp.ul.to_tree(df_output)
+                    scp.pl.clonal_tree(tree, output_file=out_prefix+".tree_scphylo.pdf")
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to export clonal tree PDF for %s: %s",
+                        out_prefix,
+                        exc,
+                    )
         else:
             print("Current tree is not conflict-free !")
     else:
