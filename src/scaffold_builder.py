@@ -3660,6 +3660,24 @@ def compute_bayesian_penalty_for_positions_scaffold(
     
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
     new_mut_mask = _as_bool_mask(new_mut_bin_vector, M_current.index)
+    new_mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    positive_cells_cache = {}
+    children_cache = {}
+    non_root_columns = [col for col in M_current.columns if col != 'ROOT']
+
+    def get_positive_cells(column_name):
+        cached = positive_cells_cache.get(column_name)
+        if cached is None:
+            cached = set(M_current.index[M_current[column_name] == 1])
+            positive_cells_cache[column_name] = cached
+        return cached
+
+    def get_anchor_children(anchor_name):
+        cached = children_cache.get(anchor_name)
+        if cached is None:
+            cached = find_children_of_node_scaffold(anchor_name, M_current.columns, parent_dict)
+            children_cache[anchor_name] = cached
+        return cached
     
     # 计算突变的特征用于动态调整惩罚
     input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
@@ -3809,6 +3827,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 # 获取该突变的原始数据
                 mut_input_binary_vec = I_selected[mutation].replace({pd.NA: np.nan})
                 mut_posterior_vec = P_selected[mutation]
+                chain_mutations_count += 1
                 
                 # 计算该突变在new_mut放置后的新向量
                 # 对于split_full_mutmutation_chain_mutations中的突变，如果它们在final_imputed_vec为1的细胞中当前为0或NA，需要翻转为1
@@ -3827,7 +3846,6 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 )
                 
                 chain_penalty += mut_penalty
-                chain_mutations_count += 1
         
         # 总罚分 = new_mut罚分 + 完整突变链罚分
         total_chain_penalty = new_mut_penalty + chain_penalty
@@ -3845,11 +3863,17 @@ def compute_bayesian_penalty_for_positions_scaffold(
         # 添加基于intersection模式和层级的精细调整
         # -------------------------
         intersection_penalty = compute_intersection_based_penalty_scaffold(
-            new_mut, pos, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio
+            new_mut, pos, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio,
+            precomputed_mut_cells=new_mut_cells,
+            cell_set_cache=get_positive_cells,
+            non_root_columns=non_root_columns,
         )
         
         hierarchy_penalty = compute_hierarchy_penalty_scaffold(
-            new_mut, pos, M_current, I_selected, parent_dict, na_ratio, mut_ratio, actual_na_flip_ratio
+            new_mut, pos, M_current, I_selected, parent_dict, na_ratio, mut_ratio, actual_na_flip_ratio,
+            precomputed_mut_cells=new_mut_cells,
+            cell_set_cache=get_positive_cells,
+            children_cache=get_anchor_children,
         )
         
         total_penalty = base_total_penalty + intersection_penalty + hierarchy_penalty
@@ -4104,7 +4128,19 @@ def compute_dynamic_bic_penalty_scaffold(base_φ, na_ratio, mut_ratio, actual_na
     return max(φ_adjusted, 0.1)  # 确保不会降得太低
 
 
-def compute_intersection_based_penalty_scaffold(new_mut, position, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio):
+def compute_intersection_based_penalty_scaffold(
+    new_mut,
+    position,
+    intersection_nodes,
+    M_current,
+    I_selected,
+    na_ratio,
+    mut_ratio,
+    actual_na_flip_ratio,
+    precomputed_mut_cells=None,
+    cell_set_cache=None,
+    non_root_columns=None,
+):
     """
     根据intersection模式和实际NA翻转调整罚分
     """
@@ -4113,15 +4149,22 @@ def compute_intersection_based_penalty_scaffold(new_mut, position, intersection_
     anchor = position['anchor']
     
     # 获取new_mut的mutant cells
-    mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    mut_cells = precomputed_mut_cells
+    if mut_cells is None:
+        mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
     
     if placement_type == 'on_node':
-        anchor_cells = set(M_current.index[M_current[anchor] == 1])
+        if cell_set_cache is not None:
+            anchor_cells = cell_set_cache(anchor)
+        else:
+            anchor_cells = set(M_current.index[M_current[anchor] == 1])
         
         # 情况1：如果new_mut只与一个节点强相交，但被放在不同的early node
         if len(intersection_nodes) == 1:
             sole_intersection = list(intersection_nodes)[0]
-            if anchor != sole_intersection and anchor in [n for n in M_current.columns if n != 'ROOT']:
+            if non_root_columns is None:
+                non_root_columns = [n for n in M_current.columns if n != 'ROOT']
+            if anchor != sole_intersection and anchor in non_root_columns:
                 # 结合实际翻转比例调整惩罚
                 flip_based_multiplier = 1.0 + actual_na_flip_ratio  # 翻转越多，惩罚越重
                 extra_penalty += np.log(len(M_current.columns)) * 0.8 * flip_based_multiplier
@@ -4150,8 +4193,19 @@ def compute_intersection_based_penalty_scaffold(new_mut, position, intersection_
     return extra_penalty
 
 
-def compute_hierarchy_penalty_scaffold(new_mut, position, M_current, I_selected, parent_dict, 
-                            na_ratio, mut_ratio, actual_na_flip_ratio):
+def compute_hierarchy_penalty_scaffold(
+    new_mut,
+    position,
+    M_current,
+    I_selected,
+    parent_dict,
+    na_ratio,
+    mut_ratio,
+    actual_na_flip_ratio,
+    precomputed_mut_cells=None,
+    cell_set_cache=None,
+    children_cache=None,
+):
     """
     计算层级合理性惩罚，考虑实际NA翻转
     """
@@ -4159,19 +4213,30 @@ def compute_hierarchy_penalty_scaffold(new_mut, position, M_current, I_selected,
     placement_type = position['placement_type']
     anchor = position['anchor']
     
-    mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
+    mut_cells = precomputed_mut_cells
+    if mut_cells is None:
+        mut_cells = set(I_selected.index[I_selected[new_mut].fillna(0) == 1])
     
     if placement_type == 'on_node':
-        anchor_cells = set(M_current.index[M_current[anchor] == 1])
+        if cell_set_cache is not None:
+            anchor_cells = cell_set_cache(anchor)
+        else:
+            anchor_cells = set(M_current.index[M_current[anchor] == 1])
         
         # 检查这个anchor是否有children
-        anchor_children = find_children_of_node_scaffold(anchor, M_current.columns, parent_dict)
+        if children_cache is not None:
+            anchor_children = children_cache(anchor)
+        else:
+            anchor_children = find_children_of_node_scaffold(anchor, M_current.columns, parent_dict)
         
         if anchor_children:
             # 如果anchor有children，且new_mut与children有特定模式
             children_intersection = False
             for child in anchor_children:
-                child_cells = set(M_current.index[M_current[child] == 1])
+                if cell_set_cache is not None:
+                    child_cells = cell_set_cache(child)
+                else:
+                    child_cells = set(M_current.index[M_current[child] == 1])
                 if mut_cells.issubset(child_cells) and len(mut_cells) < len(child_cells) * 0.8:
                     children_intersection = True
                     break
@@ -4183,7 +4248,10 @@ def compute_hierarchy_penalty_scaffold(new_mut, position, M_current, I_selected,
     
     elif placement_type == 'new_leaf':
         parent = anchor
-        parent_cells = set(M_current.index[M_current[parent] == 1])
+        if cell_set_cache is not None:
+            parent_cells = cell_set_cache(parent)
+        else:
+            parent_cells = set(M_current.index[M_current[parent] == 1])
         
         # 如果new_mut的细胞是parent细胞的真子集，这是一个合理的子克隆
         if mut_cells.issubset(parent_cells) and len(mut_cells) < len(parent_cells) * 0.8:
