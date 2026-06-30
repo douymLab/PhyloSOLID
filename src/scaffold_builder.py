@@ -69,6 +69,14 @@ except ImportError:
         community_louvain = None
 
 logger = logging.getLogger(__name__)
+_VERBOSE_TREE_UPDATES = os.environ.get("PHYLOSOLID_VERBOSE_TREES", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _log_tree_snapshot(active_logger, label, tree):
+    if not _VERBOSE_TREE_UPDATES:
+        return
+    active_logger.info(label)
+    print_tree(tree)
 
 
 def _as_bool_mask(series, index):
@@ -2861,23 +2869,35 @@ def split_merged_columns(merged_matrix: pd.DataFrame, mut_list: list):
 # 配置日志
 logger = logging.getLogger(__name__)
 
-def find_intersection_positions_within_group_directly(T_current: TreeNode, new_mut: str, matrix, mutation_group, min_overlap=1):
+def find_intersection_positions_within_group_directly(
+    T_current: TreeNode,
+    new_mut: str,
+    matrix,
+    mutation_group,
+    min_overlap=1,
+    intersection_nodes=None,
+    tree_parent_dict=None,
+    node_lookup=None,
+    matrix_positive=None,
+):
     """
     基于交集分析的优化版本，直接找到相关位置，只考虑与当前 mutation 同一组的 clone 下的节点
     """
     # 1. 找到所有与目标突变有交集的节点
-    intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
-        T_current, matrix, new_mut, min_overlap
-    )
+    if intersection_nodes is None:
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current, matrix, new_mut, min_overlap, matrix_positive=matrix_positive
+        )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug("Found %s intersection nodes for %s", len(intersection_nodes), new_mut)
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
         return []  # 没有交集，返回空列表
     
     # 2. 构建树的父子关系字典
-    tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+    if tree_parent_dict is None:
+        tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
     
     # 3. 获取新突变所在的组
     target_group = mutation_group[new_mut]
@@ -2885,16 +2905,19 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
     # 4. 找到所有相关路径上的节点，仅限于同一组的 clone 路径
     all_path_nodes = get_all_path_nodes_with_group_filter(intersection_nodes, tree_parent_dict, mutation_group, target_group)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut} in the same mutation group {target_group}")
+    logger.debug("Found %s path nodes for %s in mutation group %s", len(all_path_nodes), new_mut, target_group)
     
     # 5. 只在这些相关节点上生成候选位置
     candidate_positions = []
     
+    if node_lookup is None:
+        node_lookup = {node.name: node for node in T_current.traverse()}
+
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             continue
             
-        node = T_current.find(node_name)
+        node = node_lookup.get(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
@@ -2920,40 +2943,55 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug("Generated %s candidate positions for %s", len(candidate_positions), new_mut)
     return candidate_positions
 
 
-def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, matrix, target_node, min_overlap=1):
+def find_new_leaf_positions_for_target_node(
+    T_current: TreeNode,
+    new_mut: str,
+    matrix,
+    target_node,
+    min_overlap=1,
+    intersection_nodes=None,
+    tree_parent_dict=None,
+    node_lookup=None,
+    matrix_positive=None,
+):
     """
     基于交集分析的优化版本，但只返回与目标节点相关的 new_leaf position
     """
     # 1. 找到所有与目标突变有交集的节点
-    intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
-        T_current, matrix, new_mut, min_overlap
-    )
+    if intersection_nodes is None:
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current, matrix, new_mut, min_overlap, matrix_positive=matrix_positive
+        )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug("Found %s intersection nodes for %s", len(intersection_nodes), new_mut)
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
         return []  # 没有交集，返回空列表
     
     # 2. 构建树的父子关系字典
-    tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+    if tree_parent_dict is None:
+        tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
     
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
+    logger.debug("Found %s path nodes for %s", len(all_path_nodes), new_mut)
     
     # 5. 只在这些相关节点上生成候选位置
     candidate_positions = []
     
+    if node_lookup is None:
+        node_lookup = {node.name: node for node in T_current.traverse()}
+
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             # 保留 ROOT 上的 on_node 类型的 position
-            node = T_current.find(node_name)
+            node = node_lookup.get(node_name)
             if node is None:
                 logger.warning(f"Node {node_name} not found in tree")
                 continue
@@ -2963,7 +3001,7 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
             
             continue  # ROOT 的其他类型位置仍然跳过
         
-        node = T_current.find(node_name)
+        node = node_lookup.get(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
@@ -2989,7 +3027,7 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug("Generated %s candidate positions for %s", len(candidate_positions), new_mut)
     
     # 6. 筛选出 anchor 是 target_node 且 placement_type 是 new_leaf 的 position
     target_positions = [
@@ -2997,41 +3035,55 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
         if pos['placement_type'] == 'new_leaf' and pos['anchor'] == target_node.name
     ]
     
-    logger.info(f"Filtered to {len(target_positions)} target positions for {new_mut} under node {target_node.name}")
+    logger.debug("Filtered to %s target positions for %s under node %s", len(target_positions), new_mut, target_node.name)
     
     return target_positions
 
 
-def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNode, new_mut: str, matrix, min_overlap=1):
+def find_intersection_positions_within_tree_directly_scaffold(
+    T_current: TreeNode,
+    new_mut: str,
+    matrix,
+    min_overlap=1,
+    intersection_nodes=None,
+    tree_parent_dict=None,
+    node_lookup=None,
+    matrix_positive=None,
+):
     """
     基于交集分析的优化版本，直接找到相关位置
     """
     # 1. 找到所有与目标突变有交集的节点
-    intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
-        T_current, matrix, new_mut, min_overlap
-    )
+    if intersection_nodes is None:
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current, matrix, new_mut, min_overlap, matrix_positive=matrix_positive
+        )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
+    logger.debug("Found %s intersection nodes for %s", len(intersection_nodes), new_mut)
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
         return []  # 没有交集，返回空列表
     
     # 2. 构建树的父子关系字典
-    tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+    if tree_parent_dict is None:
+        tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
     
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
+    logger.debug("Found %s path nodes for %s", len(all_path_nodes), new_mut)
     
     # 5. 只在这些相关节点上生成候选位置
     candidate_positions = []
     
+    if node_lookup is None:
+        node_lookup = {node.name: node for node in T_current.traverse()}
+
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             # 保留 ROOT 上的 on_node 类型的 position
-            node = T_current.find(node_name)
+            node = node_lookup.get(node_name)
             if node is None:
                 logger.warning(f"Node {node_name} not found in tree")
                 continue
@@ -3041,7 +3093,7 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
             
             continue  # ROOT 的其他类型位置仍然跳过
         
-        node = T_current.find(node_name)
+        node = node_lookup.get(node_name)
         if node is None:
             logger.warning(f"Node {node_name} not found in tree")
             continue
@@ -3067,7 +3119,7 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
+    logger.debug("Generated %s candidate positions for %s", len(candidate_positions), new_mut)
     return candidate_positions
 
 def filter_candidate_positions_from_target_node(candidate_positions, subtree_nodes):
@@ -3276,11 +3328,22 @@ def build_lineage_parent_dict_from_tree(tree, anchor):
     
 #     return intersect_muts
 
-def find_all_intersect_muts_from_tree_by_matrix_scaffold(tree, matrix, target_mut, min_overlap=1):
+def find_all_intersect_muts_from_tree_by_matrix_scaffold(tree, matrix, target_mut, min_overlap=1, matrix_positive=None):
     """
     返回所有与 target_mut 在 matrix 中有至少 min_overlap 个细胞共同出现的树节点集合。
     """
     intersect_nodes = set()
+    if target_mut not in matrix.columns:
+        return intersect_nodes
+
+    if matrix_positive is None:
+        matrix_positive = matrix.reindex(index=matrix.index).eq(1).fillna(False)
+
+    target_positive = matrix_positive[target_mut]
+    if not bool(target_positive.any()):
+        return intersect_nodes
+
+    overlap_counts = matrix_positive.loc[target_positive].sum(axis=0)
     
     # 遍历所有节点（除 ROOT）
     for node in tree.all_nodes():
@@ -3294,16 +3357,11 @@ def find_all_intersect_muts_from_tree_by_matrix_scaffold(tree, matrix, target_mu
             if mut == target_mut:
                 continue  # 跳过自身
             
-            if mut not in matrix.columns or target_mut not in matrix.columns:
+            if mut not in overlap_counts.index:
                 continue  # 确保突变存在于矩阵中
-            
-            # 计算两突变的共现数量
-            mut_vec = matrix[mut].fillna(0)
-            target_vec = matrix[target_mut].fillna(0)
-            N11 = ((mut_vec == 1) & (target_vec == 1)).sum()
-            
+
             # 如果任何一个突变有足够的共现，就标记这个节点
-            if N11 >= min_overlap:
+            if int(overlap_counts[mut]) >= min_overlap:
                 has_intersection = True
                 break  # 只要节点中有一个突变有交集就够了
         
@@ -3683,6 +3741,9 @@ def compute_bayesian_penalty_for_positions_scaffold(
     import numpy as np
     results = []
     empty_lineage_fill_update = {"mutation_chain": (), "cells": ()}
+    best_result = None
+    valid_result_count = 0
+    matrix_index = M_current.index
     
     # 如果没有候选位置，直接返回 None
     if len(selected_positions) == 0:
@@ -3699,7 +3760,14 @@ def compute_bayesian_penalty_for_positions_scaffold(
     lineage_conflict_cache = {}
     conflict_mask_cache = {}
     full_chain_cache = {}
+    m_current_array_cache = {}
     mutation_input_cache = {new_mut: I_selected[new_mut].replace({pd.NA: np.nan})}
+    mutation_input_array_cache = {
+        new_mut: pd.to_numeric(mutation_input_cache[new_mut].reindex(matrix_index), errors="coerce").to_numpy(
+            dtype=np.float64,
+            na_value=np.nan,
+        )
+    }
     mutation_posterior_cache = {new_mut: P_selected[new_mut]}
     node_mutations_cache = {}
     non_root_columns = [col for col in M_current.columns if col != 'ROOT']
@@ -3760,11 +3828,31 @@ def compute_bayesian_penalty_for_positions_scaffold(
             full_chain_cache[anchor_name] = cached
         return cached
 
+    def get_m_current_array(column_name):
+        cached = m_current_array_cache.get(column_name)
+        if cached is None:
+            cached = pd.to_numeric(M_current[column_name].reindex(matrix_index), errors="coerce").to_numpy(
+                dtype=np.float64,
+                na_value=np.nan,
+            )
+            m_current_array_cache[column_name] = cached
+        return cached
+
     def get_mutation_input(mutation_name):
         cached = mutation_input_cache.get(mutation_name)
         if cached is None:
             cached = I_selected[mutation_name].replace({pd.NA: np.nan})
             mutation_input_cache[mutation_name] = cached
+        return cached
+
+    def get_mutation_input_array(mutation_name):
+        cached = mutation_input_array_cache.get(mutation_name)
+        if cached is None:
+            cached = pd.to_numeric(get_mutation_input(mutation_name).reindex(matrix_index), errors="coerce").to_numpy(
+                dtype=np.float64,
+                na_value=np.nan,
+            )
+            mutation_input_array_cache[mutation_name] = cached
         return cached
 
     def get_mutation_posterior(mutation_name):
@@ -3872,7 +3960,7 @@ def compute_bayesian_penalty_for_positions_scaffold(
         # 计算new_mut本身的罚分
         posterior_vec = mutation_posterior_cache[new_mut]
         input_binary_vec = I_selected[new_mut]
-        cells_should_be_1 = imputed_vec[imputed_vec == 1].index
+        imputed_bool = imputed_vec.to_numpy(dtype=bool, copy=False)
         
         # 基于实际NA翻转比例计算惩罚
         new_mut_penalty, actual_na_flip_ratio, refined_ω_NA, φ_adjusted, weight_na_to_1, weight_na_to_0 = compute_dynamic_penalty_scaffold(
@@ -3890,29 +3978,27 @@ def compute_bayesian_penalty_for_positions_scaffold(
                 continue
             
             mutations_on_node = get_node_mutations(node)
+            scored_mutations = tuple(mutation for mutation in mutations_on_node if mutation != new_mut)
+            chain_mutations_count += len(scored_mutations)
+            if not scored_mutations:
+                continue
+
+            node_values = get_m_current_array(node)
+            cells_to_flip_mask = imputed_bool & ((node_values == 0) | np.isnan(node_values))
+            if not bool(cells_to_flip_mask.any()):
+                continue
+            imputed_ones = np.ones(int(cells_to_flip_mask.sum()), dtype=np.int8)
             
-            for mutation in mutations_on_node:
-                if mutation == new_mut:  # 跳过new_mut本身，因为已经计算过了
-                    continue
-                    
+            for mutation in scored_mutations:
                 # 获取该突变的原始数据
-                mut_input_binary_vec = get_mutation_input(mutation)
-                mut_posterior_vec = get_mutation_posterior(mutation)
-                chain_mutations_count += 1
-                
-                # 计算该突变在new_mut放置后的新向量
-                # 对于split_full_mutmutation_chain_mutations中的突变，如果它们在final_imputed_vec为1的细胞中当前为0或NA，需要翻转为1
-                mut_new_vec = M_current[node].copy()
-                # 找出要计算的额外发生翻转的 index
-                cells_to_flip = []
-                for cell in cells_should_be_1:
-                    if mut_new_vec[cell] == 0 or pd.isna(mut_new_vec[cell]):
-                        cells_to_flip.append(cell)
-                        mut_new_vec[cell] = 1
-                
-                # 计算该突变的罚分
+                mut_input_binary_vec = get_mutation_input_array(mutation)
                 mut_penalty = compute_bayesian_penalty_each_chain_mut_by_pos(
-                    mut_input_binary_vec[cells_to_flip], mut_posterior_vec[cells_to_flip], mut_new_vec[cells_to_flip], weight_na_to_1, weight_na_to_0, fnfp_ratio
+                    mut_input_binary_vec[cells_to_flip_mask],
+                    None,
+                    imputed_ones,
+                    weight_na_to_1,
+                    weight_na_to_0,
+                    fnfp_ratio,
                 )
                 
                 chain_penalty += mut_penalty
@@ -3948,7 +4034,8 @@ def compute_bayesian_penalty_for_positions_scaffold(
         
         total_penalty = base_total_penalty + intersection_penalty + hierarchy_penalty
         
-        results.append({
+        imputed_sum = int(imputed_vec.sum())
+        result_row = {
             'position_index': idx,
             'placement_type': placement_type,
             'anchor': anchor,
@@ -3964,8 +4051,6 @@ def compute_bayesian_penalty_for_positions_scaffold(
             'intersection_penalty': intersection_penalty,
             'hierarchy_penalty': hierarchy_penalty,
             'total_penalty': total_penalty,
-            'position': pos,
-            'imputed_vec': imputed_vec,
             'na_ratio': na_ratio,
             'mut_ratio': mut_ratio,
             'actual_na_flip_ratio': actual_na_flip_ratio,
@@ -3976,9 +4061,21 @@ def compute_bayesian_penalty_for_positions_scaffold(
             'φ_adjusted': φ_adjusted,
             'base_ω_NA': ω_NA,
             'base_φ': φ,
-            'full_mutnode_chain': full_mutnode_chain,
-            'imputed_sum': int(imputed_vec.sum()),
-        })
+            'imputed_sum': imputed_sum,
+        }
+        results.append(result_row)
+
+        if imputed_sum <= 0:
+            continue
+
+        valid_result_count += 1
+        if best_result is None or base_total_penalty < best_result['base_total_penalty']:
+            best_result = {
+                'position': pos,
+                'imputed_vec': imputed_vec,
+                'full_mutnode_chain': full_mutnode_chain,
+                'base_total_penalty': base_total_penalty,
+            }
     
     # 初始化df_penalty避免作用域问题
     df_penalty = pd.DataFrame()
@@ -4008,18 +4105,13 @@ def compute_bayesian_penalty_for_positions_scaffold(
             logger.warning(f"All total_penalty values are NaN for mutation {new_mut}")
             return None, None, df_penalty, empty_lineage_fill_update
 
-        df_valid_penalty = df_penalty[df_penalty['imputed_sum'] > 0]
-        if df_valid_penalty.empty:
+        if best_result is None or valid_result_count == 0:
             logger.warning(f"No valid results (with non-zero imputed_vec) for mutation {new_mut}")
             return None, None, df_penalty, empty_lineage_fill_update
 
-        # 选择最小 penalty 的有效位置
-        min_idx = df_valid_penalty['base_total_penalty'].idxmin()
-        min_row = df_valid_penalty.loc[min_idx]
-        
-        final_position = min_row['position']
-        final_imputed_vec = min_row['imputed_vec'].copy()
-        
+        final_position = best_result['position']
+        final_imputed_vec = best_result['imputed_vec'].copy()
+
         lineage_fill_update = _build_scaffold_lineage_fill_update(final_position, final_imputed_vec, parent_dict)
         return final_position, final_imputed_vec.astype(int), df_penalty, lineage_fill_update
     
@@ -4613,19 +4705,38 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
     """
     
     external_mutations = []
+    matrix_index = M_current.index
+    i_attached_positive = I_attached.reindex(index=matrix_index).eq(1).fillna(False)
     
     for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
         logger.info(f"Processing mutation: {new_mut}")
         
         # 找到交集节点
-        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(T_current, I_attached, new_mut)
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current,
+            I_attached,
+            new_mut,
+            matrix_positive=i_attached_positive,
+        )
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
             logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
             continue
         
         # 使用优化方法获取候选位置
-        refined_positions = find_intersection_positions_within_group_directly(T_current, new_mut, I_attached, mutation_group, min_overlap=1)
+        tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+        node_lookup = {node.name: node for node in T_current.traverse()}
+        refined_positions = find_intersection_positions_within_group_directly(
+            T_current,
+            new_mut,
+            I_attached,
+            mutation_group,
+            min_overlap=1,
+            intersection_nodes=intersection_nodes,
+            tree_parent_dict=tree_parent_dict,
+            node_lookup=node_lookup,
+            matrix_positive=i_attached_positive,
+        )
         parent_dict = build_parent_dict_from_candidates_scaffold(refined_positions)
         
         # 检查是否找到候选位置
@@ -4657,8 +4768,7 @@ def integrate_mutations_to_scaffold_within_group(sorted_attached_mutations, T_cu
         T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
         
         # 打印当前树的结构
-        logger.info(f"Updated tree after mutation {new_mut}:")
-        print_tree(T_current)
+        _log_tree_snapshot(logger, f"Updated tree after mutation {new_mut}:", T_current)
         
         # 检查冲突
         if scp.ul.is_conflict_free_gusfield(M_current):
@@ -4683,6 +4793,7 @@ def process_subtree_mutations_to_specific_node(
         root_mutations = []
     
     external_mutations = []
+    i_selected_positive = I_selected.reindex(index=M_current.index).eq(1).fillna(False)
     
     # 查找目标节点
     if target_node_names is None:
@@ -4705,7 +4816,9 @@ def process_subtree_mutations_to_specific_node(
         # 重排序，把 sorted_group 中跟 T_current 上 node 有交集的突变先放到 list 最前面
         # 简洁版本
         viable_mutations = [mut for mut in sorted_group 
-                           if len(find_all_intersect_muts_from_tree_by_matrix_scaffold(T_current, I_selected, mut)) > 0]
+                           if len(find_all_intersect_muts_from_tree_by_matrix_scaffold(
+                               T_current, I_selected, mut, matrix_positive=i_selected_positive
+                           )) > 0]
         non_viable_mutations = [mut for mut in sorted_group if mut not in viable_mutations]
         
         if not viable_mutations:
@@ -4723,11 +4836,22 @@ def process_subtree_mutations_to_specific_node(
             
             if idx == 0:
                 # 找到 intersection nodes
-                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(T_current, I_selected, subtree_mut)
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+                    T_current, I_selected, subtree_mut, matrix_positive=i_selected_positive
+                )
+                tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+                node_lookup = {node.name: node for node in T_current.traverse()}
                 
                 # 第一个 mutation 要在当前最晚 node 上找到罚分更小的 node 挂到目标节点的 new_leaf 上
                 candidate_positions = find_intersection_positions_within_tree_directly_scaffold(
-                    T_current, subtree_mut, I_selected, min_overlap=1
+                    T_current,
+                    subtree_mut,
+                    I_selected,
+                    min_overlap=1,
+                    intersection_nodes=intersection_nodes,
+                    tree_parent_dict=tree_parent_dict,
+                    node_lookup=node_lookup,
+                    matrix_positive=i_selected_positive,
                 )
                 parent_dict = build_parent_dict_from_candidates_scaffold(candidate_positions)
                 potential_positions = [p for i,p in enumerate(candidate_positions) if p['placement_type'] == 'new_leaf']
@@ -4759,8 +4883,20 @@ def process_subtree_mutations_to_specific_node(
                     continue
                 
                 # 使用优化方法获取候选位置（从当前组的起始节点开始）
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+                    T_current, I_selected, subtree_mut, matrix_positive=i_selected_positive
+                )
+                tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+                node_lookup = {node.name: node for node in T_current.traverse()}
                 candidate_positions = find_intersection_positions_within_tree_directly_scaffold(
-                    T_current, subtree_mut, I_selected, min_overlap=1
+                    T_current,
+                    subtree_mut,
+                    I_selected,
+                    min_overlap=1,
+                    intersection_nodes=intersection_nodes,
+                    tree_parent_dict=tree_parent_dict,
+                    node_lookup=node_lookup,
+                    matrix_positive=i_selected_positive,
                 )
                 parent_dict = build_parent_dict_from_candidates_scaffold(candidate_positions)
                 subtree_nodes = get_subtree_nodes_tree_node(current_group_start_node)
@@ -4801,8 +4937,7 @@ def process_subtree_mutations_to_specific_node(
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
             
             # 打印当前树结构
-            logger.info(f"Tree after adding {subtree_mut}:")
-            print_tree(T_current)
+            _log_tree_snapshot(logger, f"Tree after adding {subtree_mut}:", T_current)
             
             # 检查冲突
             if not scp.ul.is_conflict_free_gusfield(M_current):
@@ -4833,8 +4968,20 @@ def process_subtree_mutations_to_specific_node(
                     continue
                 
                 # 使用优化方法获取候选位置（从当前组的起始节点开始）
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+                    T_current, I_selected, subtree_mut, matrix_positive=i_selected_positive
+                )
+                tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+                node_lookup = {node.name: node for node in T_current.traverse()}
                 candidate_positions = find_intersection_positions_within_tree_directly_scaffold(
-                    T_current, subtree_mut, I_selected, min_overlap=1
+                    T_current,
+                    subtree_mut,
+                    I_selected,
+                    min_overlap=1,
+                    intersection_nodes=intersection_nodes,
+                    tree_parent_dict=tree_parent_dict,
+                    node_lookup=node_lookup,
+                    matrix_positive=i_selected_positive,
                 )
                 parent_dict = build_parent_dict_from_candidates_scaffold(candidate_positions)
                 subtree_nodes = get_subtree_nodes_tree_node(current_group_start_node)
@@ -4870,8 +5017,7 @@ def process_subtree_mutations_to_specific_node(
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 
-                logger.info(f"Updated tree after re-attaching mutation {subtree_mut}:")
-                print_tree(T_current)
+                _log_tree_snapshot(logger, f"Updated tree after re-attaching mutation {subtree_mut}:", T_current)
                 
                 if not scp.ul.is_conflict_free_gusfield(M_current):
                     logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
@@ -4898,7 +5044,9 @@ def process_subtree_mutations_to_specific_node(
         logger.info(f"Attaching singleton mutation directly to target node {target_node_names}: {subtree_mut}")
                 
         # 找到 intersection nodes
-        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(T_current, I_selected, subtree_mut)
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current, I_selected, subtree_mut, matrix_positive=i_selected_positive
+        )
         # 检查是否有intersection
         if len(intersection_nodes) == 0:
             logger.warning(f"No intersection found for singleton mutation {subtree_mut}, skipping")
@@ -4906,8 +5054,17 @@ def process_subtree_mutations_to_specific_node(
             continue
         
         # 第一个 mutation 要在当前最晚 node 上找到罚分更小的 node 挂到目标节点的 new_leaf 上
+        tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
+        node_lookup = {node.name: node for node in T_current.traverse()}
         candidate_positions = find_intersection_positions_within_tree_directly_scaffold(
-            T_current, subtree_mut, I_selected, min_overlap=1
+            T_current,
+            subtree_mut,
+            I_selected,
+            min_overlap=1,
+            intersection_nodes=intersection_nodes,
+            tree_parent_dict=tree_parent_dict,
+            node_lookup=node_lookup,
+            matrix_positive=i_selected_positive,
         )
         parent_dict = build_parent_dict_from_candidates_scaffold(candidate_positions)
         potential_positions = [p for i,p in enumerate(candidate_positions) if p['placement_type'] == 'new_leaf']
@@ -4926,8 +5083,7 @@ def process_subtree_mutations_to_specific_node(
         M_current[subtree_mut] = final_imputed_vec
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         
-        logger.info(f"Tree after adding singleton {subtree_mut}:")
-        print_tree(T_current)
+        _log_tree_snapshot(logger, f"Tree after adding singleton {subtree_mut}:", T_current)
         
         if not scp.ul.is_conflict_free_gusfield(M_current):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")

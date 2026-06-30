@@ -4432,6 +4432,37 @@ def process_external_mutations_by_subtree_groups(
         root_mutations = []
     
     remained_mutations = []
+    matrix_index = M_current.index
+    i_attached_positive = I_attached.reindex(index=matrix_index).eq(1).fillna(False)
+    i_attached_positive_values = i_attached_positive.to_numpy(dtype=bool, copy=False)
+    i_attached_positive_col_to_idx = {
+        col: idx for idx, col in enumerate(i_attached_positive.columns)
+    }
+
+    tree_state = None
+    tree_state_dirty = True
+
+    def ensure_tree_state():
+        nonlocal tree_state, tree_state_dirty
+        if tree_state is None or tree_state_dirty:
+            tree_state = _build_attach_tree_state(T_current)
+            backbone_positive_masks = {}
+            backbone_mutation_indices = {}
+            for backbone_node, mutation_list in tree_state["mutation_list_under_backbone_nodes"].items():
+                if backbone_node in M_current.columns:
+                    backbone_positive_masks[backbone_node] = _coerce_bool_array(
+                        M_current[backbone_node],
+                        matrix_index,
+                    )
+                backbone_mutation_indices[backbone_node] = [
+                    i_attached_positive_col_to_idx[mutation]
+                    for mutation in mutation_list
+                    if mutation in i_attached_positive_col_to_idx
+                ]
+            tree_state["backbone_positive_masks"] = backbone_positive_masks
+            tree_state["backbone_mutation_indices"] = backbone_mutation_indices
+            tree_state_dirty = False
+        return tree_state
     
     # 分离子树组和单元素组
     multi_mut_subtree_groups = [g for g in subtree_groups if len(g) > 1]
@@ -4461,19 +4492,35 @@ def process_external_mutations_by_subtree_groups(
                 T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
                 touched_columns = [subtree_mut] if subtree_mut in M_current.columns else []
+                tree_state_dirty = True
             
             else:
+                current_tree_state = ensure_tree_state()
                 
-                # 确定 subtree_mut 应该属于哪一个 backbone clone
-                mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
-                node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-                # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-                # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut)
-                assigned_nodes = node_list_under_backbone_nodes[best_backbone]
+                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
+                    current_tree_state["mutation_list_under_backbone_nodes"],
+                    M_current,
+                    I_attached,
+                    subtree_mut,
+                    i_attached_positive=i_attached_positive,
+                    i_attached_positive_values=i_attached_positive_values,
+                    i_attached_positive_col_to_idx=i_attached_positive_col_to_idx,
+                    backbone_mutation_indices=current_tree_state["backbone_mutation_indices"],
+                    backbone_positive_masks=current_tree_state["backbone_positive_masks"],
+                )
+                assigned_nodes = current_tree_state["node_list_under_backbone_nodes"][best_backbone]
                 
                 # 找到交集节点
-                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, subtree_mut)
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
+                    T_current,
+                    I_attached,
+                    subtree_mut,
+                    matrix_positive=i_attached_positive,
+                    matrix_positive_values=i_attached_positive_values,
+                    matrix_positive_col_to_idx=i_attached_positive_col_to_idx,
+                    tree_nodes=current_tree_state["tree_nodes"],
+                    node_to_mutations=current_tree_state["node_to_mutations"],
+                )
                 if len(intersection_nodes) == 0:
                     reattached_mutations.append(subtree_mut)
                     logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no intersection found)")
@@ -4486,6 +4533,8 @@ def process_external_mutations_by_subtree_groups(
                     I_attached,
                     min_overlap=1,
                     intersection_nodes=intersection_nodes,
+                    tree_parent_dict=current_tree_state["tree_parent_dict"],
+                    node_lookup=current_tree_state["node_lookup"],
                 )
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
                 selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
@@ -4521,6 +4570,7 @@ def process_external_mutations_by_subtree_groups(
                 else:
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                tree_state_dirty = True
                 touched_columns = _resolve_touched_columns_for_conflict_check(
                     final_position,
                     parent_dict,
@@ -4542,6 +4592,7 @@ def process_external_mutations_by_subtree_groups(
                 # 回滚操作：从矩阵中移除这个突变
                 T_current = copy.deepcopy(T_rollback)
                 M_current = M_rollback.copy()
+                tree_state_dirty = True
                 
                 # 把这个突变放到external_mutations
                 reattached_mutations.append(subtree_mut)
@@ -4556,17 +4607,32 @@ def process_external_mutations_by_subtree_groups(
             sorted_reattached_mutations = [i for i in I_attached.columns if i in reattached_mutations]
             for subtree_mut in tqdm(sorted_reattached_mutations, desc="Processing re-attached mutations"):
                 logger.info(f"Processing re-attached mutation: {subtree_mut}")
+                current_tree_state = ensure_tree_state()
                 
-                # 确定 subtree_mut 应该属于哪一个 backbone clone
-                mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
-                node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-                # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-                # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut)
-                assigned_nodes = node_list_under_backbone_nodes[best_backbone]
+                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
+                    current_tree_state["mutation_list_under_backbone_nodes"],
+                    M_current,
+                    I_attached,
+                    subtree_mut,
+                    i_attached_positive=i_attached_positive,
+                    i_attached_positive_values=i_attached_positive_values,
+                    i_attached_positive_col_to_idx=i_attached_positive_col_to_idx,
+                    backbone_mutation_indices=current_tree_state["backbone_mutation_indices"],
+                    backbone_positive_masks=current_tree_state["backbone_positive_masks"],
+                )
+                assigned_nodes = current_tree_state["node_list_under_backbone_nodes"][best_backbone]
                 
                 # 找到交集节点
-                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, subtree_mut)
+                intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(
+                    T_current,
+                    I_attached,
+                    subtree_mut,
+                    matrix_positive=i_attached_positive,
+                    matrix_positive_values=i_attached_positive_values,
+                    matrix_positive_col_to_idx=i_attached_positive_col_to_idx,
+                    tree_nodes=current_tree_state["tree_nodes"],
+                    node_to_mutations=current_tree_state["node_to_mutations"],
+                )
                 if len(intersection_nodes) == 0:
                     second_reattached_mutations.append(subtree_mut)
                     logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no intersection found)")
@@ -4579,6 +4645,8 @@ def process_external_mutations_by_subtree_groups(
                     I_attached,
                     min_overlap=1,
                     intersection_nodes=intersection_nodes,
+                    tree_parent_dict=current_tree_state["tree_parent_dict"],
+                    node_lookup=current_tree_state["node_lookup"],
                 )
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
                 selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
@@ -4614,6 +4682,7 @@ def process_external_mutations_by_subtree_groups(
                 else:
                     M_current[subtree_mut] = final_imputed_vec
                     T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                tree_state_dirty = True
                 touched_columns = _resolve_touched_columns_for_conflict_check(
                     final_position,
                     parent_dict,
@@ -4635,6 +4704,7 @@ def process_external_mutations_by_subtree_groups(
                     # 回滚操作：从矩阵中移除这个突变
                     T_current = copy.deepcopy(T_rollback)
                     M_current = M_rollback.copy()
+                    tree_state_dirty = True
                     
                     # 把这个突变放到external_mutations
                     second_reattached_mutations.append(subtree_mut)
@@ -4657,6 +4727,7 @@ def process_external_mutations_by_subtree_groups(
         M_rollback = M_current.copy()
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
+        tree_state_dirty = True
         touched_columns = [subtree_mut] if subtree_mut in M_current.columns else []
         
         _log_tree_snapshot(logger, f"Tree after adding singleton {subtree_mut}:", T_current)
@@ -4672,6 +4743,7 @@ def process_external_mutations_by_subtree_groups(
             # 回滚操作：从矩阵中移除这个突变
             T_current = copy.deepcopy(T_rollback)
             M_current = M_rollback.copy()
+            tree_state_dirty = True
             
             # 把这个突变放到external_mutations
             remained_mutations.append(subtree_mut)
