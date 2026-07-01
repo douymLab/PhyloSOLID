@@ -68,6 +68,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+_VERBOSE_TREE_UPDATES = os.environ.get("PHYLOSOLID_VERBOSE_TREES", "").lower() in {"1", "true", "yes", "on"}
 
 # Default parameters matching Methods Section 3
 DEFAULT_PARAMS = {
@@ -168,7 +169,193 @@ def count_conditions(I_attached_col, M_current_col):
     }
 
 
+def as_binary_mask(series, index):
+    """
+    Normalize a Series-like vector to an aligned boolean mask.
+    """
+    aligned = pd.Series(series, index=index) if not isinstance(series, pd.Series) else series.reindex(index)
+    values = aligned.to_numpy(copy=False)
+    
+    if np.issubdtype(values.dtype, np.bool_):
+        return pd.Series(values, index=index, copy=False)
+    
+    if np.issubdtype(values.dtype, np.integer):
+        return pd.Series(values > 0, index=index)
+    
+    if np.issubdtype(values.dtype, np.floating):
+        mask = np.isfinite(values) & (values > 0)
+        return pd.Series(mask, index=index)
+    
+    numeric = pd.to_numeric(aligned, errors="coerce")
+    numeric_values = numeric.to_numpy(dtype=np.float64, na_value=np.nan)
+    mask = np.isfinite(numeric_values) & (numeric_values > 0)
+    return pd.Series(mask, index=index)
 
+
+def _coerce_bool_array(series, index):
+    return series.reindex(index, fill_value=0).fillna(0).to_numpy(dtype=bool, copy=False)
+
+
+def _coerce_float_array(series, index):
+    return pd.to_numeric(series.reindex(index), errors="coerce").to_numpy(
+        dtype=np.float64,
+        na_value=np.nan,
+    )
+
+
+def _log_tree_snapshot(active_logger, label, tree):
+    if not _VERBOSE_TREE_UPDATES:
+        return
+    active_logger.info(label)
+    print_tree(tree)
+
+
+def _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label, sample_limit=5):
+    values = matrix.to_numpy(copy=False)
+    try:
+        finite_mask = np.isfinite(values)
+        numeric_values = values.astype(np.float64, copy=False)
+    except TypeError:
+        numeric_values = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(
+            dtype=np.float64,
+            copy=False,
+            na_value=np.nan,
+        )
+        finite_mask = np.isfinite(numeric_values)
+    
+    if bool(finite_mask.all()):
+        return matrix
+    
+    invalid_positions = np.argwhere(~finite_mask)
+    samples = [
+        f"{matrix.index[row]}::{matrix.columns[col]}={numeric_values[row, col]}"
+        for row, col in invalid_positions[:sample_limit]
+    ]
+    active_logger.warning(
+        "%s sanitizing matrix before conflict check: non_finite=%d sample=%s",
+        context_label,
+        int((~finite_mask).sum()),
+        samples,
+    )
+    
+    sanitized_values = np.nan_to_num(
+        numeric_values,
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0,
+        copy=True,
+    )
+    binary_values = (sanitized_values > 0).astype(np.int8, copy=False)
+    return pd.DataFrame(binary_values, index=matrix.index, columns=matrix.columns)
+
+
+def _is_conflict_free_gusfield_safe(matrix, active_logger=None, context_label="ConflictCheck"):
+    if active_logger is None:
+        active_logger = logger
+    try:
+        return scp.ul.is_conflict_free_gusfield(matrix)
+    except (pd.errors.IntCastingNaNError, ValueError, TypeError) as exc:
+        active_logger.warning(
+            "%s conflict check retry after non-binary/non-finite matrix error: %s",
+            context_label,
+            exc,
+        )
+        matrix_for_check = _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label)
+        return scp.ul.is_conflict_free_gusfield(matrix_for_check)
+
+
+def _resolve_touched_columns_for_conflict_check(final_position, parent_dict, matrix_columns, new_mut):
+    """Return the matrix columns whose updates could introduce new conflicts."""
+    placement_type = final_position.get("placement_type")
+    anchor = final_position.get("anchor")
+    matrix_column_set = set(matrix_columns)
+    touched_columns = []
+    seen = set()
+    
+    if anchor is not None:
+        for node in get_full_mutnode_chain_with_anchor(anchor, parent_dict):
+            if node == "ROOT":
+                continue
+            resolved_node = node
+            if placement_type == "on_node" and node == anchor and anchor != "ROOT":
+                resolved_node = f"{anchor}|{new_mut}"
+            if resolved_node in matrix_column_set and resolved_node not in seen:
+                touched_columns.append(resolved_node)
+                seen.add(resolved_node)
+    
+    if placement_type != "on_node" and new_mut in matrix_column_set and new_mut not in seen:
+        touched_columns.append(new_mut)
+    
+    return touched_columns
+
+
+def _is_conflict_free_local_update(matrix, touched_columns, active_logger=None, context_label="LocalConflictCheck", sample_limit=5):
+    """
+    Exact local conflict check using the four-gamete criterion.
+    
+    Only pairs involving touched columns can introduce a new conflict because
+    untouched-vs-untouched pairs are unchanged by the latest placement step.
+    """
+    if active_logger is None:
+        active_logger = logger
+    
+    if not touched_columns:
+        return True
+    
+    missing = [col for col in touched_columns if col not in matrix.columns]
+    if missing:
+        active_logger.warning(
+            "%s touched columns missing from matrix; falling back to full check. sample=%s",
+            context_label,
+            missing[:sample_limit],
+        )
+        return _is_conflict_free_gusfield_safe(matrix, active_logger, context_label)
+    
+    values = matrix.to_numpy(copy=False)
+    if np.issubdtype(values.dtype, np.bool_):
+        bool_values = values
+    elif np.issubdtype(values.dtype, np.integer):
+        bool_values = values > 0
+    elif np.issubdtype(values.dtype, np.floating):
+        bool_values = np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0, copy=True) > 0
+    else:
+        numeric_values = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(
+            dtype=np.float64,
+            copy=False,
+            na_value=np.nan,
+        )
+        bool_values = np.nan_to_num(numeric_values, nan=0.0, posinf=1.0, neginf=0.0, copy=True) > 0
+    
+    all_columns = matrix.columns
+    touched_indices = all_columns.get_indexer(touched_columns)
+    if np.any(touched_indices < 0):
+        unresolved = [touched_columns[i] for i, idx in enumerate(touched_indices) if idx < 0]
+        active_logger.warning(
+            "%s unresolved touched indices; falling back to full check. sample=%s",
+            context_label,
+            unresolved[:sample_limit],
+        )
+        return _is_conflict_free_gusfield_safe(matrix, active_logger, context_label)
+    
+    for touched_name, touched_idx in zip(touched_columns, touched_indices):
+        col = bool_values[:, touched_idx][:, None]
+        has10 = np.any(col & ~bool_values, axis=0)
+        has01 = np.any(~col & bool_values, axis=0)
+        has11 = np.any(col & bool_values, axis=0)
+        conflict_mask = has10 & has01 & has11
+        conflict_mask[touched_idx] = False
+        if bool(conflict_mask.any()):
+            conflict_indices = np.flatnonzero(conflict_mask)[:sample_limit]
+            conflict_columns = [all_columns[i] for i in conflict_indices]
+            active_logger.warning(
+                "%s detected local conflict: touched=%s conflicts=%s",
+                context_label,
+                touched_name,
+                conflict_columns,
+            )
+            return False
+    
+    return True
 
 # -------------------------
 # Normlize input likelihood probability data
@@ -647,18 +834,11 @@ def compare_elements_vectorized(val1, val2):
 
 
 
-
-
-
-
-
 # -------------------------
 # 4.3 Logistic Regression Classification
 # -------------------------
-
-
-
-
+# scdna_classifier.py
+# scrna_classifier.py
 
 
 
