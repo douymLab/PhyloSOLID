@@ -1128,72 +1128,6 @@ def get_path_between_nodes(node1, node2, tree_parent_dict):
     return full_path
 
 
-# # 主处理流程
-# if len(external_mutations) > 0:
-#     second_external_mutations = []
-#     for new_mut in tqdm(external_mutations, desc="Processing mutations", unit="mutation"):
-#         logger.info(f"Processing mutation: {new_mut}")
-        
-#         # 首先检查是否有交集节点
-#         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, new_mut)
-#         if len(intersection_nodes) == 0:
-#             second_external_mutations.append(new_mut)
-#             logger.debug(f"Mutation {new_mut} added to external_mutations (no intersection found)")
-#             continue
-        
-#         # 使用优化方法获取候选位置
-#         refined_positions = find_intersection_based_positions(T_current, new_mut, I_attached, min_overlap=1)
-#         parent_dict = build_parent_dict_from_candidates(refined_positions)
-        
-#         # 检查是否找到候选位置（理论上这里应该有，但双重检查）
-#         if len(refined_positions) == 0:
-#             second_external_mutations.append(new_mut)
-#             logger.warning(f"Mutation {new_mut} added to external_mutations (no candidate positions found despite having intersection nodes)")
-#             continue
-        
-#         # 构建父子关系字典
-        
-#         # 计算贝叶斯罚分并更新 M_current
-#         result = compute_bayesian_penalty_for_positions_consider_ROOT(
-#             new_mut, refined_positions, T_current, M_current, I_attached, P_attached, parent_dict, 
-#             intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
-#         )
-        
-#         # 检查函数是否返回有效结果
-#         if result is None:
-#             second_external_mutations.append(new_mut)
-#             logger.warning(f"Mutation {new_mut} added to external_mutations (no valid position found by Bayesian scoring)")
-#             continue
-        
-#         final_position, final_imputed_vec, df_penalty_score, M_current = result
-        
-#         logger.info(f"The new_mut should be placed on position: {final_position['placement_type']}.")
-        
-#         # 更新 M_current
-#         if final_position['placement_type'] == 'on_node':
-#             mut_in_mtx = final_position['anchor']
-#             if mut_in_mtx == 'ROOT':
-#                 root_mutations.append(new_mut)
-#             else:
-#                 M_current = M_current.rename(columns={mut_in_mtx: mut_in_mtx + '|' + new_mut})
-#                 T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
-#         else:
-#             M_current[new_mut] = final_imputed_vec
-#             T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
-        
-#         # 打印当前树的结构
-#         logger.info(f"Updated tree after mutation {new_mut}:")
-#         print_tree(T_current)
-#         if scp.ul.is_conflict_free_gusfield(M_current):
-#             logger.info(f"Current M_current is conflict-free and shaped as: {M_current.shape}")
-#         else:
-#             raise ValueError(f"Current M_current is conflict !!! Break!!!.")
-    
-#     # 更新 external_mutations
-#     external_mutations = second_external_mutations
-#     logger.info(f"Remaining external mutations: {len(external_mutations)}")
-
-
 
 
 # -------------------------
@@ -1365,6 +1299,266 @@ def select_best_clone(detailed_scores):
 # -------------------------
 # 计算 bayesian 罚分
 # -------------------------
+
+def compute_bayesian_penalty_for_all_positions_consider_ROOT(
+    new_mut, selected_positions, T_current, M_current, I_selected, P_selected, parent_dict, intersection_nodes, 
+    ω_NA=0.001, fnfp_ratio=0.1, φ=1
+):
+    """
+    计算所有候选位置的罚分，不修改 M_current
+    
+    Returns:
+    --------
+    df_penalty : pandas.DataFrame
+        包含所有候选位置罚分的DataFrame
+    """
+    import pandas as pd
+    import numpy as np
+    
+    results = []
+    
+    if len(selected_positions) == 0:
+        logger.warning(f"No selected positions for mutation {new_mut}")
+        return pd.DataFrame()
+    
+    new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
+        
+    input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
+    na_ratio = input_binary_vec_full.isna().mean()
+    mut_ratio = input_binary_vec_full.fillna(0).mean()
+    N_nodes_beforeT = len(T_current.all_nodes())
+    
+    for idx, pos in enumerate(selected_positions):
+        placement_type = pos['placement_type']
+        anchor = pos['anchor']
+        
+        imputed_vec = pd.Series(0, index=M_current.index)
+        merge_penalty = 0
+        
+        # ============================================================
+        # 根据放置类型计算 imputed vector
+        # ============================================================
+        
+        if placement_type == 'on_node':
+            parent = anchor
+            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
+            
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
+            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
+                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns
+            )
+            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
+            
+            vec_conflicts = pd.Series(0, index=M_current.index)
+            for conflict in all_conflict_nodes:
+                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
+                vec_conflicts = vec_conflicts | conflict_series
+            
+            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            anchor_series = M_current[anchor].reindex(new_mut_cleaned.index, fill_value=0)
+            imputed_vec = (anchor_series | new_mut_cleaned).astype(int)
+            N_nodes = N_nodes_beforeT + 1
+            
+        elif placement_type == 'new_leaf':
+            parent = anchor
+            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
+            
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
+            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
+                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns
+            )
+            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
+            
+            vec_conflicts = pd.Series(0, index=M_current.index)
+            for conflict in all_conflict_nodes:
+                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
+                vec_conflicts = vec_conflicts | conflict_series
+            
+            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            imputed_vec = new_mut_cleaned.astype(int)
+            N_nodes = N_nodes_beforeT + 2
+            
+        elif placement_type == 'on_edge':
+            parent = anchor
+            child = pos['meta']['child']
+            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
+            vec_child = M_current[child]
+            
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in [child,new_mut]]
+            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
+                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns
+            )
+            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
+            
+            vec_conflicts = pd.Series(0, index=M_current.index)
+            for conflict in all_conflict_nodes:
+                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
+                vec_conflicts = vec_conflicts | conflict_series
+            
+            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            vec_child_aligned = vec_child.reindex(new_mut_cleaned.index, fill_value=0)
+            imputed_vec = (vec_child_aligned | new_mut_cleaned).astype(int)
+            N_nodes = N_nodes_beforeT + 2
+            
+        elif placement_type == 'new_parent_merge':
+            parent = anchor
+            merge_children = pos['meta']['merge_children']
+            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
+            
+            vec_children = pd.Series(0, index=M_current.index)
+            for c in merge_children:
+                child_series = M_current[c].reindex(M_current.index, fill_value=0)
+                vec_children = vec_children | child_series
+            
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent']==parent and n['name'] not in merge_children+[new_mut]]
+            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage(
+                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns, exclude_nodes=merge_children
+            )
+            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
+            
+            vec_conflicts = pd.Series(0, index=M_current.index)
+            for conflict in all_conflict_nodes:
+                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
+                vec_conflicts = vec_conflicts | conflict_series
+            
+            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
+            vec_children_aligned = vec_children.reindex(new_mut_cleaned.index, fill_value=0)
+            imputed_vec = (vec_children_aligned | new_mut_cleaned).astype(int)
+            merge_penalty = np.log(len(merge_children)) * 0.5
+            N_nodes = N_nodes_beforeT + 2
+            
+        else:
+            raise ValueError(f"Unknown placement_type: {placement_type}")
+        
+        # ============================================================
+        # 计算罚分
+        # ============================================================
+        
+        full_mutnode_chain = get_full_mutnode_chain_with_anchor(anchor, parent_dict)
+        
+        posterior_vec = P_selected[new_mut]
+        input_binary_vec = I_selected[new_mut]
+        
+        new_mut_penalty, actual_na_flip_ratio, refined_ω_NA, φ_adjusted, weight_na_to_1, weight_na_to_0 = compute_dynamic_penalty(
+            input_binary_vec, posterior_vec, imputed_vec, fnfp_ratio, ω_NA, φ,
+            na_ratio, mut_ratio, placement_type, N_nodes
+        )
+        
+        chain_penalty = 0
+        chain_mutations_count = 0
+        
+        for node in full_mutnode_chain:
+            if node == 'ROOT':
+                continue
+            
+            mutations_on_node = node.split("|")
+            
+            for mutation in mutations_on_node:
+                if mutation == new_mut:
+                    continue
+                    
+                mut_input_binary_vec = I_selected[mutation].replace({pd.NA: np.nan})
+                mut_posterior_vec = P_selected[mutation]
+                
+                mut_new_vec = M_current[node].copy()
+                cells_should_be_1 = imputed_vec[imputed_vec == 1].index
+                cells_to_flip = []
+                for cell in cells_should_be_1:
+                    if mut_new_vec[cell] == 0 or pd.isna(mut_new_vec[cell]):
+                        cells_to_flip.append(cell)
+                        mut_new_vec[cell] = 1
+                
+                mut_penalty = compute_bayesian_penalty_each_chain_mut_by_pos(
+                    mut_input_binary_vec[cells_to_flip], mut_posterior_vec[cells_to_flip], 
+                    mut_new_vec[cells_to_flip], weight_na_to_1, weight_na_to_0, fnfp_ratio
+                )
+                
+                chain_penalty += mut_penalty
+                chain_mutations_count += 1
+        
+        total_chain_penalty = new_mut_penalty + chain_penalty
+        
+        log_N_nodes_penalty = np.log(N_nodes)
+        BIC_penalty = φ * np.log(N_nodes)
+        root_penalty = 0
+        if anchor == 'ROOT':
+            root_penalty = np.log(N_nodes) * 0.5
+        
+        base_total_penalty = total_chain_penalty + log_N_nodes_penalty + BIC_penalty + merge_penalty + root_penalty
+        
+        intersection_penalty = compute_intersection_based_penalty(
+            new_mut, pos, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio
+        )
+        
+        hierarchy_penalty = compute_hierarchy_penalty(
+            new_mut, pos, M_current, I_selected, parent_dict, na_ratio, mut_ratio, actual_na_flip_ratio
+        )
+        
+        total_penalty = base_total_penalty + intersection_penalty + hierarchy_penalty
+        
+        results.append({
+            'position_index': idx,
+            'placement_type': placement_type,
+            'anchor': anchor,
+            'new_mut_penalty': new_mut_penalty,
+            'chain_penalty': chain_penalty,
+            'total_chain_penalty': total_chain_penalty,
+            'N_nodes': N_nodes,
+            'BIC_penalty': BIC_penalty,
+            'log_N_nodes_penalty': log_N_nodes_penalty,
+            'merge_penalty': merge_penalty,
+            'root_penalty': root_penalty,
+            'base_total_penalty': base_total_penalty,
+            'intersection_penalty': intersection_penalty,
+            'hierarchy_penalty': hierarchy_penalty,
+            'total_penalty': total_penalty,
+            'position': pos,
+            'imputed_vec': imputed_vec,
+            'na_ratio': na_ratio,
+            'mut_ratio': mut_ratio,
+            'actual_na_flip_ratio': actual_na_flip_ratio,
+            'chain_mutations_count': chain_mutations_count,
+            'weight_na_to_1': weight_na_to_1,
+            'weight_na_to_0': weight_na_to_0,
+            'refined_ω_NA': refined_ω_NA,
+            'φ_adjusted': φ_adjusted,
+            'base_ω_NA': ω_NA,
+            'base_φ': φ,
+            'full_mutnode_chain': full_mutnode_chain
+        })
+    
+    df_penalty = pd.DataFrame(results)
+    return df_penalty
+
+
+def apply_position_to_tree(
+    new_mut, position, imputed_vec, T_current, M_current, I_selected, parent_dict
+):
+    """
+    将特定位置应用到树和矩阵上
+    """
+    M_updated = M_current.copy()
+    T_updated = T_current.copy()
+    
+    anchor = position['anchor']
+    
+    full_mutnode_chain = get_full_mutnode_chain_with_anchor(anchor, parent_dict)
+    
+    if not imputed_vec.index.equals(M_updated.index):
+        imputed_vec = imputed_vec.reindex(M_updated.index, fill_value=0)
+    
+    cells_with_final_one = imputed_vec[imputed_vec == 1].index.tolist()
+    if len(cells_with_final_one) > 0:
+        for cell in cells_with_final_one:
+            for mutation in full_mutnode_chain:
+                if M_updated.loc[cell, mutation] == 0:
+                    M_updated.loc[cell, mutation] = 1
+    
+    M_updated[new_mut] = imputed_vec
+    T_updated = add_new_mutation_to_tree_independent(new_mut, T_updated, position)
+    
+    return T_updated, M_updated
+
 
 def compute_bayesian_penalty_for_positions_consider_ROOT(
     new_mut, selected_positions, T_current, M_current, I_selected, P_selected, parent_dict, intersection_nodes, 
@@ -3641,10 +3835,12 @@ def run_dp_pass_tree(
 
 
 ##### integrate_mutations_to_scaffold
-def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_current, I_attached, P_attached, 
-                                     ω_NA, fnfp_ratio, φ, logger, root_mutations=None):
+def attach_mutations_to_current_tree(
+    sorted_attached_mutations, T_current, M_current, I_attached, P_attached, 
+    ω_NA, fnfp_ratio, φ, logger, root_mutations=None, max_retries=None
+):
     """
-    处理外部突变并将其整合到进化树中
+    处理外部突变并将其整合到进化树中（支持回滚和重试）
     
     Parameters:
     -----------
@@ -3667,18 +3863,20 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
     logger : logging.Logger
         日志记录器
     root_mutations : list, optional
-        根突变列表，如果为None则自动创建
+        根突变列表
+    max_retries : int, optional
+        最大尝试候选位置数，None表示尝试全部
     
     Returns:
     --------
-    tuple : (external_mutations, T_current, M_current, root_mutations)
-        处理后的外部突变列表、更新后的树、更新后的矩阵、根突变列表
+    tuple : (external_mutations, conflict_mutations, T_current, M_current, root_mutations)
     """
     
     if root_mutations is None:
         root_mutations = []
     
     external_mutations = []
+    conflict_mutations = []
     
     for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
         logger.info(f"Processing mutation: {new_mut}")
@@ -3686,117 +3884,121 @@ def attach_mutations_to_current_tree(sorted_attached_mutations, T_current, M_cur
         # 确定 new_mut 应该属于哪一个 backbone clone
         mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
         node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-        # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-        # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-        best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut)
+        best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
+            mutation_list_under_backbone_nodes, M_current, I_attached, new_mut
+        )
         assigned_nodes = node_list_under_backbone_nodes[best_backbone]
         
         # 找到交集节点
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, new_mut)
-        print(len(intersection_nodes))
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
             logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
             continue
         
         # 使用优化方法获取候选位置
-        potential_positions = find_intersection_positions_within_tree_directly(T_current, new_mut, I_attached, min_overlap=1)
-        parent_dict = build_parent_dict_from_candidates(potential_positions)
-        selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
-        
-        # 检查是否找到候选位置（理论上这里应该有，但双重检查）
-        if len(selected_positions) == 0:
-            selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] != 'ROOT']
-        
-        # 计算贝叶斯罚分并更新 M_current
-        final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_consider_ROOT(
-            new_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
-            ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
+        potential_positions = find_intersection_positions_within_tree_directly(
+            T_current, new_mut, I_attached, min_overlap=1
         )
-        logger.info(f"The new_mut should be placed on position: {final_position['placement_type']}.")
+        parent_dict = build_parent_dict_from_candidates(potential_positions)
+        selected_positions = [p for p in potential_positions if p['anchor'] in assigned_nodes]
         
-        # 更新 M_current
-        if final_position['placement_type'] == 'on_node':
-            mut_in_mtx = final_position['anchor']
-            if mut_in_mtx == 'ROOT':
-                root_mutations.append(new_mut)
-            else:
-                M_current = M_current.rename(columns={mut_in_mtx: mut_in_mtx + '|' + new_mut})
-                T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
+        # 检查是否找到候选位置
+        if len(selected_positions) == 0:
+            selected_positions = [p for p in potential_positions if p['anchor'] != 'ROOT']
+        
+        # ---- 备份当前状态 ----
+        M_backup = M_current.copy()
+        T_backup = T_current.copy()
+        
+        # ---- 计算所有候选位置的罚分 ----
+        df_penalty = compute_bayesian_penalty_for_all_positions_consider_ROOT(
+            new_mut, selected_positions, T_current, M_current, I_attached, P_attached, 
+            parent_dict, intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
+        )
+        
+        if df_penalty.empty:
+            external_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to external_mutations (no valid penalty scores)")
+            continue
+        
+        # 过滤掉 imputed_vec 全为 0 的位置
+        df_valid = df_penalty[df_penalty['imputed_vec'].apply(lambda x: x.sum() > 0)]
+        if df_valid.empty:
+            external_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to external_mutations (all imputed_vec are zero)")
+            continue
+        
+        df_sorted = df_valid.sort_values('total_penalty')
+        
+        # 决定尝试的候选数
+        if max_retries is None:
+            candidates_to_try = df_sorted
         else:
-            M_current[new_mut] = final_imputed_vec
-            T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
+            candidates_to_try = df_sorted.head(max_retries)
         
-        # 打印当前树的结构
-        logger.info(f"Updated tree after mutation {new_mut}:")
-        print_tree(T_current)
+        # ---- 循环尝试候选位置 ----
+        placed = False
+        for attempt, (idx, row) in enumerate(candidates_to_try.iterrows()):
+            logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
+                       f"(total_penalty={row['total_penalty']:.4f})")
+            
+            # 恢复备份
+            M_current = M_backup.copy()
+            T_current = T_backup.copy()
+            
+            try:
+                # 应用该位置到树和矩阵
+                T_current, M_current = apply_position_to_tree(
+                    new_mut, row['position'], row['imputed_vec'], 
+                    T_current, M_current, I_attached, parent_dict
+                )
+                
+                # 检查冲突
+                if scp.ul.is_conflict_free_gusfield(M_current):
+                    logger.info(f"✓ Mutation {new_mut} successfully placed (score={row['total_penalty']:.4f})")
+                    placed = True
+                    break
+                else:
+                    logger.warning(f"✗ Position {row['position_index']} caused conflict, trying next candidate")
+                    
+            except Exception as e:
+                logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
+                continue
         
-        # 检查冲突
-        if scp.ul.is_conflict_free_gusfield(M_current):
-            logger.info(f"Current M_current is conflict-free and shaped as: {M_current.shape}")
+        # ---- 处理结果 ----
+        if placed:
+            logger.info(f"Updated tree after mutation {new_mut}:")
+            print_tree(T_current)
+            logger.info(f"Current M_current is conflict-free, shape: {M_current.shape}")
         else:
-            raise ValueError(f"Current M_current is conflict !!! Break!!!.")
+            M_current = M_backup.copy()
+            T_current = T_backup.copy()
+            conflict_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to conflict_mutations (all {len(candidates_to_try)} candidates failed)")
     
-    return external_mutations, T_current, M_current, root_mutations
-
-# # 调用函数
-# root_mutations = []
-# first_external_mutations, T_updated, M_updated, root_mutations = attach_mutations_to_current_tree(
-#     sorted_attached_mutations=sorted_attached_mutations,
-#     T_current=T_current,
-#     M_current=M_current,
-#     I_attached=I_attached,
-#     P_attached=P_attached,
-#     ω_NA=ω_NA,
-#     fnfp_ratio=fnfp_ratio,
-#     φ=φ,
-#     logger=logger,
-#     root_mutations=root_mutations  # 可选，如果已有根突变列表
-# )
+    logger.info(f"Processing complete. External: {len(external_mutations)}, Conflict: {len(conflict_mutations)}")
+    
+    return external_mutations, conflict_mutations, T_current, M_current, root_mutations
 
 
-def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_attached, P_attached, 
-                             mutation_clones_rescue, ω_NA, fnfp_ratio, φ, logger, root_mutations=None):
+def process_rescue_mutations(
+    sorted_rescue_mutations, T_current, M_current, I_attached, P_attached, 
+    mutation_clones_rescue, ω_NA, fnfp_ratio, φ, logger, root_mutations=None, max_retries=None
+):
     """
-    处理救援突变并将其整合到进化树中，包含克隆亲和性分析
-    
-    Parameters:
-    -----------
-    sorted_rescue_mutations : list
-        排序的待处理救援突变列表
-    T_current : dict
-        当前进化树结构
-    M_current : pandas.DataFrame
-        当前突变矩阵
-    I_attached : 
-        附加的突变信息
-    P_attached :
-        附加的概率信息
-    mutation_clones_rescue : 
-        救援突变的克隆信息
-    ω_NA : float
-        NA值的权重参数
-    fnfp_ratio : float
-        假阴性假阳性比率
-    φ : float
-        贝叶斯罚分参数
-    logger : logging.Logger
-        日志记录器
-    root_mutations : list, optional
-        根突变列表，如果为None则自动创建
-    external_mutations : list, optional
-        第三类外部突变列表，如果为None则自动创建
+    处理救援突变并将其整合到进化树中，包含克隆亲和性分析（支持回滚和重试）
     
     Returns:
     --------
-    tuple : (external_mutations, T_current, M_current, root_mutations)
-        处理后的外部突变列表、更新后的树、更新后的矩阵、根突变列表
+    tuple : (external_mutations, conflict_mutations, T_current, M_current, root_mutations)
     """
     
     if root_mutations is None:
         root_mutations = []
     
     external_mutations = []
+    conflict_mutations = []
     
     for new_mut in tqdm(sorted_rescue_mutations, desc="Processing rescue mutations", unit="mutation"):
         logger.info(f"Processing rescue mutation: {new_mut}")
@@ -3809,86 +4011,104 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
             continue
         
         # 使用优化方法获取候选位置
-        potential_positions = find_intersection_positions_within_tree_directly(T_current, new_mut, I_attached, min_overlap=1)
+        potential_positions = find_intersection_positions_within_tree_directly(
+            T_current, new_mut, I_attached, min_overlap=1
+        )
         parent_dict = build_parent_dict_from_candidates(potential_positions)
         
-        # 检查是否找到候选位置（理论上这里应该有，但双重检查）
         if len(potential_positions) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no candidate positions found despite having intersection nodes)")
+            logger.info(f"Mutation {new_mut} added to external_mutations (no candidate positions found)")
             continue
-                
+        
         # 基于 intersection 的情况先选出应该放在哪一个 clone 下
         clone_affinity, detailed_scores = compute_new_mut_clone_affinity_correct(
-            new_mut, 
-            mutation_clones_rescue, 
-            I_attached,
-            n_shuffle=100
+            new_mut, mutation_clones_rescue, I_attached, n_shuffle=100
         )
-        # assigned_clone = select_max_affinity_clone(clone_affinity)
         assigned_clone = select_best_clone(detailed_scores)
         
         if len(assigned_clone) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no significant correlated clone on current tree)")
+            logger.info(f"Mutation {new_mut} added to external_mutations (no significant correlated clone)")
             continue
-        else:
-            assigned_clone_muts = []
-            for clone in assigned_clone:
-                assigned_clone_muts = assigned_clone_muts + list(clone)
+        
+        assigned_clone_muts = []
+        for clone in assigned_clone:
+            assigned_clone_muts.extend(list(clone))
         
         # 根据克隆亲和性筛选候选位置
         selected_positions = [
-            position  # 保留整个字典
-            for position in potential_positions 
+            position for position in potential_positions 
             if position['anchor'] in assigned_clone_muts
         ]
         
-        # 计算贝叶斯罚分并更新 M_current
-        final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_consider_ROOT(
-            new_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
-            ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
+        # ---- 备份当前状态 ----
+        M_backup = M_current.copy()
+        T_backup = T_current.copy()
+        
+        # ---- 计算所有候选位置的罚分 ----
+        df_penalty = compute_bayesian_penalty_for_all_positions_consider_ROOT(
+            new_mut, selected_positions, T_current, M_current, I_attached, P_attached, 
+            parent_dict, intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
         )
-        logger.info(f"The new_mut should be placed on position: {final_position['placement_type']}.")
         
-        # 更新 M_current
-        if final_position['placement_type'] == 'on_node':
-            mut_in_mtx = final_position['anchor']
-            if mut_in_mtx == 'ROOT':
-                root_mutations.append(new_mut)
-            else:
-                M_current = M_current.rename(columns={mut_in_mtx: mut_in_mtx + '|' + new_mut})
-                T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
+        if df_penalty.empty:
+            external_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to external_mutations (no valid penalty scores)")
+            continue
+        
+        df_valid = df_penalty[df_penalty['imputed_vec'].apply(lambda x: x.sum() > 0)]
+        if df_valid.empty:
+            external_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to external_mutations (all imputed_vec are zero)")
+            continue
+        
+        df_sorted = df_valid.sort_values('total_penalty')
+        
+        if max_retries is None:
+            candidates_to_try = df_sorted
         else:
-            M_current[new_mut] = final_imputed_vec
-            T_current = add_new_mutation_to_tree_independent(new_mut, T_current, final_position)
+            candidates_to_try = df_sorted.head(max_retries)
         
-        # 打印当前树的结构
-        logger.info(f"Updated tree after mutation {new_mut}:")
-        print_tree(T_current)
+        # ---- 循环尝试候选位置 ----
+        placed = False
+        for attempt, (idx, row) in enumerate(candidates_to_try.iterrows()):
+            logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
+                       f"(total_penalty={row['total_penalty']:.4f})")
+            
+            M_current = M_backup.copy()
+            T_current = T_backup.copy()
+            
+            try:
+                T_current, M_current = apply_position_to_tree(
+                    new_mut, row['position'], row['imputed_vec'], 
+                    T_current, M_current, I_attached, parent_dict
+                )
+                
+                if scp.ul.is_conflict_free_gusfield(M_current):
+                    logger.info(f"✓ Mutation {new_mut} successfully placed (score={row['total_penalty']:.4f})")
+                    placed = True
+                    break
+                else:
+                    logger.warning(f"✗ Position {row['position_index']} caused conflict, trying next candidate")
+                    
+            except Exception as e:
+                logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
+                continue
         
-        # 检查冲突
-        if scp.ul.is_conflict_free_gusfield(M_current):
-            logger.info(f"Current M_current is conflict-free and shaped as: {M_current.shape}")
+        if placed:
+            logger.info(f"Updated tree after mutation {new_mut}:")
+            print_tree(T_current)
+            logger.info(f"Current M_current is conflict-free, shape: {M_current.shape}")
         else:
-            raise ValueError(f"Current M_current is conflict !!! Break!!!.")
+            M_current = M_backup.copy()
+            T_current = T_backup.copy()
+            conflict_mutations.append(new_mut)
+            logger.warning(f"Mutation {new_mut} added to conflict_mutations (all candidates failed)")
     
-    return external_mutations, T_current, M_current, root_mutations
-
-# # 调用函数
-# third_external_mutations, T_updated, M_updated, root_muts = process_rescue_mutations(
-#     sorted_rescue_mutations=sorted_rescue_mutations,
-#     T_current=T_current,
-#     M_current=M_current,
-#     I_attached=I_attached,
-#     P_attached=P_attached,
-#     mutation_clones_rescue=mutation_clones_rescue,
-#     ω_NA=ω_NA,
-#     fnfp_ratio=fnfp_ratio,
-#     φ=φ,
-#     logger=logger,
-#     root_mutations=root_mutations
-# )
+    logger.info(f"Processing complete. External: {len(external_mutations)}, Conflict: {len(conflict_mutations)}")
+    
+    return external_mutations, conflict_mutations, T_current, M_current, root_mutations
 
 
 
@@ -3896,10 +4116,10 @@ def process_rescue_mutations(sorted_rescue_mutations, T_current, M_current, I_at
 ###### 全部走完依旧未处理的再加到 ROOT 的新节点中
 def process_external_mutations_by_subtree_groups(
     subtree_groups, T_current, M_current, I_attached, P_attached, 
-    ω_NA, fnfp_ratio, φ, logger, root_mutations=None
+    ω_NA, fnfp_ratio, φ, logger, root_mutations=None, max_retries=None
 ):
     """
-    通过子树组处理外部突变，支持多突变组和单突变组的分别处理
+    通过子树组处理外部突变，支持多突变组和单突变组的分别处理（支持回滚和重试）
     
     Parameters:
     -----------
@@ -3923,17 +4143,20 @@ def process_external_mutations_by_subtree_groups(
         日志记录器
     root_mutations : list, optional
         根突变列表，如果为None则自动创建
+    max_retries : int, optional
+        最大尝试候选位置数，None表示尝试全部
     
     Returns:
     --------
-    tuple : (T_current, M_current, root_mutations, remained_mutations)
-        更新后的树、更新后的矩阵、根突变列表、剩余未处理的突变列表
+    tuple : (remained_mutations, conflict_mutations, T_current, M_current, root_mutations)
+        剩余未处理的突变列表、冲突突变列表、更新后的树、更新后的矩阵、根突变列表
     """
     
     if root_mutations is None:
         root_mutations = []
     
     remained_mutations = []
+    conflict_mutations = []
     
     # 分离子树组和单元素组
     multi_mut_subtree_groups = [g for g in subtree_groups if len(g) > 1]
@@ -3949,7 +4172,6 @@ def process_external_mutations_by_subtree_groups(
         sorted_group = sorted(group, key=lambda subtree_mut: I_attached[subtree_mut].sum(), reverse=True)
         
         # 按顺序一个一个加到树上，先挂到 ROOT 下
-        parent_node = T_current.find("ROOT")
         reattached_mutations = []
         
         for idx, subtree_mut in enumerate(tqdm(sorted_group, desc="Processing mutations in group")):
@@ -3963,15 +4185,22 @@ def process_external_mutations_by_subtree_groups(
                 final_position = generate_new_leaf_on_root(T_current, subtree_mut)
                 T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
                 M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
+                
+                # 检查冲突
+                if not scp.ul.is_conflict_free_gusfield(M_current):
+                    logger.warning(f"First mutation {subtree_mut} caused conflict, rolling back")
+                    T_current = copy.deepcopy(T_rollback)
+                    M_current = M_rollback.copy()
+                    reattached_mutations.append(subtree_mut)
+                    continue
             
             else:
-                
                 # 确定 subtree_mut 应该属于哪一个 backbone clone
                 mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
                 node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-                # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-                # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut)
+                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
+                    mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut
+                )
                 assigned_nodes = node_list_under_backbone_nodes[best_backbone]
                 
                 # 找到交集节点
@@ -3982,51 +4211,80 @@ def process_external_mutations_by_subtree_groups(
                     continue
                 
                 # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly(T_current, subtree_mut, I_attached, min_overlap=1)
+                potential_positions = find_intersection_positions_within_tree_directly(
+                    T_current, subtree_mut, I_attached, min_overlap=1
+                )
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
-                selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
+                selected_positions = [p for p in potential_positions if p['anchor'] in assigned_nodes]
                 
                 # 检查是否找到候选位置
                 if len(selected_positions) == 0:
                     reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no candidate positions found despite having intersection nodes)")
+                    logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no candidate positions found)")
                     continue
                 
-                # 计算贝叶斯罚分并更新 M_current
-                final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_consider_ROOT(
-                    subtree_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, 
-                    intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
+                # ---- 备份当前状态 ----
+                M_backup = M_current.copy()
+                T_backup = T_current.copy()
+                
+                # ---- 计算所有候选位置的罚分 ----
+                df_penalty = compute_bayesian_penalty_for_all_positions_consider_ROOT(
+                    subtree_mut, selected_positions, T_current, M_current, I_attached, P_attached, 
+                    parent_dict, intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
                 )
-                logger.info(f"Mutation {subtree_mut} should be placed on position: {final_position['placement_type']}")
                 
-                # 更新 M_current
-                if final_position['placement_type'] == 'on_node':
-                    mut_in_mtx = final_position['anchor']
-                    if mut_in_mtx == 'ROOT':
-                        root_mutations.append(subtree_mut)
-                    else:
-                        M_current = M_current.rename(columns={mut_in_mtx: mut_in_mtx + '|' + subtree_mut})
-                        T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
+                if df_penalty.empty:
+                    reattached_mutations.append(subtree_mut)
+                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (no valid penalty scores)")
+                    continue
+                
+                df_valid = df_penalty[df_penalty['imputed_vec'].apply(lambda x: x.sum() > 0)]
+                if df_valid.empty:
+                    reattached_mutations.append(subtree_mut)
+                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (all imputed_vec are zero)")
+                    continue
+                
+                df_sorted = df_valid.sort_values('total_penalty')
+                
+                if max_retries is None:
+                    candidates_to_try = df_sorted
                 else:
-                    M_current[subtree_mut] = final_imputed_vec
-                    T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
-            
-            # 打印当前树结构
-            logger.info(f"Tree after adding {subtree_mut}:")
-            print_tree(T_current)
-            
-            # 检查冲突
-            if not scp.ul.is_conflict_free_gusfield(M_current):
-                logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
+                    candidates_to_try = df_sorted.head(max_retries)
                 
-                # 回滚操作：从矩阵中移除这个突变
-                T_current = copy.deepcopy(T_rollback)
-                M_current = M_rollback.copy()
+                # ---- 循环尝试候选位置 ----
+                placed = False
+                for attempt, (idx_row, row) in enumerate(candidates_to_try.iterrows()):
+                    logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
+                               f"(total_penalty={row['total_penalty']:.4f})")
+                    
+                    M_current = M_backup.copy()
+                    T_current = T_backup.copy()
+                    
+                    try:
+                        T_current, M_current = apply_position_to_tree(
+                            subtree_mut, row['position'], row['imputed_vec'], 
+                            T_current, M_current, I_attached, parent_dict
+                        )
+                        
+                        if scp.ul.is_conflict_free_gusfield(M_current):
+                            logger.info(f"✓ Mutation {subtree_mut} successfully placed (score={row['total_penalty']:.4f})")
+                            placed = True
+                            break
+                        else:
+                            logger.warning(f"✗ Position {row['position_index']} caused conflict, trying next candidate")
+                            
+                    except Exception as e:
+                        logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
+                        continue
                 
-                # 把这个突变放到external_mutations
-                reattached_mutations.append(subtree_mut)
-                logger.info(f"Mutation {subtree_mut} added to reattached_mutations due to conflict")
-                continue  # 跳过这个突变，继续处理下一个
+                if placed:
+                    logger.info(f"Updated tree after mutation {subtree_mut}:")
+                    print_tree(T_current)
+                else:
+                    M_current = M_backup.copy()
+                    T_current = T_backup.copy()
+                    reattached_mutations.append(subtree_mut)
+                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (all candidates failed)")
         
         # 处理重新挂载的突变（第一轮未处理的）
         second_reattached_mutations = []
@@ -4043,9 +4301,9 @@ def process_external_mutations_by_subtree_groups(
                 # 确定 subtree_mut 应该属于哪一个 backbone clone
                 mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
                 node_list_under_backbone_nodes = get_node_clone_and_backbone_node_as_keys_by_first_level(T_current)
-                # current_backbone_nodes = get_first_level_backbone_nodes(T_current)
-                # [i for i in list(mutation_list_under_backbone_nodes.keys()) if i not in current_backbone_nodes]
-                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut)
+                best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
+                    mutation_list_under_backbone_nodes, M_current, I_attached, subtree_mut
+                )
                 assigned_nodes = node_list_under_backbone_nodes[best_backbone]
                 
                 # 找到交集节点
@@ -4056,51 +4314,79 @@ def process_external_mutations_by_subtree_groups(
                     continue
                 
                 # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly(T_current, subtree_mut, I_attached, min_overlap=1)
+                potential_positions = find_intersection_positions_within_tree_directly(
+                    T_current, subtree_mut, I_attached, min_overlap=1
+                )
                 parent_dict = build_parent_dict_from_candidates(potential_positions)
-                selected_positions = [p for i,p in enumerate(potential_positions) if p['anchor'] in assigned_nodes]
+                selected_positions = [p for p in potential_positions if p['anchor'] in assigned_nodes]
                 
-                # 检查是否找到候选位置（理论上这里应该有，但双重检查）
                 if len(selected_positions) == 0:
                     second_reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no candidate positions found despite having intersection nodes)")
+                    logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no candidate positions found)")
                     continue
                 
-                # 计算贝叶斯罚分并更新 M_current
-                final_position, final_imputed_vec, df_penalty_score, M_current = compute_bayesian_penalty_for_positions_consider_ROOT(
-                    subtree_mut, selected_positions, T_current, M_current, I_attached, P_attached, parent_dict, intersection_nodes, 
-                    ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
+                # ---- 备份当前状态 ----
+                M_backup = M_current.copy()
+                T_backup = T_current.copy()
+                
+                # ---- 计算所有候选位置的罚分 ----
+                df_penalty = compute_bayesian_penalty_for_all_positions_consider_ROOT(
+                    subtree_mut, selected_positions, T_current, M_current, I_attached, P_attached, 
+                    parent_dict, intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
                 )
-                logger.info(f"The subtree_mut should be placed on position: {final_position['placement_type']}.")
                 
-                # 更新 M_current
-                if final_position['placement_type'] == 'on_node':
-                    mut_in_mtx = final_position['anchor']
-                    if mut_in_mtx == 'ROOT':
-                        root_mutations.append(subtree_mut)
-                    else:
-                        M_current = M_current.rename(columns={mut_in_mtx: mut_in_mtx + '|' + subtree_mut})
-                        T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
-                else:
-                    M_current[subtree_mut] = final_imputed_vec
-                    T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
-                
-                # 打印当前树结构
-                logger.info(f"Updated tree after re-attaching mutation {subtree_mut}:")
-                print_tree(T_current)
-                
-                # 检查冲突
-                if not scp.ul.is_conflict_free_gusfield(M_current):
-                    logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
-                    
-                    # 回滚操作：从矩阵中移除这个突变
-                    T_current = copy.deepcopy(T_rollback)
-                    M_current = M_rollback.copy()
-                    
-                    # 把这个突变放到external_mutations
+                if df_penalty.empty:
                     second_reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations due to conflict")
-                    continue  # 跳过这个突变，继续处理下一个
+                    logger.warning(f"Mutation {subtree_mut} added to second_reattached_mutations (no valid penalty scores)")
+                    continue
+                
+                df_valid = df_penalty[df_penalty['imputed_vec'].apply(lambda x: x.sum() > 0)]
+                if df_valid.empty:
+                    second_reattached_mutations.append(subtree_mut)
+                    logger.warning(f"Mutation {subtree_mut} added to second_reattached_mutations (all imputed_vec are zero)")
+                    continue
+                
+                df_sorted = df_valid.sort_values('total_penalty')
+                
+                if max_retries is None:
+                    candidates_to_try = df_sorted
+                else:
+                    candidates_to_try = df_sorted.head(max_retries)
+                
+                # ---- 循环尝试候选位置 ----
+                placed = False
+                for attempt, (idx_row, row) in enumerate(candidates_to_try.iterrows()):
+                    logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
+                               f"(total_penalty={row['total_penalty']:.4f})")
+                    
+                    M_current = M_backup.copy()
+                    T_current = T_backup.copy()
+                    
+                    try:
+                        T_current, M_current = apply_position_to_tree(
+                            subtree_mut, row['position'], row['imputed_vec'], 
+                            T_current, M_current, I_attached, parent_dict
+                        )
+                        
+                        if scp.ul.is_conflict_free_gusfield(M_current):
+                            logger.info(f"✓ Mutation {subtree_mut} successfully placed (score={row['total_penalty']:.4f})")
+                            placed = True
+                            break
+                        else:
+                            logger.warning(f"✗ Position {row['position_index']} caused conflict, trying next candidate")
+                            
+                    except Exception as e:
+                        logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
+                        continue
+                
+                if placed:
+                    logger.info(f"Updated tree after re-attaching mutation {subtree_mut}:")
+                    print_tree(T_current)
+                else:
+                    M_current = M_backup.copy()
+                    T_current = T_backup.copy()
+                    second_reattached_mutations.append(subtree_mut)
+                    logger.warning(f"Mutation {subtree_mut} added to second_reattached_mutations (all candidates failed)")
         
         # 记录仍然未处理的突变
         if second_reattached_mutations:
@@ -4130,33 +4416,16 @@ def process_external_mutations_by_subtree_groups(
             T_current = copy.deepcopy(T_rollback)
             M_current = M_rollback.copy()
             
-            # 把这个突变放到external_mutations
+            # 把这个突变放到remained_mutations
             remained_mutations.append(subtree_mut)
             logger.info(f"Mutation {subtree_mut} added to remained_mutations due to conflict")
-            continue  # 跳过这个突变，继续处理下一个
+            continue
     
     logger.info("All external mutations have been processed successfully.")
     logger.info(f"Remained mutations count: {len(remained_mutations)}")
+    logger.info(f"Conflict mutations count: {len(conflict_mutations)}")
     
-    return remained_mutations, T_current, M_current, root_mutations
-
-
-# # 使用示例
-# remained_mutations, T_updated, M_updated, root_mutations = process_external_mutations_by_subtree_groups(
-#     subtree_groups=subtree_groups,
-#     T_current=T_current,
-#     M_current=M_current,
-#     I_attached=I_attached,
-#     P_attached=P_attached,
-#     ω_NA=ω_NA,
-#     fnfp_ratio=fnfp_ratio,
-#     φ=φ,
-#     logger=logger,
-#     root_mutations=root_mutations
-# )
-
-
-
+    return remained_mutations, conflict_mutations, T_current, M_current, root_mutations
 
 
 

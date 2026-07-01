@@ -190,6 +190,7 @@ I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
 
 logger.info(f"Loaded data: {len(P_raw)} cells, {len(I_raw.columns)} mutations")
 
+
 ##### Output binary matrix with NA=0
 I_raw_withNA0 = I_raw.replace({np.nan: 0}).astype(int)
 I_raw_withNA0.to_csv(os.path.join(outputpath, "I_raw_withNA0.txt"), sep="\t")
@@ -424,7 +425,7 @@ results_of_scaffold = build_scaffold_tree(
 )
 
 
-T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, mutation_group, spots_to_split, group_mutations, remained_mutations, high_cv_mutations = results_of_scaffold
+T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, mutation_group, spots_to_split, group_mutations, remained_mutations, conflict_mutations, high_cv_mutations = results_of_scaffold
 # scaffold_mutations = [i for i in initial_scaffold_mutations if i not in remained_mutations_by_scaffold_building]
 scaffold_mutations = list(M_scaffold.columns)
 non_scaffold_mutations = [i for i in somatic_mutations if i not in scaffold_mutations]
@@ -555,7 +556,7 @@ P_attached = P_attached_split[I_attached.columns]
 
 IRank_mutations = I_attached.columns.tolist()
 IRank_mutations_reversed = I_attached.columns[::-1].tolist()
-
+all_conflict_mutations = conflict_mutations.copy()
 
 
 
@@ -596,7 +597,7 @@ logger.info("===== Step6.1: The first time to hang mutations on the scaffold tre
 
 ##### 第一次往 scaffold tree 上放 mutations
 sorted_attached_mutations = [i for i in I_attached.columns if i in attached_mutations]
-external_mutations_of_attached_on_scaffold, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+external_mutations_of_attached_on_scaffold, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
     sorted_attached_mutations=sorted_attached_mutations,
     T_current=T_current,
     M_current=M_current,
@@ -606,8 +607,9 @@ external_mutations_of_attached_on_scaffold, T_current, M_current, root_mutations
     fnfp_ratio=fnfp_ratio,
     φ=φ,
     logger=logger,
-    root_mutations=root_mutations  # 可选，如果已有根突变列表
+    root_mutations=root_mutations
 )
+all_conflict_mutations.extend(conflict_mutations_temp)
 logging.info(f"The number of external_mutations_of_attached_on_scaffold is: {len(external_mutations_of_attached_on_scaffold)}")
 
 T_test = copy.deepcopy(T_current)
@@ -635,7 +637,7 @@ print(external_mutations_of_attached_on_scaffold)
 
 ##### 主处理流程，把第一次挂树没挂上的 external_mutations 重新挂一遍
 sorted_external_mutations_of_attached_on_scaffold = [i for i in I_attached.columns if i in external_mutations_of_attached_on_scaffold]
-final_external_mutations_of_attached_on_scaffold, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+final_external_mutations_of_attached_on_scaffold, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
     sorted_attached_mutations=sorted_external_mutations_of_attached_on_scaffold,
     T_current=T_current,
     M_current=M_current,
@@ -645,8 +647,9 @@ final_external_mutations_of_attached_on_scaffold, T_current, M_current, root_mut
     fnfp_ratio=fnfp_ratio,
     φ=φ,
     logger=logger,
-    root_mutations=root_mutations  # 可选，如果已有根突变列表
+    root_mutations=root_mutations
 )
+all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -677,7 +680,7 @@ final_external_mutations = []
 if len(external_mutations) > 0:
     
     sorted_external_mutations = [i for i in I_attached.columns if i in external_mutations]
-    final_external_mutations, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    final_external_mutations, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_external_mutations,
         T_current=T_current,
         M_current=M_current,
@@ -687,8 +690,9 @@ if len(external_mutations) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -710,7 +714,7 @@ if len(final_external_mutations)>0:
     
     logger.info("Processing remaining external mutations by building subtrees")
     
-    remained_mutations, T_current, M_current, root_mutations = process_external_mutations_by_subtree_groups(
+    remained_mutations, conflict_mutations_temp, T_current, M_current, root_mutations = process_external_mutations_by_subtree_groups(
         subtree_groups=subtree_groups,
         T_current=T_current,
         M_current=M_current,
@@ -722,6 +726,7 @@ if len(final_external_mutations)>0:
         logger=logger,
         root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -746,7 +751,7 @@ final_remained_mutations = []
 if len(remained_mutations) > 0:
     
     sorted_remained_mutations = [i for i in I_attached.columns if i in remained_mutations]
-    final_remained_mutations, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    final_remained_mutations, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_remained_mutations,
         T_current=T_current,
         M_current=M_current,
@@ -756,8 +761,9 @@ if len(remained_mutations) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 logging.info(f"The number of final_remained_mutations is: {len(final_remained_mutations)}")
 
@@ -952,7 +958,7 @@ if len(sorted_rehanged_mutations_all_fpratio_within_subclone) > 0:
 
 if len(sorted_fp_mutations_fpratio_within_subclone) > 0:
     # 首先重挂 sorted_fp_mutations_fpratio_within_subclone
-    external_mutations_fpratio_within_subclone_by_sorted_fp_mutations_fpratio_within_subclone, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_fpratio_within_subclone_by_sorted_fp_mutations_fpratio_within_subclone, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_fp_mutations_fpratio_within_subclone,
         T_current=T_current,
         M_current=M_current,
@@ -962,12 +968,13 @@ if len(sorted_fp_mutations_fpratio_within_subclone) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 if len(sorted_daughters_to_leaf_mutations_fpratio_within_subclone) > 0:
     # 其次重挂 sorted_daughters_to_leaf_mutations_fpratio_within_subclone, 并且调高 fnfp_ratio
-    external_mutations_fpratio_within_subclone_by_sorted_daughters_to_leaf_mutations_fpratio_within_subclone, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_fpratio_within_subclone_by_sorted_daughters_to_leaf_mutations_fpratio_within_subclone, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_daughters_to_leaf_mutations_fpratio_within_subclone,
         T_current=T_current,
         M_current=M_current,
@@ -977,8 +984,9 @@ if len(sorted_daughters_to_leaf_mutations_fpratio_within_subclone) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -1000,7 +1008,7 @@ final_external_mutations_fpratio_within_subclone = []
 if len(external_mutations_fpratio_within_subclone) > 0:
     
     sorted_external_mutations_fpratio_within_subclone = [i for i in I_attached.columns if i in external_mutations_fpratio_within_subclone]
-    final_external_mutations_fpratio_within_subclone, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    final_external_mutations_fpratio_within_subclone, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_external_mutations_fpratio_within_subclone,
         T_current=T_current,
         M_current=M_current,
@@ -1010,8 +1018,9 @@ if len(external_mutations_fpratio_within_subclone) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 logging.info(f"The number of final_external_mutations_fpratio_within_subclone is: {len(final_external_mutations_fpratio_within_subclone)}")
 
@@ -1220,7 +1229,7 @@ if len(sorted_rehanged_mutations_all_fpfnratio_across_tree) > 0:
 
 if len(sorted_fp_mutations_fpfnratio_across_tree) > 0:
     # 首先重挂 sorted_fp_mutations_fpfnratio_across_tree
-    external_mutations_fpfnratio_across_tree_by_sorted_fp_mutations_fpfnratio_across_tree, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_fpfnratio_across_tree_by_sorted_fp_mutations_fpfnratio_across_tree, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_fp_mutations_fpfnratio_across_tree,
         T_current=T_current,
         M_current=M_current,
@@ -1230,12 +1239,13 @@ if len(sorted_fp_mutations_fpfnratio_across_tree) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 if len(sorted_daughters_to_leaf_mutations_fpfnratio_across_tree) > 0:
     # 其次重挂 sorted_daughters_to_leaf_mutations_fpfnratio_across_tree, 并且调高 fnfp_ratio
-    external_mutations_fpfnratio_across_tree_by_sorted_daughters_to_leaf_mutations_fpfnratio_across_tree, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_fpfnratio_across_tree_by_sorted_daughters_to_leaf_mutations_fpfnratio_across_tree, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_daughters_to_leaf_mutations_fpfnratio_across_tree,
         T_current=T_current,
         M_current=M_current,
@@ -1245,8 +1255,9 @@ if len(sorted_daughters_to_leaf_mutations_fpfnratio_across_tree) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -1281,7 +1292,7 @@ if len(rehanged_fn_mutations_by_fpfnratio_across_tree) > 0:
 
 if len(sorted_fn_mutations_fpfnratio_across_tree) > 0:
     # 首先重挂 sorted_fn_mutations_fpfnratio_across_tree
-    external_mutations_fpfnratio_across_tree_by_sorted_fn_mutations_fpfnratio_across_tree, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_fpfnratio_across_tree_by_sorted_fn_mutations_fpfnratio_across_tree, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_fn_mutations_fpfnratio_across_tree,
         T_current=T_current,
         M_current=M_current,
@@ -1291,8 +1302,9 @@ if len(sorted_fn_mutations_fpfnratio_across_tree) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 
 ##### 把按照顺序没有挂树的 external_mutations_fpfnratio_across_tree 重新挂一遍
@@ -1308,7 +1320,7 @@ final_external_mutations_fpfnratio_across_tree = []
 if len(external_mutations_fpfnratio_across_tree) > 0:
     
     sorted_external_mutations_fpfnratio_across_tree = [i for i in I_attached.columns if i in external_mutations_fpfnratio_across_tree]
-    final_external_mutations_fpfnratio_across_tree, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    final_external_mutations_fpfnratio_across_tree, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_external_mutations_fpfnratio_across_tree,
         T_current=T_current,
         M_current=M_current,
@@ -1318,8 +1330,9 @@ if len(external_mutations_fpfnratio_across_tree) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 logging.info(f"The number of final_external_mutations_fpfnratio_across_tree is: {len(final_external_mutations_fpfnratio_across_tree)}")
 
@@ -1488,7 +1501,7 @@ if len(sorted_rehanged_mutations_by_persitefp_but_backbone) > 0:
 
 if len(sorted_rehanged_mutations_by_persitefp_but_backbone) > 0:
     # 首先重挂 sorted_rehanged_mutations_by_persitefp_but_backbone
-    external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_rehanged_mutations_by_persitefp_but_backbone,
         T_current=T_current,
         M_current=M_current,
@@ -1498,8 +1511,9 @@ if len(sorted_rehanged_mutations_by_persitefp_but_backbone) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 
 ##### 把按照顺序没有挂树的 external_mutations_fp_ratio_persitefp 重新挂一遍
@@ -1508,7 +1522,7 @@ final_external_mutations_fp_ratio_persitefp = []
 if len(external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone) > 0:
     
     sorted_external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone = [i for i in I_attached.columns if i in external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone]
-    final_external_mutations_fp_ratio_persitefp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    final_external_mutations_fp_ratio_persitefp, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone,
         T_current=T_current,
         M_current=M_current,
@@ -1518,8 +1532,9 @@ if len(external_mutations_by_sorted_rehanged_mutations_by_persitefp_but_backbone
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 logging.info(f"The number of final_external_mutations_fp_ratio_persitefp is: {len(final_external_mutations_fp_ratio_persitefp)}")
 
@@ -1714,7 +1729,7 @@ if outgroup_mutations_but_backbone:
     external_mutations_by_sorted_daughter_mutations_of_outgroup_mutations_but_backbone = []
     if len(sorted_daughter_mutations_of_outgroup_mutations_but_backbone) > 0:
         # 首先重挂 sorted_daughter_mutations_of_outgroup_mutations_but_backbone
-        external_mutations_by_sorted_daughter_mutations_of_outgroup_mutations_but_backbone, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+        external_mutations_by_sorted_daughter_mutations_of_outgroup_mutations_but_backbone, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
             sorted_attached_mutations=sorted_daughter_mutations_of_outgroup_mutations_but_backbone,
             T_current=T_current,
             M_current=M_current,
@@ -1724,8 +1739,9 @@ if outgroup_mutations_but_backbone:
             fnfp_ratio=fnfp_ratio,
             φ=φ,
             logger=logger,
-            root_mutations=root_mutations  # 可选，如果已有根突变列表
+            root_mutations=root_mutations
         )
+        all_conflict_mutations.extend(conflict_mutations_temp)
     
     ##### 再挂要放到主树之外直接挂到 root 上的突变（就是那些没有找到 backbone mutation 的那些 clone 下的突变）
     # 先解决那些 conflict 的 cells 归属问题
@@ -1763,7 +1779,7 @@ if outgroup_mutations_but_backbone:
         
         logger.info("Processing remaining external mutations by building subtrees")
         
-        external_mutations_by_sorted_outgroup_mutations_but_backbone, T_current, M_current, root_mutations = process_external_mutations_by_subtree_groups(
+        external_mutations_by_sorted_outgroup_mutations_but_backbone, conflict_mutations_temp, T_current, M_current, root_mutations = process_external_mutations_by_subtree_groups(
             subtree_groups=subtree_groups,
             T_current=T_current,
             M_current=M_current,
@@ -1775,6 +1791,7 @@ if outgroup_mutations_but_backbone:
             logger=logger,
             root_mutations=root_mutations
         )
+        all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -2018,7 +2035,7 @@ if len(remove_mutations_for_rebuild) > 0:
 
 if len(sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells) > 0:
     # 首先重挂 sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells
-    external_mutations_cross_all_cells_by_sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+    external_mutations_cross_all_cells_by_sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells,
         T_current=T_current,
         M_current=M_current,
@@ -2028,8 +2045,9 @@ if len(sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells) > 0:
         fnfp_ratio=fnfp_ratio,
         φ=φ,
         logger=logger,
-        root_mutations=root_mutations  # 可选，如果已有根突变列表
+        root_mutations=root_mutations
     )
+    all_conflict_mutations.extend(conflict_mutations_temp)
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -2060,6 +2078,43 @@ print(M_current.shape)
 
 
 
+
+# -----------------------------
+# Step 6.11 如果还有一些是鉴定为 conflict 的就直接挂到 ROOT 上
+# -----------------------------
+logger.info("===== Step6.11: If there are still some identified as conflict, directly attach them to ROOT ...")
+
+logging.info(f"The number of all_conflict_mutations is: {len(all_conflict_mutations)}")
+
+final_remained_mutations = []
+final_conflict_mutations = []
+if len(all_conflict_mutations)>0:
+    
+    subtree_groups = cluster_external_mutations_by_intersection(I_attached, all_conflict_mutations)
+    
+    logger.info("Processing remaining external mutations by building subtrees")
+    
+    final_remained_mutations, final_conflict_mutations, T_current, M_current, root_mutations = process_external_mutations_by_subtree_groups(
+        subtree_groups=subtree_groups,
+        T_current=T_current,
+        M_current=M_current,
+        I_attached=I_attached,
+        P_attached=P_attached,
+        ω_NA=ω_NA,
+        fnfp_ratio=fnfp_ratio,
+        φ=φ,
+        logger=logger,
+        root_mutations=root_mutations
+    )
+
+T_test = copy.deepcopy(T_current)
+M_test = M_current.copy()
+M_test = M_test.drop(columns=['ROOT'], errors='ignore')
+mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+M_test = split_merged_columns(M_test, mutations_on_T_test)
+final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
+final_cleaned_M_test.shape
+# (1184, 34)
 
 
 
