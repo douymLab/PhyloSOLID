@@ -1689,6 +1689,9 @@ print(len(outgroup_mutations_but_backbone))
 print(outgroup_mutations_but_backbone)
 # ['chr8_80170791_C_T', 'chr4_122860726_G_T', 'chr15_50499489_A_G', 'chr17_43766282_C_A', 'chr5_128188419_C_A', 'chr7_20381814_G_T', 'chr5_128171668_G_C', 'chr11_83165726_G_C', 'chr1_171541779_G_T']
 
+
+sorted_rehanged_mutations_all_outgroup = []
+
 if outgroup_mutations_but_backbone:
     # 找到这些突变的子突变们
     nodes_outgroup_mutations_but_backbone = list(set([find_mutation_column(mutation, M_checkpoint_outgroup.columns) for mutation in outgroup_mutations_but_backbone]))

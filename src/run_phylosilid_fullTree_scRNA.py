@@ -139,6 +139,7 @@ SETTING_PARAMS = {
     # 3.2 Coverage-based filtration
     "na_prop_thresh_global": 0.95,      # p_NA(j) ≤ 0.9 (present in >10% cells)
     "cv_thresh": 6.0,                   # CV_j < 2
+    "cv_rank_thresh": 0.3,              # 改用排名阈值，取CV最低的前50%
     
     # 3.3 Consensus correlation graph
     "consensus_runs": 100,             # number of randomized runs
@@ -310,7 +311,7 @@ logger.info("===== Step2: Classifier ...")
 models_path = params['models_path']
 
 ##### Load Celltype Data
-if features_file is None or features_file == "None":
+if features_file is None or features_file == "None" or features_file == "no":
     candidate_mutations = list(I_raw.columns)
 else:
     df_for_classifier = pd.read_csv(features_file, sep="\t")
@@ -426,7 +427,6 @@ results_of_scaffold = build_scaffold_tree(
 
 
 T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, mutation_group, spots_to_split, group_mutations, remained_mutations, conflict_mutations, high_cv_mutations = results_of_scaffold
-# scaffold_mutations = [i for i in initial_scaffold_mutations if i not in remained_mutations_by_scaffold_building]
 scaffold_mutations = list(M_scaffold.columns)
 non_scaffold_mutations = [i for i in somatic_mutations if i not in scaffold_mutations]
 
@@ -1477,14 +1477,6 @@ print(len(rehanged_mutations_by_persitefp_but_backbone))
 # 0
 print(rehanged_mutations_by_persitefp_but_backbone)
 # []
-for m in rehanged_mutations_by_persitefp_but_backbone:
-    print(m)
-    print(count_list(I_attached[m]))
-    print(count_conditions(I_attached[m], M_current[[col for col in M_current.columns if m in col][0]]))
-
-# chr15_50499489_A_G
-# {0.0: 252, 'NA': 839, 1.0: 34}
-# {'count_fp_1_0': 33, 'count_fn_0_1': 2, 'count_na_1': 11, 'count_na_0': 828}
 
 
 sorted_rehanged_mutations_by_persitefp_but_backbone = [i for i in I_attached.columns if i in rehanged_mutations_by_persitefp_but_backbone]
@@ -1546,13 +1538,6 @@ M_test = split_merged_columns(M_test, mutations_on_T_test)
 final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
 final_cleaned_M_test.shape
 # (1178, 29)
-
-for m in rehanged_mutations_by_persitefp_but_backbone:
-    print(m)
-    print(count_list(I_attached[m]))
-    print(count_conditions(I_attached[m], M_current[[col for col in M_current.columns if m in col][0]]))
-
-
 
 
 ##### 再次计算 T_current 中每一个 subclone 内部计算每一个突变自身的 fp_ratio
@@ -1697,6 +1682,9 @@ print(len(outgroup_mutations_but_backbone))
 print(outgroup_mutations_but_backbone)
 # ['chr8_80170791_C_T', 'chr4_122860726_G_T', 'chr15_50499489_A_G', 'chr17_43766282_C_A', 'chr5_128188419_C_A', 'chr7_20381814_G_T', 'chr5_128171668_G_C', 'chr11_83165726_G_C', 'chr1_171541779_G_T']
 
+
+sorted_rehanged_mutations_all_outgroup = []
+
 if outgroup_mutations_but_backbone:
     # 找到这些突变的子突变们
     nodes_outgroup_mutations_but_backbone = list(set([find_mutation_column(mutation, M_checkpoint_outgroup.columns) for mutation in outgroup_mutations_but_backbone]))
@@ -1712,11 +1700,14 @@ if outgroup_mutations_but_backbone:
     sorted_outgroup_mutations_but_backbone = [i for i in I_attached.columns if i in outgroup_mutations_but_backbone]
     sorted_daughter_mutations_of_outgroup_mutations_but_backbone = [i for i in I_attached.columns if i in daughter_mutations_of_outgroup_mutations_but_backbone]
     sorted_rehanged_mutations_all_outgroup = sorted_outgroup_mutations_but_backbone + sorted_daughter_mutations_of_outgroup_mutations_but_backbone
-    
-    ##### 删掉以上的要放到 root 上的突变和受到影响的子突变
-    if len(sorted_rehanged_mutations_all_outgroup) > 0:
+
+
+##### 重挂那些由于 intersection/fn 出问题的突变，一个一个处理
+external_mutations_by_intersection_vs_fn = []
+if len(sorted_rehanged_mutations_all_outgroup) > 0:
+    for remove_mut_by_once in sorted_rehanged_mutations_all_outgroup:
         
-        T_removed_outgroup, M_removed_outgroup = remove_mutations_from_tree_and_matrix(T_checkpoint_outgroup, M_checkpoint_outgroup, sorted_rehanged_mutations_all_outgroup)
+        T_removed_outgroup, M_removed_outgroup = remove_mutations_from_tree_and_matrix(T_checkpoint_outgroup, M_checkpoint_outgroup, [remove_mut_by_once])
         print_tree(T_removed_outgroup)
         M_removed_outgroup_modified = process_matrices_by_removed_some_mutations_from_tree(M_removed_outgroup, I_attached)[1]
         
@@ -1724,13 +1715,10 @@ if outgroup_mutations_but_backbone:
         
         T_current = copy.deepcopy(T_removed_outgroup)
         M_current = M_removed_outgroup.copy()
-    
-    ##### 先挂应该位于主树上的那些
-    external_mutations_by_sorted_daughter_mutations_of_outgroup_mutations_but_backbone = []
-    if len(sorted_daughter_mutations_of_outgroup_mutations_but_backbone) > 0:
-        # 首先重挂 sorted_daughter_mutations_of_outgroup_mutations_but_backbone
-        external_mutations_by_sorted_daughter_mutations_of_outgroup_mutations_but_backbone, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
-            sorted_attached_mutations=sorted_daughter_mutations_of_outgroup_mutations_but_backbone,
+        
+        ##### 把这个突变挂到现在的主树上，因为是从树上摘下来，按理说是会有交集的
+        external_mutations_by_intersection_vs_fn_temp, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
+            sorted_attached_mutations=[remove_mut_by_once],
             T_current=T_current,
             M_current=M_current,
             I_attached=I_attached,
@@ -1739,59 +1727,11 @@ if outgroup_mutations_but_backbone:
             fnfp_ratio=fnfp_ratio,
             φ=φ,
             logger=logger,
-            root_mutations=root_mutations
+            root_mutations=root_mutations  # 可选，如果已有根突变列表
         )
         all_conflict_mutations.extend(conflict_mutations_temp)
-    
-    ##### 再挂要放到主树之外直接挂到 root 上的突变（就是那些没有找到 backbone mutation 的那些 clone 下的突变）
-    # 先解决那些 conflict 的 cells 归属问题
-    M_current_noROOT = M_current.drop(columns=['ROOT'], errors='ignore')
-    M_current_split_and_noROOT = split_merged_columns(M_current_noROOT, M_current_noROOT.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist())
-    
-    I_attached_only_outgroup = I_attached[sorted_outgroup_mutations_but_backbone].copy()
-    
-    # 使用函数处理数据处理 conflict 的 cells
-    M_current_split_and_noROOT_processed, I_attached_only_outgroup_processed = process_conflicting_cells_allto_outgroup(
-        M_current_split_and_noROOT, 
-        I_attached_only_outgroup
-    )
-    
-    # 处理列名
-    M_current_merged_and_noROOT = merge_duplicate_columns(M_current_split_and_noROOT_processed)
-    source_cols = M_current_merged_and_noROOT.columns
-    target_cols = M_current_noROOT.columns
-    
-    column_mapping = create_column_mapping(source_cols, target_cols)
-    
-    M_current_merged_and_noROOT_renamed = M_current_merged_and_noROOT.rename(columns=column_mapping)
-    
-    M_current = M_current_merged_and_noROOT_renamed.copy()
-    M_current.insert(0, 'ROOT', 1)
-    
-    I_attached_for_group = I_attached.copy()
-    I_attached_for_group.update(I_attached_only_outgroup_processed)
-    
-    # 重新挂树
-    external_mutations_by_sorted_outgroup_mutations_but_backbone = []
-    if len(sorted_outgroup_mutations_but_backbone)>0:
-        
-        subtree_groups = cluster_external_mutations_by_intersection(I_attached, sorted_outgroup_mutations_but_backbone)
-        
-        logger.info("Processing remaining external mutations by building subtrees")
-        
-        external_mutations_by_sorted_outgroup_mutations_but_backbone, conflict_mutations_temp, T_current, M_current, root_mutations = process_external_mutations_by_subtree_groups(
-            subtree_groups=subtree_groups,
-            T_current=T_current,
-            M_current=M_current,
-            I_attached=I_attached_for_group,
-            P_attached=P_attached,
-            ω_NA=ω_NA,
-            fnfp_ratio=fnfp_ratio,
-            φ=φ,
-            logger=logger,
-            root_mutations=root_mutations
-        )
-        all_conflict_mutations.extend(conflict_mutations_temp)
+        external_mutations_by_intersection_vs_fn.extend(external_mutations_by_intersection_vs_fn_temp)
+
 
 T_test = copy.deepcopy(T_current)
 M_test = M_current.copy()
@@ -1959,11 +1899,31 @@ fp_ratio_per_cell_cross_all_muts_cutoff=params['fp_ratio_per_cell_cross_all_muts
 ##### 筛选导致 fp 高的位点并处理
 # rehanged_fp_mutations_cross_all_cells = df_fp_ratio_per_mutation_cross_all_cells[df_fp_ratio_per_mutation_cross_all_cells['fp_cells_ratio_per_mutation'] >= fp_ratio_per_mutation_cross_all_cells_cutoff]['identifier'].tolist()
 rehanged_fp_mutations_cross_all_cells = df_fp_ratio_per_mutation_cross_all_cells[(df_fp_ratio_per_mutation_cross_all_cells['fp_cells_ratio_per_mutation'] >= fp_ratio_per_mutation_cross_all_cells_cutoff) & (df_fp_ratio_per_mutation_cross_all_cells['fp_cells_count'] >= fp_count_per_mutation_cross_all_cells_cutoff)]['identifier'].tolist()
+# 排除 backbone 和 scaffold 突变
 rehanged_fp_mutations_cross_all_cells_but_backbone = [i for i in rehanged_fp_mutations_cross_all_cells if i not in list(set(expanded_mutations_of_current_backbone_nodes+scaffold_mutations))]
 print(len(rehanged_fp_mutations_cross_all_cells_but_backbone))
 # 3
 print(rehanged_fp_mutations_cross_all_cells_but_backbone)
 # ['chr3_197511839_C_T', 'chr11_105044420_G_A', 'chr20_58360500_A_T']
+
+
+# ============================================================
+# 🔴🔴🔴 HIGHLIGHT: 这些是会被永久删除的 false positive mutations 🔴🔴🔴
+# ============================================================
+to_be_removed_mutations_by_fp_mutations_cross_all_cells = rehanged_fp_mutations_cross_all_cells_but_backbone
+
+logger.warning("="*80)
+logger.warning(f"🔴 PERMANENTLY REMOVED ARTIFACT MUTATIONS ({len(to_be_removed_mutations_by_fp_mutations_cross_all_cells)} total):")
+for mut in to_be_removed_mutations_by_fp_mutations_cross_all_cells:
+    logger.warning(f"   - {mut}")
+logger.warning("="*80)
+
+# 保存到单独的文件
+pd.Series(to_be_removed_mutations_by_fp_mutations_cross_all_cells).to_csv(
+    os.path.join(outputpath_full, "artifact_mutations_permanently_removed.csv"),
+    index=False, header=['mutation']
+)
+
 
 # 获取 fp_ratio>=0.4 的位点之间在树上的关系
 ordered_branch_groups_for_rehanged_fp_mutations_cross_all_cells_but_backbone = find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist(T_current, rehanged_fp_mutations_cross_all_cells_but_backbone)
@@ -2017,6 +1977,8 @@ sorted_fp_mutations_cross_all_cells = [i for i in I_attached.columns if i in fp_
 sorted_daughters_to_leaf_mutations_cross_all_cells = [i for i in I_attached.columns if i in daughters_to_leaf_mutations_cross_all_cells_qc]
 sorted_rehanged_mutations_all_cross_all_cells = sorted_fp_mutations_cross_all_cells + sorted_daughters_to_leaf_mutations_cross_all_cells
 
+# 注意：这里 to_be_removed_mutations_by_fp_mutations_cross_all_cells 就是会被永久删除的
+# sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells 是需要重挂的
 to_be_removed_mutations_by_fp_mutations_cross_all_cells = rehanged_fp_mutations_cross_all_cells_but_backbone
 sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells = [i for i in sorted_rehanged_mutations_all_cross_all_cells if i not in rehanged_fp_mutations_cross_all_cells_but_backbone]
 remove_mutations_for_rebuild = list(set(to_be_removed_mutations_by_fp_mutations_cross_all_cells+sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells))
@@ -2034,7 +1996,7 @@ if len(remove_mutations_for_rebuild) > 0:
     M_current = M_removed_cross_all_cells.copy()
 
 if len(sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells) > 0:
-    # 首先重挂 sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells
+    # 重挂需要重挂的突变（被永久删除的 to_be_removed_mutations_by_fp_mutations_cross_all_cells 不会在这里出现）
     external_mutations_cross_all_cells_by_sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells, conflict_mutations_temp, T_current, M_current, root_mutations = attach_mutations_to_current_tree(
         sorted_attached_mutations=sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells,
         T_current=T_current,
@@ -2078,7 +2040,6 @@ print(M_current.shape)
 
 
 
-
 # -----------------------------
 # Step 6.11 如果还有一些是鉴定为 conflict 的就直接挂到 ROOT 上
 # -----------------------------
@@ -2114,9 +2075,74 @@ mutations_on_T_test = M_test.columns.to_series().apply(lambda x: x.split("|")).e
 M_test = split_merged_columns(M_test, mutations_on_T_test)
 final_cleaned_M_test = M_test.loc[(M_test != 0).any(axis=1)]  # 移除全0行
 final_cleaned_M_test.shape
-# (1184, 34)
+# (1253, 93)
 
 
+
+
+# -----------------------------
+# Step 6.12 最终突变树结果报告
+# -----------------------------
+logger.info("="*80)
+logger.info("STEP 6.12: FINAL MUTATION STATUS SUMMARY")
+logger.info("="*80)
+
+# 1. 最终树的状态
+M_final = M_current.drop(columns=['ROOT'], errors='ignore')
+mutations_on_T_final = M_final.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
+M_final_split = split_merged_columns(M_final, mutations_on_T_final)
+final_cleaned_M = M_final_split.loc[(M_final_split != 0).any(axis=1)]
+
+logger.info("FINAL TREE STATUS:")
+logger.info(f"   Cells: {final_cleaned_M.shape[0]}")
+logger.info(f"   Mutations: {final_cleaned_M.shape[1]}")
+logger.info(f"   Shape: {final_cleaned_M.shape}")
+logger.info("="*80)
+
+# 2. 统计所有未上树的突变类别
+summary_data = {
+    'final_remained_mutations': len(final_remained_mutations),
+    'final_conflict_mutations': len(final_conflict_mutations),
+    'root_mutations': len(root_mutations),
+    'artifact_mutations_permanently_removed': len(to_be_removed_mutations_by_fp_mutations_cross_all_cells),
+}
+
+# 尝试获取 external mutations
+try:
+    external_count = len(set(
+        external_mutations_by_intersection_vs_fn +
+        external_mutations_cross_all_cells_by_sorted_rehanged_mutations_all_by_fp_mutations_cross_all_cells
+    ))
+    summary_data['all_external_mutations'] = external_count
+except NameError:
+    summary_data['all_external_mutations'] = 0
+
+logger.info("Mutations NOT on tree:")
+total = 0
+for name, count in summary_data.items():
+    logger.info(f"   {name}: {count}")
+    total += count
+
+logger.info(f"   Total: {total}")
+logger.info("="*80)
+
+# 3. 保存到文件
+summary_file = os.path.join(outputpath_full, "final_tree_status_summary.txt")
+with open(summary_file, 'w') as f:
+    f.write("="*60 + "\n")
+    f.write("FINAL TREE STATUS SUMMARY\n")
+    f.write("="*60 + "\n\n")
+    f.write(f"Cells: {final_cleaned_M.shape[0]}\n")
+    f.write(f"Mutations: {final_cleaned_M.shape[1]}\n")
+    f.write(f"Shape: {final_cleaned_M.shape}\n\n")
+    f.write("-"*60 + "\n")
+    f.write("Mutations NOT on tree:\n")
+    for name, count in summary_data.items():
+        f.write(f"  {name}: {count}\n")
+    f.write(f"  Total: {total}\n")
+    f.write("="*60 + "\n")
+
+logger.info(f"Saved to: {summary_file}")
 
 
 
@@ -2139,7 +2165,7 @@ M_full_initial = M_current_filtered.copy()
 T_full = copy.deepcopy(T_current)
 M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
 
-logger.info("Final full-resolved tree:")
+logger.info("Final scaffold tree:")
 print_tree(T_full)
 # └─ ROOT
 #   └─ chr17_7578893_G_T
@@ -2176,7 +2202,7 @@ print_tree(T_full)
 #   └─ chr5_128188419_C_A
 #   └─ chr1_171541779_G_T
 
-logger.info(f"Final full-resolved matrix shape: {M_full.shape}")
+logger.info(f"Final scaffold matrix shape: {M_full.shape}")
 
 
 # ------------------------------
@@ -2337,6 +2363,8 @@ mutation_clones = get_mutation_clone_and_backbone_mut_as_keys_by_first_level_wit
 df_barcode_clones = assign_clone_labels(M_full, mutation_clones)
 
 df_barcode_clones.to_csv(os.path.join(phylo_dir, "df_barcode_clones_from_phylo_tree.csv"), sep=',', index=False)
+
+
 
 
 
