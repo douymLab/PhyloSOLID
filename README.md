@@ -595,6 +595,8 @@ For interactive post-analysis and quality control, you can upload your PhyloSOLI
 
 **Web Server**: [https://phylosolid.westlake.edu.cn](https://phylosolid.westlake.edu.cn)
 
+**🔐 Access:** Please register with your **institutional email address** (e.g., `@edu.cn`, `@*.edu`). Registration is free for academic users.
+
 **Features:**
 - Interactive Circos exploration with zoom and cell-level query
 - Tree topology evaluation and quality control

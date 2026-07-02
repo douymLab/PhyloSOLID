@@ -274,8 +274,12 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     """
     高置信 scaffold mutation 过滤（基于 coverage）
     Step1: cross-cell-type coverage (NA proportion)
-    Step2: CV filter (with median safety)
-    两步并行作用于原始输入，最终结果取并集
+    Step2: CV filter (基于排名)
+    
+    筛选逻辑：
+    - total_muts <= 10: 保留全部
+    - total_muts > 10: 保留 max(10, ceil(total_muts * cv_rank_thresh)) 个
+      即：按比例算出来如果少于10个，保底取10个；否则按比例取
     
     Parameters
     ----------
@@ -286,7 +290,7 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     df_celltype : pd.DataFrame
         DataFrame 包含 'barcode' 和 'cell_type' 列
     params : dict
-        包含 'na_prop_thresh_global' 和 'cv_thresh'
+        包含 'na_prop_thresh_global' 和 'cv_rank_thresh' (默认0.5)
     outputpath : str, optional
         保存 summary csv 的路径
     
@@ -306,9 +310,10 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
         params = DEFAULT_PARAMS
     
     na_prop_thresh = params["na_prop_thresh_global"]
-    cv_thresh = params["cv_thresh"]
+    cv_rank_thresh = params.get("cv_rank_thresh", 0.5)
     
     logger.info("Applying coverage-based filtration (Section 3.2)")
+    logger.info(f"Parameters: na_prop_thresh={na_prop_thresh}, cv_rank_thresh={cv_rank_thresh}")
     
     # --- Step1: coverage-based filter ---
     step1_mutations, df_NA_prop = filter_scaffold_muts_by_na_proportion(
@@ -317,25 +322,31 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     logger.info("Section 3.2.1) Selection of ubiquitously expressed regions across cell (types)")
     print("=====> Step1 (coverage-based) mutations:", len(step1_mutations))
     
-    # --- Step2: CV filter ---
-    # Convert the reads to total read counts, treating NA as 0
+    # --- Step2: CV filter based on ranking ---
+    # Convert the reads to total read counts
     reads_matrix_withoutNAcells = df_reads.drop(index='bulk', errors='ignore').applymap(get_total_reads_withoutNAcells)
     reads_matrix_withNAcells = df_reads.drop(index='bulk', errors='ignore').applymap(get_total_reads_withNAcells)
-    reads_matrix_withNAcells = reads_matrix_withNAcells.applymap(lambda v: 1 if (not pd.isna(v) and v >= 1) else (0 if not pd.isna(v) else np.nan))
-    step2_mutations = []
-    median_dict = {}
+    reads_matrix_withNAcells = reads_matrix_withNAcells.applymap(
+        lambda v: 1 if (not pd.isna(v) and v >= 1) else (0 if not pd.isna(v) else np.nan)
+    )
+    
+    # 计算所有突变的 CV
     cv_dict = {}
+    median_dict = {}
     mean_dict = {}
     std_dict = {}
+    
     for mut in kept_mutations:
         values_for_median = reads_matrix_withoutNAcells[mut].dropna() if mut in reads_matrix_withoutNAcells else []
         values_for_cv = reads_matrix_withNAcells[mut].dropna()
+        
         # median
         if len(values_for_median) == 0:
             median_dict[mut] = np.nan
             continue
         median_val = np.median(values_for_median)
         median_dict[mut] = median_val
+        
         # cv
         mean_val = np.mean(values_for_cv)
         std_val = np.std(values_for_cv)
@@ -343,16 +354,39 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
         cv_dict[mut] = cv
         mean_dict[mut] = mean_val
         std_dict[mut] = std_val
-        if cv <= cv_thresh:
-            step2_mutations.append(mut)
+    
+    # 根据 CV 值从小到大排序
+    cv_sorted = sorted([(mut, cv) for mut, cv in cv_dict.items() if not np.isnan(cv) and cv != np.inf], key=lambda x: x[1])
+    cv_sorted_muts = [mut for mut, _ in cv_sorted]
+    
+    total_muts = len(cv_sorted_muts)
+    
+    # --- 确定要保留的突变数量 ---
+    # 逻辑：min(max(10, ceil(total_muts * cv_rank_thresh)), total_muts)
+    # 特殊情况：total_muts <= 10 时保留全部
+    if total_muts == 0:
+        step2_mutations = []
+        num_to_keep = 0
+    elif total_muts <= 10:
+        # 总数 <= 10，保留全部
+        num_to_keep = total_muts
+        step2_mutations = cv_sorted_muts[:num_to_keep]
+    else:
+        # 总数 > 10
+        # 计算按比例应保留的数量
+        num_from_rank = int(np.ceil(total_muts * cv_rank_thresh))
+        # 保底至少10个，但不能超过总数
+        num_to_keep = min(max(10, num_from_rank), total_muts)
+        step2_mutations = cv_sorted_muts[:num_to_keep]
     
     logger.info("Section 3.2.2) Selection of regions with relatively uniform read coverage")
-    print("=====> Step2 (CV filter) mutations:", len(step2_mutations))
+    print(f"=====> Step2 (CV rank filter): kept {num_to_keep} out of {total_muts} mutations "
+          f"(top {num_to_keep/total_muts*100:.1f}% by CV, threshold={cv_rank_thresh:.0%})")
     
-    # --- Union ---
-    final_scaffold_mutations = list(set(step1_mutations) | set(step2_mutations))
+    # --- Intersection ---
+    final_scaffold_mutations = list(set(step1_mutations) & set(step2_mutations))
     final_scaffold_mutations_sorted = [i for i in kept_mutations if i in final_scaffold_mutations]
-    print("=====> Final scaffold mutations (union):", len(final_scaffold_mutations_sorted))
+    print("=====> Final scaffold mutations (intersection):", len(final_scaffold_mutations_sorted))
     
     # --- Summary ---
     df_cv_stats = pd.DataFrame({
@@ -371,6 +405,49 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     if outputpath is not None:
         os.makedirs(outputpath, exist_ok=True)
         df_summary.to_csv(os.path.join(outputpath, "Summary_df_in_scaffold_filtration.csv"))
+        
+        # 生成 CV 分布可视化
+        try:
+            import matplotlib.pyplot as plt
+            
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+            
+            # 左图：CV 分布
+            cv_vals = df_summary['cov_CV'].dropna()
+            cv_vals = cv_vals[cv_vals != np.inf]
+            
+            if len(cv_vals) > 0:
+                axes[0].hist(cv_vals, bins=30, alpha=0.7, edgecolor='black')
+                # 标注阈值线
+                if num_to_keep > 0 and num_to_keep < total_muts:
+                    threshold_cv = cv_sorted[num_to_keep-1][1] if num_to_keep > 0 else None
+                    if threshold_cv is not None:
+                        axes[0].axvline(threshold_cv, color='r', linestyle='--', 
+                                      label=f'Selected threshold (CV={threshold_cv:.2f})')
+                axes[0].set_xlabel('Coefficient of Variation (CV)')
+                axes[0].set_ylabel('Number of Mutations')
+                axes[0].set_title('CV Distribution')
+                axes[0].legend()
+            
+            # 右图：筛选状态
+            if 'pass_cov' in df_summary.columns:
+                df_sorted = df_summary.sort_values('cov_CV').dropna(subset=['cov_CV'])
+                df_sorted = df_sorted[df_sorted['cov_CV'] != np.inf]
+                colors = ['green' if x else 'red' for x in df_sorted['pass_cov']]
+                axes[1].bar(range(len(df_sorted)), [1]*len(df_sorted), color=colors, alpha=0.6)
+                axes[1].set_xlabel('Mutations (sorted by CV)')
+                axes[1].set_ylabel('Kept')
+                axes[1].set_title(f'Kept Mutations (green: kept, red: filtered)\n'
+                                f'Kept: {sum(df_sorted["pass_cov"])}/{len(df_sorted)}')
+                axes[1].set_ylim(0, 1.5)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(outputpath, "cv_filter_visualization.pdf"), dpi=150)
+            plt.close()
+            logger.info("CV filter visualization saved")
+        except Exception as e:
+            logger.warning(f"Could not generate CV plot: {e}")
+    
     return final_scaffold_mutations_sorted, df_summary
 
 
