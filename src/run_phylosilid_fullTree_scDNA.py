@@ -141,6 +141,7 @@ SETTING_PARAMS = {
     # 3.2 Coverage-based filtration
     "na_prop_thresh_global": 0.95,      # p_NA(j) ≤ 0.9 (present in >10% cells)
     "cv_thresh": 6.0,                   # CV_j < 2
+    "cv_rank_thresh": 0.3,              # 改用排名阈值，取CV最低的前50%
     
     # 3.3 Consensus correlation graph
     "consensus_runs": 100,             # number of randomized runs
@@ -189,7 +190,7 @@ df_features = data['features']
 df_reads_raw = data['df_reads']
 I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
 
-logger.info(f"Loaded data: {len(P)} cells, {len(I_raw.columns)} mutations")
+logger.info(f"Loaded data: {len(P_raw)} cells, {len(I_raw.columns)} mutations")
 
 ##### Output binary matrix with NA=0
 I_raw_withNA0 = I_raw.replace({np.nan: 0}).astype(int)
@@ -204,7 +205,7 @@ I_raw_withNA3_T.to_csv(os.path.join(outputpath, "I_raw_withNA3_T.txt"), sep="\t"
 
 ##### Output for BSCITE bulk input
 # 获取 pseudo bulk 数据
-df_corrected = df_reads.copy()
+df_corrected = df_reads_raw.copy()
 
 # 分割数据并转换为数值
 def split_and_sum(series):
@@ -310,7 +311,7 @@ logger.info("===== Step2: Classifier ...")
 models_path = params['models_path']
 
 ##### Load Celltype Data
-if features_file is None or features_file == "None":
+if features_file is None or features_file == "None" or features_file == "no":
     candidate_mutations = list(I_raw.columns)
 else:
     df_for_classifier = pd.read_csv(features_file, sep="\t")
@@ -421,132 +422,20 @@ results_of_scaffold = build_scaffold_tree(
     df_features_new = df_features_new,
     params = params,
     is_filter_quality = is_filter_quality,
-    outputpath = outputpath_scaffold,
+    outputpath_scaffold = outputpath_scaffold,
     sampleid = sampleid,
     immune_mutations = immune_mutations,
     df_celltype = df_celltype
 )
 
 
-T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, mutation_group, spots_to_split, group_mutations, remained_mutations, high_cv_mutations = results_of_scaffold
+T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, backbone_mutations, mutation_group, spots_to_split, group_mutations, remained_mutations, conflict_mutations, high_cv_mutations = results_of_scaffold
 # scaffold_mutations = [i for i in initial_scaffold_mutations if i not in remained_mutations_by_scaffold_building]
 scaffold_mutations = list(M_scaffold.columns)
 non_scaffold_mutations = [i for i in somatic_mutations if i not in scaffold_mutations]
 
 
 print_tree(T_scaffold)
-# └─ ROOT
-#   └─ 8_135332005_A_C|5_3926977_C_G|3_20458612_C_T
-#     └─ 5_156493734_T_C|3_18578000_G_T
-#       └─ 17_53347250_A_G|7_17623547_C_T|7_5923825_G_A|X_138790531_G_A|20_165000_A_G|2_84862977_C_T|12_122338500_A_C|1_93642449_G_A|6_4936481_G_A
-#       └─ 20_44421717_C_T|9_111593369_C_A|1_43118884_G_T|10_4300581_C_T|11_119390339_C_T|13_83571215_G_A|2_13164292_G_A
-#     └─ 8_35604654_T_C
-#   └─ 9_76779133_T_G
-#     └─ 11_73504764_G_C|7_25690508_G_A|20_57865731_C_T|8_79504201_G_A|14_77788823_G_A|11_40316580_C_T|3_139797361_G_A
-#       └─ 12_58058137_C_T|19_38404452_C_T
-#     └─ 1_212476040_A_G|5_72979186_C_T
-#   └─ 9_4449186_G_A|5_101967456_C_T|11_28736674_C_A|8_40724674_G_A|7_37243283_C_A|19_36435211_C_T|7_116040833_G_A
-#     └─ 17_19757596_A_T|4_103239841_A_T|4_147086331_T_C
-#   └─ 7_122592074_G_T|2_22478421_A_G|2_26914023_G_A|8_50806767_T_A|3_78810108_T_A|7_68820962_G_A|X_135442114_T_G|12_52644508_C_T|8_127028930_G_A|4_171339863_A_G
-#   └─ 4_171901716_C_T|2_113547098_C_G
-#     └─ 5_154234034_G_A|X_70632344_G_A|11_130790503_G_A
-#       └─ 8_23437628_G_A
-#       └─ 20_13387559_C_T|5_152500272_C_A
-#   └─ 4_170816788_G_A|18_68053436_G_A|11_56099914_C_T|7_3867983_A_C|16_83107928_G_A|16_62830915_C_T|5_4257259_C_A
-
-# └─ ROOT
-#   └─ 8_135332005_A_C|5_3926977_C_G|3_20458612_C_T
-#     └─ 5_156493734_T_C|3_18578000_G_T
-#       └─ 17_53347250_A_G|7_17623547_C_T|7_5923825_G_A|X_138790531_G_A|20_165000_A_G|2_84862977_C_T|12_122338500_A_C|1_93642449_G_A|6_4936481_G_A
-#       └─ 20_44421717_C_T|9_111593369_C_A|1_43118884_G_T|10_4300581_C_T|11_119390339_C_T|13_83571215_G_A|2_13164292_G_A
-#     └─ 8_35604654_T_C
-#   └─ 9_76779133_T_G
-#     └─ 11_73504764_G_C|7_25690508_G_A|20_57865731_C_T|8_79504201_G_A|14_77788823_G_A|11_40316580_C_T|3_139797361_G_A
-#       └─ 12_58058137_C_T|19_38404452_C_T
-#     └─ 1_212476040_A_G|5_72979186_C_T
-#   └─ 9_4449186_G_A|5_101967456_C_T|11_28736674_C_A|8_40724674_G_A|7_37243283_C_A|19_36435211_C_T|7_116040833_G_A
-#     └─ 17_19757596_A_T|4_103239841_A_T|4_147086331_T_C
-#   └─ 7_122592074_G_T|2_22478421_A_G|2_26914023_G_A|8_50806767_T_A|3_78810108_T_A|7_68820962_G_A|X_135442114_T_G|12_52644508_C_T|8_127028930_G_A|4_171339863_A_G
-#   └─ 4_171901716_C_T|2_113547098_C_G
-#     └─ 5_154234034_G_A|X_70632344_G_A|11_130790503_G_A
-#       └─ 8_23437628_G_A
-#       └─ 20_13387559_C_T|5_152500272_C_A
-#   └─ 4_170816788_G_A|18_68053436_G_A|11_56099914_C_T|7_3867983_A_C|16_83107928_G_A|16_62830915_C_T|5_4257259_C_A
-
-# └─ ROOT
-#   └─ 8_135332005_A_C|5_3926977_C_G|3_20458612_C_T|5_156493734_T_C|3_18578000_G_T|8_35604654_T_C
-#     └─ 17_53347250_A_G|7_17623547_C_T|7_5923825_G_A|X_138790531_G_A|20_165000_A_G|2_84862977_C_T|12_122338500_A_C|1_93642449_G_A|6_4936481_G_A
-#     └─ 20_44421717_C_T|9_111593369_C_A|1_43118884_G_T|10_4300581_C_T|11_119390339_C_T|13_83571215_G_A|2_13164292_G_A
-#   └─ 9_76779133_T_G
-#     └─ 11_73504764_G_C|7_25690508_G_A|20_57865731_C_T|8_79504201_G_A|14_77788823_G_A|11_40316580_C_T|3_139797361_G_A
-#       └─ 12_58058137_C_T|19_38404452_C_T
-#     └─ 1_212476040_A_G|5_72979186_C_T
-#   └─ 9_4449186_G_A|5_101967456_C_T|11_28736674_C_A|8_40724674_G_A|7_37243283_C_A|19_36435211_C_T|7_116040833_G_A|17_19757596_A_T|4_103239841_A_T|4_147086331_T_C
-#   └─ 7_122592074_G_T|2_22478421_A_G|2_26914023_G_A|8_50806767_T_A|3_78810108_T_A|7_68820962_G_A|X_135442114_T_G|12_52644508_C_T|8_127028930_G_A|4_171339863_A_G
-#   └─ 4_171901716_C_T|2_113547098_C_G|5_154234034_G_A|X_70632344_G_A|11_130790503_G_A|8_23437628_G_A|20_13387559_C_T|5_152500272_C_A
-#   └─ 4_170816788_G_A|18_68053436_G_A|11_56099914_C_T|7_3867983_A_C|16_83107928_G_A|16_62830915_C_T|5_4257259_C_A
-
-# └─ ROOT
-#   └─ 8_135332005_A_C
-#     └─ 5_3926977_C_G
-#       └─ 3_20458612_C_T
-#         └─ 5_156493734_T_C
-#           └─ 3_18578000_G_T
-#             └─ 17_53347250_A_G|7_17623547_C_T|7_5923825_G_A
-#               └─ X_138790531_G_A|20_165000_A_G
-#                 └─ 2_84862977_C_T
-#                   └─ 12_122338500_A_C
-#                     └─ 1_93642449_G_A|6_4936481_G_A
-#             └─ 20_44421717_C_T
-#               └─ 9_111593369_C_A|1_43118884_G_T|10_4300581_C_T|11_119390339_C_T|13_83571215_G_A|2_13164292_G_A
-#     └─ 8_35604654_T_C
-#   └─ 9_76779133_T_G
-#     └─ 11_73504764_G_C
-#       └─ 20_57865731_C_T
-#         └─ 8_79504201_G_A
-#           └─ 14_77788823_G_A
-#             └─ 7_25690508_G_A
-#               └─ 11_40316580_C_T
-#                 └─ 3_139797361_G_A
-#                 └─ 12_58058137_C_T
-#                   └─ 19_38404452_C_T
-#     └─ 1_212476040_A_G
-#       └─ 5_72979186_C_T
-#   └─ 9_4449186_G_A
-#     └─ 7_116040833_G_A
-#       └─ 19_36435211_C_T
-#         └─ 5_101967456_C_T
-#           └─ 8_40724674_G_A
-#             └─ 7_37243283_C_A
-#               └─ 11_28736674_C_A
-#     └─ 4_103239841_A_T
-#       └─ 4_147086331_T_C
-#         └─ 17_19757596_A_T
-#   └─ 7_122592074_G_T
-#     └─ 3_78810108_T_A
-#       └─ 2_26914023_G_A
-#         └─ 8_50806767_T_A
-#           └─ 2_22478421_A_G
-#             └─ 7_68820962_G_A
-#               └─ 4_171339863_A_G
-#                 └─ 8_127028930_G_A
-#                   └─ 12_52644508_C_T
-#                     └─ X_135442114_T_G
-#   └─ 4_171901716_C_T
-#     └─ 2_113547098_C_G
-#       └─ 5_154234034_G_A
-#         └─ 11_130790503_G_A
-#           └─ X_70632344_G_A
-#             └─ 8_23437628_G_A
-#         └─ 5_152500272_C_A
-#           └─ 20_13387559_C_T
-#   └─ 4_170816788_G_A
-#     └─ 16_62830915_C_T
-#       └─ 7_3867983_A_C
-#         └─ 16_83107928_G_A
-#           └─ 11_56099914_C_T
-#             └─ 18_68053436_G_A
-#       └─ 5_4257259_C_A
 
 
 logging.info(f"Identified {len(scaffold_mutations)} scaffold variants")

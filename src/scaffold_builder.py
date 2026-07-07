@@ -30,6 +30,7 @@ Outputs:
 """
 
 import os
+import shutil
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -68,6 +69,72 @@ except ImportError:
         community_louvain = None
 
 logger = logging.getLogger(__name__)
+_VERBOSE_TREE_UPDATES = os.environ.get("PHYLOSOLID_VERBOSE_TREES", "").lower() in {"1", "true", "yes", "on"}
+
+
+
+
+def _log_tree_snapshot(active_logger, label, tree):
+    if not _VERBOSE_TREE_UPDATES:
+        return
+    active_logger.info(label)
+    print_tree(tree)
+
+
+def _as_bool_mask(series, index):
+    aligned = pd.Series(series, index=index) if not isinstance(series, pd.Series) else series.reindex(index)
+    values = aligned.to_numpy(copy=False)
+    
+    if np.issubdtype(values.dtype, np.bool_):
+        return pd.Series(values, index=index, copy=False)
+    
+    if np.issubdtype(values.dtype, np.integer):
+        return pd.Series(values != 0, index=index)
+    
+    if np.issubdtype(values.dtype, np.floating):
+        return pd.Series(np.isfinite(values) & (values != 0), index=index)
+    
+    numeric = pd.to_numeric(aligned, errors="coerce")
+    numeric_values = numeric.to_numpy(dtype=np.float64, na_value=np.nan)
+    return pd.Series(np.isfinite(numeric_values) & (numeric_values != 0), index=index)
+
+
+def _build_conflict_mask(matrix, conflict_nodes, index):
+    vec_conflicts = pd.Series(False, index=index)
+    for conflict in conflict_nodes:
+        vec_conflicts |= _as_bool_mask(matrix[conflict], index)
+    return vec_conflicts
+
+
+def _build_scaffold_lineage_fill_update(final_position, final_imputed_vec, parent_dict):
+    if final_position is None or final_imputed_vec is None:
+        return {"mutation_chain": (), "cells": ()}
+    
+    mutation_chain = tuple(get_full_mutnode_chain_with_anchor_scaffold(final_position["anchor"], parent_dict))
+    cells = tuple(final_imputed_vec.index[final_imputed_vec == 1].tolist())
+    return {
+        "mutation_chain": mutation_chain,
+        "cells": cells,
+    }
+
+
+def _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update):
+    mutation_chain = lineage_fill_update.get("mutation_chain", ())
+    cells = lineage_fill_update.get("cells", ())
+    
+    if not mutation_chain or not cells:
+        return M_current
+    
+    cells_list = list(cells)
+    for mutation in mutation_chain:
+        if mutation not in M_current.columns:
+            continue
+        column_values = M_current.loc[cells_list, mutation]
+        cells_to_update = column_values.index[column_values == 0]
+        if len(cells_to_update) > 0:
+            M_current.loc[cells_to_update, mutation] = 1
+    
+    return M_current
 
 
 
@@ -570,37 +637,37 @@ def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100):
         {tuple(m1,m2): weight}  每个 mutation pair 的权重（只考虑长度≥2的 clone）
     """
     clone_weights = defaultdict(float)  # 全局 clone 权重累加
+    if n_shuffle <= 0:
+        return clone_weights, defaultdict(float)
     
     for ref in muts:
         other_muts = [m for m in muts if m != ref]
         ref_clone_counter = defaultdict(int)  # 记录当前 reference 下每个 clone 的计数
         
-        for _ in range(n_shuffle):
-            shuffled = list(deterministic_permutation(other_muts))
-            remaining = [ref] + shuffled.copy()
-            
-            while remaining:
-                curr_ref = remaining[0]
-                current_clone = [curr_ref]
-                next_remaining = []
-                
-                for m in remaining[1:]:
-                    key1 = (curr_ref, m)
-                    key2 = (m, curr_ref)
-                    # 检查 corr_cache，避免 KeyError
-                    is_corr = corr_cache.get(key1, corr_cache.get(key2, False))
-                    if is_corr:
-                        current_clone.append(m)
-                    else:
-                        next_remaining.append(m)
-                
-                # 当前 shuffle 的 clone 计数
-                ref_clone_counter[tuple(sorted(current_clone))] += 1
-                remaining = next_remaining
+        # 当前实现中的 deterministic_permutation 对同一个输入会返回相同顺序，
+        # 因而重复 n_shuffle 次与执行一次后按比例归一化的结果完全等价。
+        shuffled = list(deterministic_permutation(other_muts))
+        remaining = [ref] + shuffled.copy()
         
-        # Step: normalize by n_shuffle → clone proportion for this reference
+        while remaining:
+            curr_ref = remaining[0]
+            current_clone = [curr_ref]
+            next_remaining = []
+            
+            for m in remaining[1:]:
+                key1 = (curr_ref, m)
+                key2 = (m, curr_ref)
+                is_corr = corr_cache.get(key1, corr_cache.get(key2, False))
+                if is_corr:
+                    current_clone.append(m)
+                else:
+                    next_remaining.append(m)
+            
+            ref_clone_counter[tuple(sorted(current_clone))] += 1
+            remaining = next_remaining
+        
         for clone, count in ref_clone_counter.items():
-            clone_weights[clone] += count / n_shuffle  # 累加到全局
+            clone_weights[clone] += count
     
     # Step: 计算 pair 权重，只考虑长度≥2的 clone
     pair_weights = defaultdict(float)
@@ -611,11 +678,71 @@ def compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=100):
     
     return clone_weights, pair_weights
 
+
 from typing import List, Tuple, Dict
 from collections import defaultdict
 import itertools
 import numpy as np
 import pandas as pd
+
+def _build_pairwise_correlation_cache_fast(
+    I_S: pd.DataFrame,
+    muts: List[str],
+) -> Tuple[Dict[Tuple[str, str], bool], Dict[str, float], Dict[str, int]]:
+    I_numeric = I_S.loc[:, muts].apply(pd.to_numeric, errors="coerce")
+    values = I_numeric.to_numpy(copy=False)
+    
+    ones = np.asarray(values == 1, dtype=np.int32, order="C")
+    zeros = np.asarray(values == 0, dtype=np.int32, order="C")
+    
+    n11 = ones.T @ ones
+    n10 = ones.T @ zeros
+    n01 = zeros.T @ ones
+    
+    mutant_cell_number_arr = ones.sum(axis=0).astype(np.int32, copy=False)
+    covered_cell_number_arr = (ones + zeros).sum(axis=0).astype(np.int32, copy=False)
+    
+    denominator = n11 + n10 + n01
+    jaccard = np.divide(
+        n11,
+        denominator,
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=denominator > 0,
+    )
+    f_forward = np.divide(
+        n11,
+        mutant_cell_number_arr[:, None],
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=mutant_cell_number_arr[:, None] > 0,
+    )
+    f_reverse = np.divide(
+        n11,
+        mutant_cell_number_arr[None, :],
+        out=np.zeros_like(n11, dtype=np.float64),
+        where=mutant_cell_number_arr[None, :] > 0,
+    )
+    
+    corr_matrix = (n11 >= 1) & (
+        (jaccard >= 0.08) |
+        ((jaccard > 0) & (jaccard < 0.08) & (np.maximum(f_forward, f_reverse) >= 0.5))
+    )
+    np.fill_diagonal(corr_matrix, True)
+    
+    mutant_cell_fraction_arr = np.divide(
+        mutant_cell_number_arr,
+        covered_cell_number_arr,
+        out=np.zeros_like(mutant_cell_number_arr, dtype=np.float64),
+        where=covered_cell_number_arr > 0,
+    )
+    
+    corr_cache = {}
+    for i, u in enumerate(muts):
+        for j, v in enumerate(muts):
+            corr_cache[(u, v)] = bool(corr_matrix[i, j])
+    
+    mutant_cell_fraction = dict(zip(muts, mutant_cell_fraction_arr))
+    mutant_cell_number = dict(zip(muts, mutant_cell_number_arr))
+    return corr_cache, mutant_cell_fraction, mutant_cell_number
 
 def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed: int = 42, cutoff_mcf_for_graph: float = 0.05, cutoff_mcn_for_graph: int = 5) -> Tuple[Dict[Tuple[str], float], Dict[Tuple[str,str], float]]:
     """
@@ -636,22 +763,12 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
     n_mut = len(muts)
     
     # Step 1: precompute pairwise correlation cache
-    corr_cache = {}
-    for u, v in itertools.combinations(muts, 2):
-        corr = are_mutations_correlated(I_S, u, v)
-        corr_cache[(u, v)] = corr
-        corr_cache[(v, u)] = corr
-    
-    for m in muts:
-        corr_cache[(m, m)] = True
+    corr_cache, mutant_cell_fraction, mutant_cell_number = _build_pairwise_correlation_cache_fast(I_S, muts)
     
     # Step 2: compute clone weights and pair weights
     clone_weights, pair_weights = compute_clone_and_pair_weights(muts, corr_cache, n_shuffle=n_shuffle)
     
     # Step 3: 计算每个 mutation 的突变 fraction 和突变细胞数
-    mutant_cell_fraction = {mut: I_S[mut].mean(skipna=True) for mut in muts}
-    mutant_cell_number = {mut: I_S[mut].sum(skipna=True) for mut in muts}
-    
     # Step 4: 删除低支持 singleton mutations 对应的 clone
     count = 0
     for mut in muts:
@@ -1428,52 +1545,6 @@ def add_new_mutation_to_clone(mutation_group_with_non_group_mutations, assigned_
         print(f"Error: Could not find group for mutation {new_mut}")
     
     return mutation_group_with_non_group_mutations
-
-
-# def process_new_mut(new_mut, group_to_muts_with_backbone, I_somatic_resolved, mutation_group_with_non_group_mutations):
-#     """
-#     处理一个新的突变，计算它的克隆亲和力，选择最佳克隆，并更新 mutation_group。
-#     """
-#     clone_affinity, detailed_scores = compute_new_mut_clone_affinity_correct_scaffold(
-#         new_mut, 
-#         group_to_muts_with_backbone, 
-#         I_somatic_resolved,
-#         n_shuffle=100
-#     )
-#     assigned_clone = select_best_clone_scaffold(detailed_scores)
-    
-#     if len(assigned_clone) > 0:
-#         # 更新 mutation_group_with_non_group_mutations
-#         updated_group = add_new_mutation_to_clone(mutation_group_with_non_group_mutations, assigned_clone, new_mut)
-#         return updated_group
-#     return mutation_group_with_non_group_mutations
-
-# def parallel_process_mutations(I_somatic, mutation_clones_rescue, I_somatic_resolved, mutation_group_with_non_group_mutations, group_mutations):
-#     """
-#     并行处理每个新的突变。
-#     """
-#     # Step 1: 确定需要处理的突变
-#     mutations_to_process = [i for i in I_somatic.columns if i not in group_mutations]
-    
-#     # Step 2: 使用线程池并行处理突变
-#     with ThreadPoolExecutor() as executor:
-#         futures = []
-        
-#         # 提交任务到线程池
-#         for new_mut in mutations_to_process:
-#             futures.append(executor.submit(process_new_mut, new_mut, mutation_clones_rescue, I_somatic_resolved, mutation_group_with_non_group_mutations))
-        
-#         # 等待任务完成，并收集结果
-#         for future in as_completed(futures):
-#             mutation_group_with_non_group_mutations = future.result()
-    
-#     return mutation_group_with_non_group_mutations
-
-# # # 使用示例
-# # mutation_group_with_non_group_mutations = parallel_process_mutations(I_somatic, mutation_clones_rescue, I_somatic_resolved, mutation_group_with_non_group_mutations, group_mutations)
-
-# # # 打印最终结果
-# # print(mutation_group_with_non_group_mutations)
 
 
 
@@ -2793,20 +2864,21 @@ def split_merged_columns(merged_matrix: pd.DataFrame, mut_list: list):
     """
     根据mut_list拆分合并的列
     """
-    out = {}
-    for mut in mut_list:
-        # 找到包含该mutation的合并列
-        found = False
-        for merged_col in merged_matrix.columns:
-            if mut in merged_col.split("|"):
-                out[mut] = merged_matrix[merged_col].copy()
-                found = True
-                break
-        if not found:
-            # 如果没找到，创建全NA列
-            out[mut] = pd.Series([pd.NA] * len(merged_matrix), index=merged_matrix.index)
+    if merged_matrix.empty or not mut_list:
+        return pd.DataFrame(index=merged_matrix.index, columns=mut_list)
     
-    return pd.DataFrame(out, index=merged_matrix.index)[mut_list]
+    mutation_to_merged_col = {}
+    for merged_col in merged_matrix.columns:
+        for mutation in merged_col.split("|"):
+            if mutation not in mutation_to_merged_col:
+                mutation_to_merged_col[mutation] = merged_col
+    
+    result_data = {}
+    na_series = pd.Series(pd.NA, index=merged_matrix.index)
+    for mut in mut_list:
+        result_data[mut] = merged_matrix[mutation_to_merged_col[mut]] if mut in mutation_to_merged_col else na_series
+    
+    return pd.DataFrame(result_data, index=merged_matrix.index)[mut_list]
 
 # # 测试数据
 # df = pd.DataFrame({
