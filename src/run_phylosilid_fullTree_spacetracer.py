@@ -2,6 +2,10 @@
 import os
 os.environ['PYTHONHASHSEED'] = '42'
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+
 import sys
 from pathlib import Path
 

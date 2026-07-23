@@ -78,7 +78,7 @@ def _log_tree_snapshot(active_logger, label, tree):
     if not _VERBOSE_TREE_UPDATES:
         return
     active_logger.info(label)
-    print_tree(tree)
+    # print_tree(tree)
 
 
 def _as_bool_mask(series, index):
@@ -183,7 +183,6 @@ def initial_filter(P: pd.DataFrame, V: pd.DataFrame, A: pd.DataFrame, C: pd.Data
     maf_max_cut = params["maf_max_threshold"]
     maf_mean_cut = params["maf_mean_threshold"]
     
-    logger.info("Applying initial filtration (Section 3.1)")
     
     # Cell filtering: keep cells with at least one supported mutation (posterior > threshold)
     cells_with_V = (V > 0).any(axis=1)
@@ -194,7 +193,6 @@ def initial_filter(P: pd.DataFrame, V: pd.DataFrame, A: pd.DataFrame, C: pd.Data
     if len(kept_cells) == 0:
         raise ValueError("No cells passed initial filtration")
         
-    logger.info(f"Kept {len(kept_cells)} cells after initial filtration")
     
     # Subset matrices to kept cells
     P_sub = P.loc[kept_cells].copy()
@@ -226,7 +224,6 @@ def initial_filter(P: pd.DataFrame, V: pd.DataFrame, A: pd.DataFrame, C: pd.Data
     if len(kept_mutations) == 0:
         raise ValueError("No mutations passed initial filtration")
         
-    logger.info(f"Kept {len(kept_mutations)} mutations after initial filtration")
     
     # Subset matrices to kept mutations
     P_sub = P_sub[kept_mutations].copy()
@@ -379,14 +376,11 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
     na_prop_thresh = params["na_prop_thresh_global"]
     cv_rank_thresh = params.get("cv_rank_thresh", 0.5)
     
-    logger.info("Applying coverage-based filtration (Section 3.2)")
-    logger.info(f"Parameters: na_prop_thresh={na_prop_thresh}, cv_rank_thresh={cv_rank_thresh}")
     
     # --- Step1: coverage-based filter ---
     step1_mutations, df_NA_prop = filter_scaffold_muts_by_na_proportion(
         kept_mutations, df_reads, df_celltype, na_prop_thresh
     )
-    logger.info("Section 3.2.1) Selection of ubiquitously expressed regions across cell (types)")
     print("=====> Step1 (coverage-based) mutations:", len(step1_mutations))
     
     # --- Step2: CV filter based on ranking ---
@@ -446,7 +440,6 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
         num_to_keep = min(max(10, num_from_rank), total_muts)
         step2_mutations = cv_sorted_muts[:num_to_keep]
     
-    logger.info("Section 3.2.2) Selection of regions with relatively uniform read coverage")
     print(f"=====> Step2 (CV rank filter): kept {num_to_keep} out of {total_muts} mutations "
           f"(top {num_to_keep/total_muts*100:.1f}% by CV, threshold={cv_rank_thresh:.0%})")
     
@@ -511,7 +504,6 @@ def coverage_filters(kept_mutations, df_reads, df_celltype, params, outputpath):
             plt.tight_layout()
             plt.savefig(os.path.join(outputpath, "cv_filter_visualization.pdf"), dpi=150)
             plt.close()
-            logger.info("CV filter visualization saved")
         except Exception as e:
             logger.warning(f"Could not generate CV plot: {e}")
     
@@ -568,7 +560,7 @@ def calculate_cv_for_subgrouping(df_reads_resolved, mutations, cv_threshold=6, l
         if cv <= cv_threshold:
             low_cv_mutations.append(mut)
     
-    print("=====> In this subgroup, low_cv_mutations:", len(low_cv_mutations))
+    # print("=====> In this subgroup, low_cv_mutations:", len(low_cv_mutations))
     
     # --- Summary ---
     df_cv_stats = pd.DataFrame({
@@ -780,7 +772,7 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
                 print(f"Filter out singleton low-support mutation: {mut}, frac={frac:.3f}, num={num}")
                 clone_weights.pop((mut,), None)  # 删除这个 clone
     
-    print(f"The number of filtered singleton, low-support mutations is: {count}")
+    # print(f"The number of filtered singleton, low-support mutations is: {count}")
     return clone_weights, pair_weights
 
 import matplotlib.pyplot as plt
@@ -1030,11 +1022,11 @@ def resolved_spots_by_immune_mutations(I_scaffold, immune_mutations, P_scaffold,
     
     # 找出在I_scaffold列中实际存在的immune mutations
     actual_immune_mutations = [mut for mut in immune_mutations if mut in I_scaffold.columns]
-    print(f"找到 {len(actual_immune_mutations)} 个immune mutations在数据中")
+    # print(f"找到 {len(actual_immune_mutations)} 个immune mutations在数据中")
     
     # 找出non-immune mutations (在I_scaffold中但不在immune_mutations中的列)
     non_immune_mutations = [col for col in I_scaffold.columns if col not in immune_mutations]
-    print(f"找到 {len(non_immune_mutations)} 个non-immune mutations")
+    # print(f"找到 {len(non_immune_mutations)} 个non-immune mutations")
     
     # 存储结果的列表
     resolved_rows = []
@@ -1152,9 +1144,9 @@ def resolved_spots_by_immune_mutations(I_scaffold, immune_mutations, P_scaffold,
     df_reads_resolved_with_bulk = pd.concat([pd.DataFrame(bulk_row).T, df_reads_resolved])
     df_reads_resolved_with_bulk.index = ['bulk'] + df_reads_resolved.index.tolist()
     
-    print(f"处理完成: 原始spot数 {len(I_scaffold)}, 处理后spot数 {len(I_resolved)}")
-    print(f"一共有 {count} 个需要被拆分的 spots")
-    # print(f"需要拆分的spots的ID: {spots_to_split}")  # 输出拆分的spot ID
+    # print(f"处理完成: 原始spot数 {len(I_scaffold)}, 处理后spot数 {len(I_resolved)}")
+    # print(f"一共有 {count} 个需要被拆分的 spots")
+    # # print(f"需要拆分的spots的ID: {spots_to_split}")  # 输出拆分的spot ID
     
     return I_resolved, P_resolved, V_resolved, A_resolved, C_resolved, df_reads_resolved_with_bulk, spots_to_split
 
@@ -1738,7 +1730,7 @@ def plot_heatmap_with_celltype_by_your_sorting(I_raw, df_celltype, mutation_grou
     plt.subplots_adjust(bottom=0.1 if len(unique_types) > 0 else 0.05)
     plt.savefig(pdf_file, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"保存完成: {pdf_file}")
+    # print(f"保存完成: {pdf_file}")
 
 def select_founder_mutations(I_selected_and_sorted: pd.DataFrame, mutation_group: dict):
     """
@@ -2037,6 +2029,19 @@ def print_tree(node, level=0):
 # print_tree(T)
 
 
+def print_tree_logger(node, indent="", is_root=True):
+    """打印树结构，带树形连接线"""
+    if is_root:
+        logger.info(node.name)
+        for child in node.children:
+            print_tree_logger(child, "  ", False)
+    else:
+        logger.info(f"{indent}└─ {node.name}")
+        new_indent = indent + "    "
+        for child in node.children:
+            print_tree_logger(child, new_indent, False)
+
+
 ##### 树 TreeNode 格式保存和读取
 
 import json
@@ -2322,9 +2327,9 @@ def impute_backbone_clones(selected_df, backbone_mutations, mutation_group):
         if assignment is not None:
             exclusive_backbone_matrix.loc[cell, assignment] = 1
     
-    print("冲突解决统计:")
-    for stat, count in conflict_resolution_stats.items():
-        print(f"  {stat}: {count} cells")
+    # print("冲突解决统计:")
+    # for stat, count in conflict_resolution_stats.items():
+    #     print(f"  {stat}: {count} cells")
     
     return exclusive_backbone_matrix, final_assignment
 
@@ -2913,7 +2918,6 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -2928,7 +2932,6 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
     # 4. 找到所有相关路径上的节点，仅限于同一组的 clone 路径
     all_path_nodes = get_all_path_nodes_with_group_filter(intersection_nodes, tree_parent_dict, mutation_group, target_group)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut} in the same mutation group {target_group}")
     
     # 5. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -2966,7 +2969,6 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
 
 
@@ -2979,7 +2981,6 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -2991,7 +2992,6 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
     # 4. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -3038,7 +3038,6 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     
     # 6. 筛选出 anchor 是 target_node 且 placement_type 是 new_leaf 的 position
     target_positions = [
@@ -3046,7 +3045,6 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
         if pos['placement_type'] == 'new_leaf' and pos['anchor'] == target_node.name
     ]
     
-    logger.info(f"Filtered to {len(target_positions)} target positions for {new_mut} under node {target_node.name}")
     
     return target_positions
 
@@ -3060,7 +3058,6 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -3072,7 +3069,6 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
     # 4. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -3119,7 +3115,6 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
 
 def filter_candidate_positions_from_target_node(candidate_positions, subtree_nodes):
@@ -4728,8 +4723,8 @@ def integrate_mutations_to_scaffold_within_group(
     external_mutations = []
     conflict_mutations = []
     
-    for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
-        logger.info(f"Processing mutation: {new_mut}")
+    # for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
+    for new_mut in sorted_attached_mutations:
         
         # 1. 寻找交集节点
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
@@ -4737,7 +4732,6 @@ def integrate_mutations_to_scaffold_within_group(
         )
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
             continue
         
         # 2. 获取候选位置
@@ -4784,8 +4778,6 @@ def integrate_mutations_to_scaffold_within_group(
         # 7. 循环尝试候选位置
         placed = False
         for attempt, (idx, row) in enumerate(candidates_to_try.iterrows()):
-            logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
-                       f"(total_penalty={row['total_penalty']:.4f})")
             
             # 恢复备份
             M_current = M_backup.copy()
@@ -4800,7 +4792,6 @@ def integrate_mutations_to_scaffold_within_group(
                 
                 # 检查冲突
                 if scp.ul.is_conflict_free_gusfield(M_current):
-                    logger.info(f"✓ Mutation {new_mut} successfully placed (score={row['total_penalty']:.4f})")
                     placed = True
                     break
                 else:
@@ -4811,17 +4802,12 @@ def integrate_mutations_to_scaffold_within_group(
                 continue
         
         # 8. 处理结果
-        if placed:
-            logger.info(f"Updated tree after mutation {new_mut}:")
-            print_tree(T_current)
-            logger.info(f"Current M_current is conflict-free, shape: {M_current.shape}")
-        else:
+        if not placed:
             M_current = M_backup.copy()
             T_current = T_backup.copy()
             conflict_mutations.append(new_mut)
             logger.warning(f"Mutation {new_mut} added to conflict_mutations (all {len(candidates_to_try)} candidates failed)")
     
-    logger.info(f"Processing complete. External: {len(external_mutations)}, Conflict: {len(conflict_mutations)}")
     return external_mutations, conflict_mutations, T_current, M_current
 
 
@@ -4850,19 +4836,17 @@ def process_subtree_mutations_to_specific_node(
     if target_node_names is None:
         raise ValueError(f"Target node '{target_node_names}' not found in the tree")
     
-    logger.info(f"Found target node: {target_node_names}")
     
     # 分离子树组和单元素组
     multi_mut_subtree_groups = [g for g in subtree_groups if len(g) > 1]
     singleton_subtree_groups = [g for g in subtree_groups if len(g) == 1]
     
-    logger.info(f"Found {len(multi_mut_subtree_groups)} multi-mutation groups and {len(singleton_subtree_groups)} singleton groups to attach under {target_node_names}")
     
     # ============================================================
     # 处理多突变组
     # ============================================================
-    for group_idx, group in enumerate(tqdm(multi_mut_subtree_groups, desc="Processing multiple subtrees")):
-        logger.info(f"Building subtree {group_idx+1}/{len(multi_mut_subtree_groups)} for mutations: {group}")
+    # for group_idx, group in enumerate(tqdm(multi_mut_subtree_groups, desc="Processing multiple subtrees")):
+    for group_idx, group in enumerate(multi_mut_subtree_groups):
         
         sorted_group = sorted(group, key=lambda mut: I_selected[mut].sum(), reverse=True)
         viable_mutations = [mut for mut in sorted_group 
@@ -4871,15 +4855,14 @@ def process_subtree_mutations_to_specific_node(
         
         if not viable_mutations:
             external_mutations.extend(sorted_group)
-            logger.info(f"All mutations in group {group_idx+1} added to external_mutations")
             continue
         
         sorted_group = viable_mutations + non_viable_mutations
         current_group_start_node = None
         reattached_mutations = []
         
-        for idx, subtree_mut in enumerate(tqdm(sorted_group, desc="Processing mutations in group")):
-            logger.info(f"Processing mutation {idx+1}/{len(sorted_group)}: {subtree_mut}")
+        # for idx, subtree_mut in enumerate(tqdm(sorted_group, desc="Processing mutations in group")):
+        for idx, subtree_mut in enumerate(sorted_group):
             
             if idx == 0:
                 # 【修改】第一个突变：使用新的 integrate 函数
@@ -4905,7 +4888,6 @@ def process_subtree_mutations_to_specific_node(
                     continue
                 
                 current_group_start_node = T_current.find(subtree_mut)
-                logger.info(f"Created new leaf node: {subtree_mut}")
             
             else:
                 if current_group_start_node is None:
@@ -4935,7 +4917,6 @@ def process_subtree_mutations_to_specific_node(
         
         # 处理重新挂载的突变
         if reattached_mutations:
-            logger.info(f"Processing {len(reattached_mutations)} reattached mutations for group {group_idx+1}")
             for subtree_mut in reattached_mutations:
                 # 【修改】使用新的 integrate 函数
                 ext_temp, conf_temp, T_current, M_current = integrate_mutations_to_scaffold_within_group(
@@ -4957,10 +4938,9 @@ def process_subtree_mutations_to_specific_node(
     # ============================================================
     # 处理单突变组
     # ============================================================
-    logger.info(f"Processing {len(singleton_subtree_groups)} singleton groups")
-    for group in tqdm(singleton_subtree_groups, desc="Processing singleton subtrees"):
+    # for group in tqdm(singleton_subtree_groups, desc="Processing singleton subtrees"):
+    for group in singleton_subtree_groups:
         subtree_mut = group[0]
-        logger.info(f"Attaching singleton mutation: {subtree_mut}")
         
         # 【修改】使用新的 integrate 函数
         ext_temp, conf_temp, T_current, M_current = integrate_mutations_to_scaffold_within_group(
@@ -4979,7 +4959,6 @@ def process_subtree_mutations_to_specific_node(
         external_mutations.extend(ext_temp)
         conflict_mutations.extend(conf_temp)
     
-    logger.info(f"Processing complete. External: {len(external_mutations)}, Conflict: {len(conflict_mutations)}")
     
     return external_mutations, conflict_mutations, T_current, M_current, root_mutations
 
@@ -5307,7 +5286,6 @@ def generate_subgrouping_report(complete_mutation_hierarchy, backbones_of_group,
     with open(report_path, 'w') as f:
         f.write("\n".join(report_lines))
     
-    logger.info(f"Subgrouping report saved to: {report_path}")
     
     # 同时保存高CV突变的单独列表文件
     if high_cv_mutations and len(high_cv_mutations) > 0:
@@ -5317,7 +5295,6 @@ def generate_subgrouping_report(complete_mutation_hierarchy, backbones_of_group,
             f.write("=" * 50 + "\n\n")
             for mut in sorted(high_cv_mutations):
                 f.write(f"{mut}\n")
-        logger.info(f"High CV mutations list saved to: {high_cv_path}")
 
 
 def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(sorted_I_resolved, sorted_P_resolved, T_current, M_current, mutation_group, backbones_of_group, df_reads_resolved, df_features_new, outputpath, sampleid, logger, params, M_B, root_mutations, cutoff_mcf_for_graph, cutoff_mcn_for_graph):
@@ -5368,8 +5345,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         - conflict_mutations: Mutations that caused conflicts during placement
         - high_cv_mutations: Mutations with CV above threshold
     """
-    logger.info("Performing sub-grouping within backbone groups...")
-    logger.info(f"Using CV threshold: {params['cv_thresh']} for pre-subgrouping filtration")
     
     # 存储最终的子分组结果
     mutation_subgroups = {}
@@ -5388,7 +5363,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
     φ = params['phi']
     
     for group_id, backbone_mut in backbones_of_group.items():
-        logger.info(f"Processing subgroup for backbone group {group_id} with backbone mutation {backbone_mut}")
         
         dir_subgroup = outputpath+"/backbone_clone_"+str(group_id)+"."+str(backbone_mut)
         os.makedirs(dir_subgroup, exist_ok=True)
@@ -5403,12 +5377,10 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         
         if len(group_muts) < 1:
             ### condition_0: 这个 backbone group 下只有一个 backbone mutation 没有其他的可挂突变
-            logger.info(f"Group {group_id} has no non-backbone mutations, skipping sub-grouping")
             continue
         
         elif len(group_muts) == 1:
             ### condition_1: 可能这下面只有一个突变就直接往上挂
-            logger.info(f"Group {group_id} has only 1 non-backbone mutations, directly hang mutation to tree")
             
             # 首先检查这个突变的CV值
             single_mut = group_muts[0]
@@ -5416,7 +5388,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
             
             # 如果CV值高于阈值，添加到high_cv_mutations
             if cv_stats_single['cov_CV'] > params['cv_thresh']:
-                logger.info(f"Single mutation {single_mut} has high CV ({cv_stats_single['cov_CV']:.3f}), adding to high_cv_mutations")
                 high_cv_mutations.append(single_mut)
                 continue  # 跳过挂树操作
             
@@ -5442,16 +5413,13 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
             conflict_mutations.extend(conflict_mutations_temp)
             continue
         
-        logger.info(f"Group {group_id} has {len(group_muts)} non-backbone mutations for sub-grouping")
         
         # Step 1: 计算CV值并过滤
-        logger.info(f"Calculating CV values for {len(group_muts)} mutations in group {group_id}")
         low_cv_mutations, cv_stats_group = calculate_cv_for_subgrouping(df_reads_group, group_muts, params['cv_thresh'], logger)
         
         # 新增：将高CV突变添加到high_cv_mutations列表
         high_cv_in_group = [mut for mut in group_muts if mut not in low_cv_mutations]
         high_cv_mutations.extend(high_cv_in_group)
-        logger.info(f"Group {group_id}: {len(high_cv_in_group)} mutations with high CV added to high_cv_mutations: {high_cv_in_group}")
         
         # 添加组信息到CV统计中
         cv_stats_group['group_id'] = group_id
@@ -5461,7 +5429,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         # 如果低CV突变数量不足，跳过子分组
         if len(low_cv_mutations) < 2:
             ### condition_2: 可能有多个突变但是不足以执行 graph，就按照 maf 顺序往上挂
-            logger.info(f"Group {group_id}: only {len(low_cv_mutations)} mutations passed CV filter, skipping sub-grouping")
             
             # 只处理通过CV过滤的突变，高CV突变已经添加到high_cv_mutations
             for i, mut in enumerate(low_cv_mutations):  # 修改：只遍历low_cv_mutations
@@ -5490,7 +5457,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                 conflict_mutations.extend(conflict_mutations_temp)
             continue
         
-        logger.info(f"Group {group_id}: {len(low_cv_mutations)}/{len(group_muts)} mutations passed CV filter, proceeding with sub-grouping")
         
         # 从原始矩阵中提取通过CV过滤的突变数据
         I_group_low_cv = I_group[low_cv_mutations].copy()
@@ -5505,13 +5471,11 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
         # 新增：将无效的突变添加到external_mutations
         invalid_mutations = [mut for mut in low_cv_mutations if mut not in valid_mutations]
         external_mutations.extend(invalid_mutations)
-        logger.info(f"Group {group_id}: {len(invalid_mutations)} mutations failed quality filter, added to external_mutations")
         
         I_group_final = I_group_low_cv[valid_mutations]
         
         if I_group_final.shape[1] < 2:
             ### condition_2: 可能有多个突变但是不足以执行 graph，就按照 maf 顺序往上挂
-            logger.info(f"After quality filtration, group {group_id} has {I_group_final.shape[1]} mutations, skipping sub-grouping")
             
             # 只处理有效的低CV突变
             for i, mut in enumerate(valid_mutations):
@@ -5541,11 +5505,9 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                 conflict_mutations.extend(conflict_mutations_temp)
             continue
         
-        logger.info(f"Group {group_id}: {I_group_final.shape[1]} mutations available for Leiden sub-grouping")
         
         try:
             # Step 2: 计算突变间的相关性权重
-            logger.info(f"Calculating correlation weights for group {group_id}...")
             clone_weights_sub, pair_weights_sub = get_correlation_graph_elements(I_group_final, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph)
             
             if not pair_weights_sub or len(pair_weights_sub) < 2:
@@ -5557,7 +5519,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     logger.warning(f"Group {group_id}: insufficient edges ({len(pair_weights_sub)}) for community detection")
                 
                 # 但仍然需要处理这些突变 - 按MAF顺序挂树
-                logger.info(f"Group {group_id}: hanging {len(valid_mutations)} mutations to tree in MAF order")
                 
                 # 创建子分组信息
                 for i, mut in enumerate(valid_mutations):
@@ -5590,7 +5551,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
             
             else:
                 # Step 3: 使用Leiden算法进行子分组
-                logger.info(f"Performing Leiden sub-grouping for group {group_id}...")
                 mutation_subgroup, partition_sub, G_ig_sub = leiden_mutation_groups(
                     clone_weights_sub, pair_weights_sub, 
                     dir_subgroup + "/" + sampleid + f".group_{group_id}_subgraph.pdf", 
@@ -5782,7 +5742,6 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
                     'passed_quality_filter': all(mut in valid_mutations for mut in subgroup_muts)
                 }
                 
-            logger.info(f"Group {group_id}: found {len(subgroup_backbones)} subgroups with backbones: {list(subgroup_backbones.values())}")
             
             # 可视化子分组结果（如果有相应的数据）
             try:
@@ -5875,11 +5834,8 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(s
     generate_subgrouping_report(complete_mutation_hierarchy, backbones_of_group, subgroup_backbone_mutations, 
                               df_cv_stats_within_subgroup, outputpath, sampleid, logger, high_cv_mutations)
     
-    logger.info(f"Sub-grouping completed: {len(complete_mutation_hierarchy)} mutations in hierarchy")
-    logger.info(f"External mutations (failed to add to tree): {len(external_mutations)}")
-    logger.info(f"High CV mutations (excluded from analysis): {len(high_cv_mutations)}")
-    if high_cv_mutations:
-        logger.info(f"High CV mutations list: {high_cv_mutations}")
+    # if high_cv_mutations:
+    #     logger.info(f"High CV mutations list: {high_cv_mutations}")
     
     # 修改返回语句，添加high_cv_mutations
     return complete_mutation_hierarchy, subgroup_backbone_mutations, subgroup_details, df_cv_stats_within_subgroup, T_current, M_current, root_mutations, external_mutations, conflict_mutations, high_cv_mutations
@@ -5972,14 +5928,11 @@ def build_scaffold_tree(
     # ------------------------------
     # Step 1: Check Celltype Data
     # ------------------------------
-    logger.info("Running scaffold builder ...")
-    logger.info(f"Celltype data loaded: {df_celltype.shape[0]} cells")
     
     if is_filter_quality == "yes":
         # ------------------------------
         # Step 2: Initial Filtration
         # ------------------------------
-        logger.info("Starting initial filtration (Step 3.1) ...")
         kept_cells, kept_mutations, P_sub, V_sub, A_sub, C_sub, I_sub = initial_filter(
             P_somatic, V_somatic, A_somatic, C_somatic, I_somatic, params
         )
@@ -5987,7 +5940,6 @@ def build_scaffold_tree(
         # ------------------------------
         # Step 3: Coverage-Based Filtration
         # ------------------------------
-        logger.info("Running coverage-based filtration (Step 3.2) ...")
         scaffold_mutations, df_summary_filtration = coverage_filters(
             kept_mutations, df_reads_somatic, df_celltype, params, outputpath_scaffold
         )
@@ -5996,17 +5948,14 @@ def build_scaffold_tree(
             raise ValueError("No mutations passed coverage filtration after removing germline variants")
         
         # coverage_filters 返回的 scaffold_mutations 已经是排序好的（通过 kept_mutations 的顺序）
-        logger.info(f"Final scaffold set has {len(scaffold_mutations)} mutations")
     else:
         P_sub, V_sub, A_sub, C_sub, I_sub = P_somatic.copy(), V_somatic.copy(), A_somatic.copy(), C_somatic.copy(), I_somatic.copy()
         # ===== 对 scaffold_mutations 排序 =====
         scaffold_mutations = get_ordered_mutations(I_sub, df_features_new)
-        logger.info(f"Using all {len(scaffold_mutations)} mutations (no filtration)")
     
     # ------------------------------
     # Step 4: Create Final Scaffold Matrices
     # ------------------------------
-    logger.info("Creating final scaffold matrices ...")
     I_scaffold = I_sub[scaffold_mutations].copy()
     P_scaffold = P_sub[scaffold_mutations].copy()
     V_scaffold = V_sub[scaffold_mutations].copy()
@@ -6017,10 +5966,19 @@ def build_scaffold_tree(
     # ------------------------------
     # Step 5: Resolve Immune Mutations
     # ------------------------------
-    logger.info("Resolving immune mutations ...")
-    I_resolved, P_resolved, V_resolved, A_resolved, C_resolved, df_reads_resolved, spots_to_split = resolved_spots_by_immune_mutations(
-        I_scaffold, immune_mutations, P_scaffold, V_scaffold, A_scaffold, C_scaffold, df_reads_scaffold, p_threshold=0.5
-    )
+    if len(immune_mutations)==0:
+        I_resolved = I_scaffold.copy()
+        P_resolved = P_scaffold.copy()
+        V_resolved = V_scaffold.copy()
+        A_resolved = A_scaffold.copy()
+        C_resolved = C_scaffold.copy()
+        df_reads_resolved = df_reads_scaffold.copy()
+        spots_to_split = []
+    else:
+        I_resolved, P_resolved, V_resolved, A_resolved, C_resolved, df_reads_resolved, spots_to_split = resolved_spots_by_immune_mutations(
+            I_scaffold, immune_mutations, P_scaffold, V_scaffold, A_scaffold, C_scaffold, df_reads_scaffold, p_threshold=0.5
+        )
+    
     I_somatic_resolved, P_somatic_resolved = split_spots_by_immune_mutations_scaffold(
         spots_to_split, [i for i in immune_mutations if i in I_somatic.columns], I_somatic, P_somatic
     )
@@ -6034,7 +5992,6 @@ def build_scaffold_tree(
     # ------------------------------
     # Step 6: Mutation Grouping with Leiden Algorithm
     # ------------------------------
-    logger.info("Performing mutation grouping using Leiden algorithm ...")
     if is_filter_quality == "yes":
         cutoff_mcf_for_graph = 0.05
         cutoff_mcn_for_graph = 5
@@ -6070,12 +6027,10 @@ def build_scaffold_tree(
         list(mut_df_sorted['mutation']), 
         os.path.join(outputpath_scaffold, sampleid + ".heatmap_with_celltype_right_in_I_selected_and_sorted_after_graph_grouping.pdf")
     )
-    logger.info(f"Total mutation groups: {len(mutation_group)}")
     
     # ------------------------------
     # Step 7: Select Backbone Mutations
     # ------------------------------
-    logger.info("Selecting backbone mutations ...")
     backbones_of_group = select_founder_mutations(I_selected_and_sorted, mutation_group)
     
     # ===== 对 backbone_mutations 排序 =====
@@ -6108,7 +6063,6 @@ def build_scaffold_tree(
         for backbone in backbone_mutations
     }
     
-    logger.info(f"Found backbone mutations: {list(backbones_of_group.values())}")
     
     # ------------------------------
     # Step 8: Build Backbone Tree
@@ -6117,7 +6071,6 @@ def build_scaffold_tree(
     if not os.path.exists(dir_backbone):
         os.makedirs(dir_backbone)
     
-    logger.info("Building backbone tree ...")
     T_B = build_backbone_tree(backbone_mutations)
     I_B = I_selected_and_sorted[backbone_mutations]
     I_B_withNA3 = I_B.replace({np.nan: 3}).astype(int)
@@ -6157,7 +6110,6 @@ def build_scaffold_tree(
     C_selected = C_resolved.loc[I_selected.index, I_selected.columns]
     df_reads_selected = df_reads_resolved.loc[I_selected.index.insert(0, 'bulk'), I_selected.columns]
     
-    logger.info("Calculating penalties and refining placements ...")
     T_current = copy.deepcopy(T_B)
     M_current = M_B.copy()
     M_current.insert(0, 'ROOT', 1)
@@ -6201,7 +6153,6 @@ def build_scaffold_tree(
     # ------------------------------
     remained_mutations = []
     if len(external_mutations) > 0:
-        logger.info(f"Reprocessing {len(external_mutations)} external mutations...")
         
         # ===== 对 external_mutations 排序 =====
         sorted_external_mutations = get_ordered_mutations(I_selected, df_features_new)
@@ -6230,8 +6181,7 @@ def build_scaffold_tree(
     mutations_on_T_scaffold = M_scaffold_initial.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     M_scaffold = split_merged_columns(M_scaffold_initial, mutations_on_T_scaffold)
     
-    logger.info("Final scaffold tree:")
-    print_tree(T_scaffold)
+    print_tree_logger(T_scaffold)
     logger.info(f"Final scaffold matrix shape: {M_scaffold.shape}")
     
     # ------------------------------

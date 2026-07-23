@@ -207,7 +207,7 @@ def _log_tree_snapshot(active_logger, label, tree):
     if not _VERBOSE_TREE_UPDATES:
         return
     active_logger.info(label)
-    print_tree(tree)
+    # print_tree(tree)
 
 
 def _sanitize_matrix_for_conflict_check(matrix, active_logger, context_label, sample_limit=5):
@@ -984,7 +984,6 @@ def find_intersection_positions_within_tree_directly(T_current: TreeNode, new_mu
         T_current, matrix, new_mut, min_overlap
     )
     
-    logger.info(f"Found {len(intersection_nodes)} intersection nodes for {new_mut}: {intersection_nodes}")
     
     if len(intersection_nodes) == 0:
         logger.debug(f"No intersection nodes found for {new_mut}")
@@ -996,7 +995,6 @@ def find_intersection_positions_within_tree_directly(T_current: TreeNode, new_mu
     # 3. 找到所有相关路径上的节点
     all_path_nodes = find_all_path_nodes(intersection_nodes, tree_parent_dict)
     
-    logger.info(f"Found {len(all_path_nodes)} path nodes for {new_mut}")
     
     # 4. 预先创建基础树的深拷贝
     base_tree_copy = deepcopy(T_current)
@@ -1043,7 +1041,6 @@ def find_intersection_positions_within_tree_directly(T_current: TreeNode, new_mu
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast(base_tree_copy, node, combo, new_mut))
     
-    logger.info(f"Generated {len(candidate_positions)} candidate positions for {new_mut}")
     return candidate_positions
 
 
@@ -2020,7 +2017,6 @@ def compute_bayesian_penalty_for_positions_consider_ROOT(
         valid_results = []
         for idx, row in df_penalty.iterrows():
             if row['imputed_vec'].sum() == 0:
-                logger.info(f"Skipping position with all imputed_vec values as 0: {row['position']}")
                 continue
             valid_results.append(row)
         
@@ -2949,7 +2945,7 @@ def remove_mutations_from_tree_and_matrix(root: TreeNode, M_current: pd.DataFram
             # 节点所有 mutation 都被移除 → 删除节点
             parent = node.parent
             if parent is None:
-                raise ValueError("不能删除 ROOT 节点")
+                raise ValueError("Can not remove ROOT")
             for c in list(node.children):
                 parent.add_child(c)
             parent.remove_child(node)
@@ -2978,17 +2974,7 @@ def remove_mutations_from_tree_and_matrix(root: TreeNode, M_current: pd.DataFram
         if col not in M_removed.columns and col != 'ROOT':
             M_removed[col] = 0
     M_removed = M_removed[final_columns]
-    
-    # -----------------------------
-    # 检测树节点和矩阵列是否一致
-    tree_cols_set = set(T_removed.all_names_no_root())
-    matrix_cols_set = set(M_removed.columns) - {'ROOT'}
-    if tree_cols_set == matrix_cols_set:
-        print("✅ 树节点和矩阵列一致（不考虑顺序）")
-    else:
-        print(f"❌ 不一致，树有矩阵没的: {tree_cols_set - matrix_cols_set}, 矩阵有树没的: {matrix_cols_set - tree_cols_set}")
-    # -----------------------------
-    
+        
     return T_removed, M_removed
 
 
@@ -4059,7 +4045,6 @@ def attach_mutations_to_current_tree(
     conflict_mutations = []
     
     for new_mut in tqdm(sorted_attached_mutations, desc="Processing mutations", unit="mutation"):
-        logger.info(f"Processing mutation: {new_mut}")
         
         # 确定 new_mut 应该属于哪一个 backbone clone
         mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
@@ -4073,7 +4058,6 @@ def attach_mutations_to_current_tree(
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, new_mut)
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
             continue
         
         # 使用优化方法获取候选位置
@@ -4120,8 +4104,6 @@ def attach_mutations_to_current_tree(
         # ---- 循环尝试候选位置 ----
         placed = False
         for attempt, (idx, row) in enumerate(candidates_to_try.iterrows()):
-            logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
-                       f"(total_penalty={row['total_penalty']:.4f})")
             
             # 恢复备份
             M_current = M_backup.copy()
@@ -4136,7 +4118,6 @@ def attach_mutations_to_current_tree(
                 
                 # 检查冲突
                 if scp.ul.is_conflict_free_gusfield(M_current):
-                    logger.info(f"✓ Mutation {new_mut} successfully placed (score={row['total_penalty']:.4f})")
                     placed = True
                     break
                 else:
@@ -4147,17 +4128,12 @@ def attach_mutations_to_current_tree(
                 continue
         
         # ---- 处理结果 ----
-        if placed:
-            logger.info(f"Updated tree after mutation {new_mut}:")
-            print_tree(T_current)
-            logger.info(f"Current M_current is conflict-free, shape: {M_current.shape}")
-        else:
+        if not placed:
             M_current = M_backup.copy()
             T_current = T_backup.copy()
             conflict_mutations.append(new_mut)
             logger.warning(f"Mutation {new_mut} added to conflict_mutations (all {len(candidates_to_try)} candidates failed)")
     
-    logger.info(f"Processing complete. External: {len(external_mutations)}, Conflict: {len(conflict_mutations)}")
     
     return external_mutations, conflict_mutations, T_current, M_current, root_mutations
 
@@ -4181,13 +4157,11 @@ def process_rescue_mutations(
     conflict_mutations = []
     
     for new_mut in tqdm(sorted_rescue_mutations, desc="Processing rescue mutations", unit="mutation"):
-        logger.info(f"Processing rescue mutation: {new_mut}")
         
         # 找到交集节点
         intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, new_mut)
         if len(intersection_nodes) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no intersection found)")
             continue
         
         # 使用优化方法获取候选位置
@@ -4198,7 +4172,6 @@ def process_rescue_mutations(
         
         if len(potential_positions) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no candidate positions found)")
             continue
         
         # 基于 intersection 的情况先选出应该放在哪一个 clone 下
@@ -4209,7 +4182,6 @@ def process_rescue_mutations(
         
         if len(assigned_clone) == 0:
             external_mutations.append(new_mut)
-            logger.info(f"Mutation {new_mut} added to external_mutations (no significant correlated clone)")
             continue
         
         assigned_clone_muts = []
@@ -4253,8 +4225,6 @@ def process_rescue_mutations(
         # ---- 循环尝试候选位置 ----
         placed = False
         for attempt, (idx, row) in enumerate(candidates_to_try.iterrows()):
-            logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
-                       f"(total_penalty={row['total_penalty']:.4f})")
             
             M_current = M_backup.copy()
             T_current = T_backup.copy()
@@ -4266,7 +4236,6 @@ def process_rescue_mutations(
                 )
                 
                 if scp.ul.is_conflict_free_gusfield(M_current):
-                    logger.info(f"✓ Mutation {new_mut} successfully placed (score={row['total_penalty']:.4f})")
                     placed = True
                     break
                 else:
@@ -4277,9 +4246,8 @@ def process_rescue_mutations(
                 continue
         
         if placed:
-            logger.info(f"Updated tree after mutation {new_mut}:")
-            print_tree(T_current)
-            logger.info(f"Current M_current is conflict-free, shape: {M_current.shape}")
+            # print_tree(T_current)
+            logger.info(f"Updated tree! Current M_current is conflict-free, shape: {M_current.shape}")
         else:
             M_current = M_backup.copy()
             T_current = T_backup.copy()
@@ -4342,11 +4310,9 @@ def process_external_mutations_by_subtree_groups(
     multi_mut_subtree_groups = [g for g in subtree_groups if len(g) > 1]
     singleton_subtree_groups = [g for g in subtree_groups if len(g) == 1]
     
-    logger.info(f"Found {len(multi_mut_subtree_groups)} multi-mutation groups and {len(singleton_subtree_groups)} singleton groups")
     
     ##### 处理长度 >1 的子树组
     for group_idx, group in enumerate(tqdm(multi_mut_subtree_groups, desc="Processing multiple subtrees")):
-        logger.info(f"Building subtree {group_idx+1}/{len(multi_mut_subtree_groups)} for mutations: {group}")
         
         # 根据 I_attached 中每个 mutation 的 1 的个数排序（降序）
         sorted_group = sorted(group, key=lambda subtree_mut: I_attached[subtree_mut].sum(), reverse=True)
@@ -4358,7 +4324,6 @@ def process_external_mutations_by_subtree_groups(
             T_rollback = copy.deepcopy(T_current)
             M_rollback = M_current.copy()
             
-            logger.info(f"Processing mutation {idx+1}/{len(sorted_group)}: {subtree_mut}")
             
             if idx == 0:
                 # 第一个 mutation 直接挂到 ROOT
@@ -4387,7 +4352,6 @@ def process_external_mutations_by_subtree_groups(
                 intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, subtree_mut)
                 if len(intersection_nodes) == 0:
                     reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no intersection found)")
                     continue
                 
                 # 使用优化方法获取候选位置
@@ -4400,7 +4364,6 @@ def process_external_mutations_by_subtree_groups(
                 # 检查是否找到候选位置
                 if len(selected_positions) == 0:
                     reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to reattached_mutations (no candidate positions found)")
                     continue
                 
                 # ---- 备份当前状态 ----
@@ -4434,8 +4397,6 @@ def process_external_mutations_by_subtree_groups(
                 # ---- 循环尝试候选位置 ----
                 placed = False
                 for attempt, (idx_row, row) in enumerate(candidates_to_try.iterrows()):
-                    logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
-                               f"(total_penalty={row['total_penalty']:.4f})")
                     
                     M_current = M_backup.copy()
                     T_current = T_backup.copy()
@@ -4447,7 +4408,6 @@ def process_external_mutations_by_subtree_groups(
                         )
                         
                         if scp.ul.is_conflict_free_gusfield(M_current):
-                            logger.info(f"✓ Mutation {subtree_mut} successfully placed (score={row['total_penalty']:.4f})")
                             placed = True
                             break
                         else:
@@ -4457,10 +4417,7 @@ def process_external_mutations_by_subtree_groups(
                         logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
                         continue
                 
-                if placed:
-                    logger.info(f"Updated tree after mutation {subtree_mut}:")
-                    print_tree(T_current)
-                else:
+                if not placed:
                     M_current = M_backup.copy()
                     T_current = T_backup.copy()
                     reattached_mutations.append(subtree_mut)
@@ -4469,14 +4426,12 @@ def process_external_mutations_by_subtree_groups(
         # 处理重新挂载的突变（第一轮未处理的）
         second_reattached_mutations = []
         if len(reattached_mutations) > 0:            
-            logger.info(f"Processing {len(reattached_mutations)} reattached mutations for group {group_idx+1}")
             
             sorted_reattached_mutations = [i for i in I_attached.columns if i in reattached_mutations]
             for subtree_mut in tqdm(sorted_reattached_mutations, desc="Processing re-attached mutations"):
                 T_rollback = copy.deepcopy(T_current)
                 M_rollback = M_current.copy()
                 
-                logger.info(f"Processing re-attached mutation: {subtree_mut}")
                 
                 # 确定 subtree_mut 应该属于哪一个 backbone clone
                 mutation_list_under_backbone_nodes = get_mutation_clone_and_backbone_node_as_keys_by_first_level(T_current)
@@ -4490,7 +4445,6 @@ def process_external_mutations_by_subtree_groups(
                 intersection_nodes = find_all_intersect_muts_from_tree_by_matrix(T_current, I_attached, subtree_mut)
                 if len(intersection_nodes) == 0:
                     second_reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no intersection found)")
                     continue
                 
                 # 使用优化方法获取候选位置
@@ -4502,7 +4456,6 @@ def process_external_mutations_by_subtree_groups(
                 
                 if len(selected_positions) == 0:
                     second_reattached_mutations.append(subtree_mut)
-                    logger.info(f"Mutation {subtree_mut} added to second_reattached_mutations (no candidate positions found)")
                     continue
                 
                 # ---- 备份当前状态 ----
@@ -4536,8 +4489,6 @@ def process_external_mutations_by_subtree_groups(
                 # ---- 循环尝试候选位置 ----
                 placed = False
                 for attempt, (idx_row, row) in enumerate(candidates_to_try.iterrows()):
-                    logger.info(f"Attempt {attempt+1}/{len(candidates_to_try)}: position {row['position_index']} "
-                               f"(total_penalty={row['total_penalty']:.4f})")
                     
                     M_current = M_backup.copy()
                     T_current = T_backup.copy()
@@ -4559,10 +4510,7 @@ def process_external_mutations_by_subtree_groups(
                         logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
                         continue
                 
-                if placed:
-                    logger.info(f"Updated tree after re-attaching mutation {subtree_mut}:")
-                    print_tree(T_current)
-                else:
+                if not placed:
                     M_current = M_backup.copy()
                     T_current = T_backup.copy()
                     second_reattached_mutations.append(subtree_mut)
@@ -4574,20 +4522,17 @@ def process_external_mutations_by_subtree_groups(
             remained_mutations.extend(second_reattached_mutations)
     
     ##### 处理长度 =1 的单元素组
-    logger.info(f"Processing {len(singleton_subtree_groups)} singleton groups")
     for group in tqdm(singleton_subtree_groups, desc="Processing singleton subtrees"):
         T_rollback = copy.deepcopy(T_current)
         M_rollback = M_current.copy()            
         
         subtree_mut = group[0]
-        logger.info(f"Attaching singleton mutation directly to ROOT: {subtree_mut}")
         
         final_position = generate_new_leaf_on_root(T_current, subtree_mut)
         T_current = add_new_mutation_to_tree_independent(subtree_mut, T_current, final_position)
         M_current[subtree_mut] = I_attached[subtree_mut].fillna(0).astype(int)
         
-        logger.info(f"Tree after adding singleton {subtree_mut}:")
-        print_tree(T_current)
+        # print_tree(T_current)
         
         if not scp.ul.is_conflict_free_gusfield(M_current):
             logger.warning(f"Conflict detected after adding {subtree_mut}, rolling back")
@@ -4598,12 +4543,8 @@ def process_external_mutations_by_subtree_groups(
             
             # 把这个突变放到remained_mutations
             remained_mutations.append(subtree_mut)
-            logger.info(f"Mutation {subtree_mut} added to remained_mutations due to conflict")
             continue
     
-    logger.info("All external mutations have been processed successfully.")
-    logger.info(f"Remained mutations count: {len(remained_mutations)}")
-    logger.info(f"Conflict mutations count: {len(conflict_mutations)}")
     
     return remained_mutations, conflict_mutations, T_current, M_current, root_mutations
 
