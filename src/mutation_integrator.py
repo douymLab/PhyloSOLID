@@ -964,6 +964,34 @@ def merge_mutations(M_current_each_mut, all_nodes_in_T_scaffold):
     return merged_df
 
 
+def find_column_in_merged_columns(df, mutation_name):
+    """
+    在DataFrame的列中查找突变名，支持合并列（用'|'分隔）
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        要搜索的DataFrame
+    mutation_name : str
+        要查找的突变名
+    
+    Returns:
+    --------
+    str or None : 找到的列名，如果没找到返回None
+    """
+    if mutation_name in df.columns:
+        return mutation_name
+    
+    # 在合并列中查找
+    for col in df.columns:
+        if '|' in col:
+            muts_in_col = col.split('|')
+            if mutation_name in muts_in_col:
+                return col
+    
+    return None
+
+
 
 
 # -------------------------
@@ -3207,29 +3235,33 @@ def get_mutation_clone_and_backbone_node_as_keys_by_first_level(root: TreeNode) 
     return clone_dict
 
 
-def calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut):
+def calculate_intersection_counts_under_backbone_nodes(
+    mutation_list_under_backbone_nodes, M_current, I_attached, new_mut
+):
     """
     计算new_mut与每个backbone node下mutation list的共现数量
-    
-    参数:
-    mutation_list_under_backbone_nodes: dict, backbone node到mutation list的映射
-    M_current: DataFrame, 细胞在backbone nodes的状态 (0/1)
-    I_attached: DataFrame, 细胞在其他突变上的状态 (0/1/NaN)
-    new_mut: str, 要检查的新突变
-    
-    返回:
-    dict: 每个backbone node对应的共现数量
     """
-    
-    # 检查new_mut是否在I_attached中
     if new_mut not in I_attached.columns:
         raise ValueError(f"突变 {new_mut} 不在 I_attached 数据框中")
     
     intersection_counts = {}
     
     for backbone_node, mutation_list in mutation_list_under_backbone_nodes.items():
+        # ===== 关键修复：找到backbone_node在M_current中的实际列名 =====
+        actual_col = find_column_in_merged_columns(M_current, backbone_node)
+        
+        if actual_col is None:
+            # 如果找不到，尝试用backbone_node本身
+            actual_col = backbone_node
+        
+        # 检查列是否存在于M_current中
+        if actual_col not in M_current.columns:
+            print(f"Warning: column '{actual_col}' not found in M_current, skipping...")
+            intersection_counts[backbone_node] = 0
+            continue
+        
         # 1. 找到当前backbone node为1的细胞
-        backbone_cells = M_current[M_current[backbone_node] == 1].index
+        backbone_cells = M_current[M_current[actual_col] == 1].index
         
         # 2. 过滤出同时在I_attached中的细胞
         common_cells = backbone_cells.intersection(I_attached.index)
@@ -3253,9 +3285,7 @@ def calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backb
         
         for mutation in mutation_list:
             if mutation in I_attached.columns:
-                # 获取当前mutation在new_mut阳性细胞中的状态
                 mut_status = I_attached.loc[new_mut_positive_cells, mutation]
-                # 计算同时为1的数量（忽略NaN值）
                 intersection_count = (mut_status == 1).sum()
                 total_intersection += intersection_count
         
@@ -3263,44 +3293,15 @@ def calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backb
     
     return intersection_counts
 
+
 # # 使用示例
 # new_mut = 'chr8_91087030_T_G'
 # result = calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut)
 # print(result)
 
-def find_best_backbone_node(mutation_list_under_backbone_nodes, M_current, intersection_counts_under_backbone_node):
-    """
-    简化版本：只返回最佳backbone node
-    """
-    max_count = max(intersection_counts_under_backbone_node.values())
-    max_nodes = [node for node, count in intersection_counts_under_backbone_node.items() 
-                if count == max_count]
-    
-    if len(max_nodes) == 1:
-        return max_nodes[0]
-    
-    # 平局处理
-    best_node = None
-    best_normalized = -1
-    
-    for node in max_nodes:
-        backbone_cells = M_current[M_current[node] == 1].index
-        backbone_cell_count = len(backbone_cells)
-        
-        if backbone_cell_count > 0:
-            normalized = intersection_counts_under_backbone_node[node] / backbone_cell_count
-            if normalized > best_normalized:
-                best_normalized = normalized
-                best_node = node
-        else:
-            # 如果没有细胞，归一化值为0
-            if best_normalized < 0:  # 还没有找到有效节点
-                best_node = node
-                best_normalized = 0
-    
-    return best_node
-
-def find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut):
+def find_best_backbone_for_new_mutation(
+    mutation_list_under_backbone_nodes, M_current, I_attached, new_mut
+):
     """
     完整函数：计算共现数量并找到最佳backbone node
     """
@@ -3315,6 +3316,49 @@ def find_best_backbone_for_new_mutation(mutation_list_under_backbone_nodes, M_cu
     )
     
     return best_backbone, intersection_counts
+
+
+def find_best_backbone_node(mutation_list_under_backbone_nodes, M_current, intersection_counts_under_backbone_node):
+    """
+    简化版本：只返回最佳backbone node
+    """
+    if not intersection_counts_under_backbone_node:
+        return None
+    
+    max_count = max(intersection_counts_under_backbone_node.values())
+    max_nodes = [node for node, count in intersection_counts_under_backbone_node.items() 
+                if count == max_count]
+    
+    if len(max_nodes) == 1:
+        return max_nodes[0]
+    
+    # 平局处理：找实际存在的列
+    best_node = None
+    best_normalized = -1
+    
+    for node in max_nodes:
+        # ===== 关键修复：找到节点在M_current中的实际列名 =====
+        actual_col = find_column_in_merged_columns(M_current, node)
+        if actual_col is None:
+            actual_col = node
+        
+        if actual_col not in M_current.columns:
+            continue
+        
+        backbone_cells = M_current[M_current[actual_col] == 1].index
+        backbone_cell_count = len(backbone_cells)
+        
+        if backbone_cell_count > 0:
+            normalized = intersection_counts_under_backbone_node[node] / backbone_cell_count
+            if normalized > best_normalized:
+                best_normalized = normalized
+                best_node = node
+        else:
+            if best_normalized < 0:
+                best_node = node
+                best_normalized = 0
+    
+    return best_node
 
 # # 使用完整函数
 # best_backbone, intersection_counts = find_best_backbone_for_new_mutation(
