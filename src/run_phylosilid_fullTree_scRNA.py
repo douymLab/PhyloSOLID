@@ -71,7 +71,7 @@ parser.add_argument("--cv_rank_thresh", default="0.3", type=str,
                       - Single value: '0.3' (run once with this value)
                       - Comma-separated: '0.3,0.5,0.7' (search over these values)
                       - Range: '0.3-0.7:0.1' (from 0.3 to 0.7 with step 0.1)
-                      - 'auto': use default presets [0.3, 0.5, 0.7]""")
+                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7]""")
 parser.add_argument("--remove_artifact_mutations", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to permanently remove artifact mutations.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 

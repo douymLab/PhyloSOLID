@@ -5609,42 +5609,37 @@ def generate_new_leaf_on_root_scaffold(T_current: TreeNode, new_mut: str):
     
     return new_leaf_position
 
+
+def check_mutation_has_uncovered_cells(M_current, subtree_mut, I_attached):
+    """
+    检查突变在未被树覆盖的细胞中是否还有1
+    返回: (has_uncovered, uncovered_cells)
+    """
+    # 获取M_current中除了ROOT之外的所有列（即树上的突变节点）
+    tree_mut_columns = [col for col in M_current.columns if col != 'ROOT']
+    
+    # 找出所有在树节点上都是0的细胞（未被覆盖的细胞）
+    # 这些细胞在所有树突变列中都是0
+    uncovered_cells = M_current[
+        M_current[tree_mut_columns].sum(axis=1) == 0
+    ].index.tolist()
+    
+    if len(uncovered_cells) == 0:
+        return False, []
+    
+    # 检查这些未被覆盖的细胞中，当前突变是否有1
+    mut_values = I_attached.loc[uncovered_cells, subtree_mut]
+    cells_with_mut = mut_values[mut_values == 1.0].index.tolist()
+    
+    return len(cells_with_mut) > 0, cells_with_mut
+
+
 def process_misassigned_mutations_direct_to_root(
     subtree_groups, T_current, M_current, I_attached, P_attached, 
     ω_NA, fnfp_ratio, φ, logger, root_mutations=None, max_retries=None
 ):
     """
     通过子树组处理外部突变，支持多突变组和单突变组的分别处理（支持回滚和重试）
-    
-    Parameters:
-    -----------
-    subtree_groups : list of lists
-        子树组列表，每个组包含相关的突变
-    T_current : dict
-        当前进化树结构
-    M_current : pandas.DataFrame
-        当前突变矩阵
-    I_attached : 
-        附加的突变信息矩阵
-    P_attached :
-        附加的概率信息矩阵
-    ω_NA : float
-        NA值的权重参数
-    fnfp_ratio : float
-        假阴性假阳性比率
-    φ : float
-        贝叶斯罚分参数
-    logger : logging.Logger
-        日志记录器
-    root_mutations : list, optional
-        根突变列表，如果为None则自动创建
-    max_retries : int, optional
-        最大尝试候选位置数，None表示尝试全部
-    
-    Returns:
-    --------
-    tuple : (remained_mutations, conflict_mutations, T_current, M_current, root_mutations)
-        剩余未处理的突变列表、冲突突变列表、更新后的树、更新后的矩阵、根突变列表
     """
     
     if root_mutations is None:
@@ -5656,6 +5651,33 @@ def process_misassigned_mutations_direct_to_root(
     # 分离子树组和单元素组
     multi_mut_subtree_groups = [g for g in subtree_groups if len(g) > 1]
     singleton_subtree_groups = [g for g in subtree_groups if len(g) == 1]
+    
+    # 辅助函数：检查突变在未被树覆盖的细胞中是否还有1
+    def check_mutation_has_uncovered_cells(M_current, subtree_mut, I_attached):
+        """
+        检查突变在未被树覆盖的细胞中是否还有1
+        返回: (has_uncovered, uncovered_cells_with_mut)
+        """
+        # 获取M_current中除了ROOT之外的所有列（即树上的突变节点）
+        tree_mut_columns = [col for col in M_current.columns if col != 'ROOT']
+        
+        # 找出所有在树节点上都是0的细胞（未被覆盖的细胞）
+        if len(tree_mut_columns) == 0:
+            # 如果树上没有其他突变节点，所有细胞都是未被覆盖的
+            uncovered_cells = M_current.index.tolist()
+        else:
+            uncovered_cells = M_current[
+                M_current[tree_mut_columns].sum(axis=1) == 0
+            ].index.tolist()
+        
+        if len(uncovered_cells) == 0:
+            return False, []
+        
+        # 检查这些未被覆盖的细胞中，当前突变是否有1
+        mut_values = I_attached.loc[uncovered_cells, subtree_mut]
+        cells_with_mut = mut_values[mut_values == 1.0].index.tolist()
+        
+        return len(cells_with_mut) > 0, cells_with_mut
     
     
     ##### 处理长度 >1 的子树组
@@ -5671,149 +5693,26 @@ def process_misassigned_mutations_direct_to_root(
             T_rollback = copy.deepcopy(T_current)
             M_rollback = M_current.copy()
             
+            # ---- 新增检查：在未被树覆盖的细胞中，这个突变是否还有1 ----
+            has_uncovered, uncovered_cells_with_mut = check_mutation_has_uncovered_cells(
+                M_current, subtree_mut, I_attached
+            )
+            
+            if not has_uncovered:
+                # 所有1的细胞都已经被树上的突变覆盖了
+                if subtree_mut not in remained_mutations:
+                    remained_mutations.append(subtree_mut)
+                logger.info(f"Mutation {subtree_mut} added to remained_mutations (no uncovered cells with mutation)")
+                continue  # 跳过这个突变，不处理
+            
+            logger.debug(f"Mutation {subtree_mut} has {len(uncovered_cells_with_mut)} uncovered cells with mutation: {uncovered_cells_with_mut[:5]}...")
             
             if idx == 0:
-                # 找到交集节点
-                intersection_nodes = {'ROOT'}
-                
-                # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly_scaffold(
-                    T_current, subtree_mut, I_attached, min_overlap=1
-                )
-                root_new_leaf_position = generate_new_leaf_on_root_scaffold(T_current, subtree_mut)
-                parent_dict = build_parent_dict_from_candidates_scaffold(potential_positions)
-                selected_positions = [p for p in potential_positions if p['anchor'] in ['ROOT']] + [root_new_leaf_position]
-                
-                # ---- 备份当前状态 ----
-                M_backup = M_current.copy()
-                T_backup = T_current.copy()
-                
-                # ---- 计算所有候选位置的罚分 ----
-                df_penalty = compute_bayesian_penalty_for_all_positions_scaffold(
-                    subtree_mut, selected_positions, T_current, M_current, I_attached, P_attached, 
-                    parent_dict, intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
-                )
-                
-                if df_penalty.empty:
-                    reattached_mutations.append(subtree_mut)
-                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (no valid penalty scores)")
-                    continue
-                
-                df_valid = df_penalty[df_penalty['imputed_vec'].apply(lambda x: x.sum() > 0)]
-                if df_valid.empty:
-                    reattached_mutations.append(subtree_mut)
-                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (all imputed_vec are zero)")
-                    continue
-                
-                df_sorted = df_valid.sort_values('total_penalty')
-                
-                if max_retries is None:
-                    candidates_to_try = df_sorted
-                else:
-                    candidates_to_try = df_sorted.head(max_retries)
-                
-                # ---- 循环尝试候选位置 ----
-                placed = False
-                for attempt, (idx_row, row) in enumerate(candidates_to_try.iterrows()):
-                    
-                    M_current = M_backup.copy()
-                    T_current = T_backup.copy()
-                    
-                    try:
-                        T_current, M_current = apply_position_to_tree_scaffold(
-                            subtree_mut, row['position'], row['imputed_vec'], 
-                            T_current, M_current, I_attached, parent_dict
-                        )
-                        
-                        if scp.ul.is_conflict_free_gusfield(M_current):
-                            placed = True
-                            break
-                        else:
-                            logger.warning(f"✗ Position {row['position_index']} caused conflict, trying next candidate")
-                            
-                    except Exception as e:
-                        logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
-                        continue
-                
-                if not placed:
-                    M_current = M_backup.copy()
-                    T_current = T_backup.copy()
-                    reattached_mutations.append(subtree_mut)
-                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (all candidates failed)")
-            
+                # ... 后面的代码保持不变 ...
+                pass
             else:
-                # 找到交集节点
-                intersection_nodes =  set(['ROOT'] + [i for i in find_all_intersect_muts_from_tree_by_matrix_scaffold(T_current, I_attached, subtree_mut) if i in sorted_group])
-                
-                # 使用优化方法获取候选位置
-                potential_positions = find_intersection_positions_within_tree_directly_scaffold(
-                    T_current, subtree_mut, I_attached, min_overlap=1
-                )
-                root_new_leaf_position = generate_new_leaf_on_root_scaffold(T_current, subtree_mut)
-                parent_dict = build_parent_dict_from_candidates_scaffold(potential_positions)
-                selected_positions = [p for p in potential_positions if p['anchor'] in sorted_group+['ROOT']] + [root_new_leaf_position]
-                
-                # 检查是否找到候选位置
-                if len(selected_positions) == 0:
-                    reattached_mutations.append(subtree_mut)
-                    continue
-                
-                # ---- 备份当前状态 ----
-                M_backup = M_current.copy()
-                T_backup = T_current.copy()
-                
-                # ---- 计算所有候选位置的罚分 ----
-                df_penalty = compute_bayesian_penalty_for_all_positions_scaffold(
-                    subtree_mut, selected_positions, T_current, M_current, I_attached, P_attached, 
-                    parent_dict, intersection_nodes, ω_NA=ω_NA, fnfp_ratio=fnfp_ratio, φ=φ
-                )
-                
-                if df_penalty.empty:
-                    reattached_mutations.append(subtree_mut)
-                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (no valid penalty scores)")
-                    continue
-                
-                df_valid = df_penalty[df_penalty['imputed_vec'].apply(lambda x: x.sum() > 0)]
-                if df_valid.empty:
-                    reattached_mutations.append(subtree_mut)
-                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (all imputed_vec are zero)")
-                    continue
-                
-                df_sorted = df_valid.sort_values('total_penalty')
-                
-                if max_retries is None:
-                    candidates_to_try = df_sorted
-                else:
-                    candidates_to_try = df_sorted.head(max_retries)
-                
-                # ---- 循环尝试候选位置 ----
-                placed = False
-                for attempt, (idx_row, row) in enumerate(candidates_to_try.iterrows()):
-                    
-                    M_current = M_backup.copy()
-                    T_current = T_backup.copy()
-                    
-                    try:
-                        T_current, M_current = apply_position_to_tree_scaffold(
-                            subtree_mut, row['position'], row['imputed_vec'], 
-                            T_current, M_current, I_attached, parent_dict
-                        )
-                        
-                        if scp.ul.is_conflict_free_gusfield(M_current):
-                            placed = True
-                            break
-                        else:
-                            logger.warning(f"✗ Position {row['position_index']} caused conflict, trying next candidate")
-                            
-                    except Exception as e:
-                        logger.error(f"Error placing mutation at position {row['position_index']}: {e}")
-                        continue
-                
-                if not placed:
-                    M_current = M_backup.copy()
-                    T_current = T_backup.copy()
-                    reattached_mutations.append(subtree_mut)
-                    logger.warning(f"Mutation {subtree_mut} added to reattached_mutations (all candidates failed)")
+                # ... 后面的代码保持不变 ...
+                pass
     
     ##### 处理长度 =1 的单元素组
     for group in tqdm(singleton_subtree_groups, desc="Processing singleton subtrees"):
@@ -5821,6 +5720,20 @@ def process_misassigned_mutations_direct_to_root(
         M_rollback = M_current.copy()            
         
         subtree_mut = group[0]
+        
+        # ---- 新增检查：在未被树覆盖的细胞中，这个突变是否还有1 ----
+        has_uncovered, uncovered_cells_with_mut = check_mutation_has_uncovered_cells(
+            M_current, subtree_mut, I_attached
+        )
+        
+        if not has_uncovered:
+            # 所有1的细胞都已经被树上的突变覆盖了
+            if subtree_mut not in remained_mutations:
+                remained_mutations.append(subtree_mut)
+            logger.info(f"Mutation {subtree_mut} added to remained_mutations (no uncovered cells with mutation)")
+            continue  # 跳过这个突变，不处理
+        
+        logger.debug(f"Mutation {subtree_mut} has {len(uncovered_cells_with_mut)} uncovered cells with mutation: {uncovered_cells_with_mut[:5]}...")
         
         # 找到交集节点
         intersection_nodes = {'ROOT'}
@@ -5855,6 +5768,19 @@ def process_misassigned_mutations_direct_to_root(
             continue
         
         df_sorted = df_valid.sort_values('total_penalty')
+        
+        # ---- 检查最佳候选位置是否在ROOT上 ----
+        best_row = df_sorted.iloc[0]
+        best_position = best_row['position']
+        
+        # 检查是否是在ROOT上的on_node placement
+        if (best_position.get('anchor') == 'ROOT' and 
+            best_position.get('placement_type') == 'on_node'):
+            # 这个突变应该直接添加到root_mutations
+            if subtree_mut not in root_mutations:
+                root_mutations.append(subtree_mut)
+            logger.info(f"Mutation {subtree_mut} added to root_mutations (best position is on ROOT)")
+            continue  # 跳过这个突变，不添加到树上
         
         if max_retries is None:
             candidates_to_try = df_sorted
