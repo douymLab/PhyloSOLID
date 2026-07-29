@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PhyloSOLID: Phylogenetic reconstruction from spatial transcriptomics data
+PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity
 
 This pipeline constructs phylogenetic trees from spatial transcriptomics data with:
 - Germline variant filtering (optional)
@@ -287,86 +287,6 @@ df_reads_raw = data['df_reads']
 I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
 
 logger.info(f"Loaded data: {len(P_raw)} cells, {len(I_raw.columns)} mutations")
-
-
-##### Output binary matrix with NA=0
-I_raw_withNA0 = I_raw.replace({np.nan: 0}).astype(int)
-I_raw_withNA0.to_csv(os.path.join(outputpath, "I_raw_withNA0.txt"), sep="\t")
-I_raw_withNA0_T = I_raw_withNA0.T
-I_raw_withNA0_T.to_csv(os.path.join(outputpath, "I_raw_withNA0_T.txt"), sep="\t")
-
-I_raw_withNA3 = I_raw.replace({np.nan: 3}).astype(int)
-I_raw_withNA3.to_csv(os.path.join(outputpath, "I_raw_withNA3.txt"), sep="\t")
-I_raw_withNA3_T = I_raw_withNA3.T
-I_raw_withNA3_T.to_csv(os.path.join(outputpath, "I_raw_withNA3_T.txt"), sep="\t")
-
-##### Output for BSCITE bulk input
-df_corrected = df_reads_raw.copy()
-
-def split_and_sum(series):
-    before_sum = 0
-    after_sum = 0
-    
-    for value in series:
-        if pd.notna(value) and '/' in str(value):
-            parts = str(value).split('/')
-            if len(parts) == 2:
-                try:
-                    before_sum += int(parts[0])
-                    after_sum += int(parts[1])
-                except ValueError:
-                    continue
-                    
-    return f"{before_sum}/{after_sum}"
-
-for col in df_corrected.columns:
-    df_corrected.loc['pseudo_bulk', col] = split_and_sum(df_corrected[col])
-
-output_bulk_data = []
-
-sample1 = 'pseudo_bulk'
-sample2 = 'bulk'
-
-remaining_cells = [idx for idx in df_corrected.index if idx not in ['pseudo_bulk', 'bulk']]
-sample3 = deterministic_choice(remaining_cells, salt="scRNA_bulk_sample")
-
-print(f"Using samples: {sample1}, {sample2}, {sample3}")
-
-for i, snp_name in enumerate(df_corrected.columns):
-    sample1_value = df_corrected.loc[sample1, snp_name]
-    sample2_value = df_corrected.loc[sample2, snp_name] 
-    sample3_value = df_corrected.loc[sample3, snp_name]
-    
-    samples_mutant = []
-    samples_reference = []
-    
-    for value in [sample1_value, sample2_value, sample3_value]:
-        if pd.isna(value):
-            samples_mutant.append(0)
-            samples_reference.append(0)
-        elif '/' in str(value):
-            mutant, reference = str(value).split('/')
-            samples_mutant.append(int(mutant))
-            samples_reference.append(int(reference))
-        else:
-            samples_mutant.append(0)
-            samples_reference.append(0)
-    
-    mutant_counts = f"{samples_mutant[0]};{samples_mutant[1]};{samples_mutant[2]}"
-    reference_counts = f"{samples_reference[0]};{samples_reference[1]};{samples_reference[2]}"
-    
-    chromosome, position = get_random_chromosome_position(snp_name)
-    
-    output_bulk_data.append({
-        'ID': f'mut{i}',
-        'Chromosome': chromosome,
-        'Position': position,
-        'MutantCount': mutant_counts,
-        'ReferenceCount': reference_counts
-    })
-
-output_bulk_df = pd.DataFrame(output_bulk_data)
-output_bulk_df.to_csv(os.path.join(outputpath, "input_BULK.txt"), sep='\t', index=False)
 
 
 ##### Remove cells with no mutations (all zeros)
