@@ -256,7 +256,7 @@ SETTING_PARAMS = {
     "fp_ratio_cutoff_across_tree": 0.2,
     "fn_ratio_cutoff_across_tree": 0.9,
     "fp_ratio_cutoff_within_subclone": 0.1,
-    "fp_ratio_persite_cutoff": 0.1, 
+    "fp_ratio_persite_cutoff": 0.1,
     "fp_count_persite_cutoff": 0,
     
     "fp_ratio_per_mutation_cross_all_cells_cutoff": 0.2,
