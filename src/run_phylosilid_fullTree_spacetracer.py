@@ -18,27 +18,20 @@ Usage:
 
 Output Structure:
     outputpath/
-    ├── 01_germline_filter/      # Germline variant filtering results
-    ├── 02_scaffold_builder/     # Scaffold tree (CV-specific subdirectories)
+    ├── 01_germline_filter/
+    ├── 02_scaffold_builder/
     │   ├── CV0.3/
     │   ├── CV0.4/
     │   └── ...
-    ├── 03_mutation_integrator/  # Full-resolved tree (CV-specific)
+    ├── 03_mutation_integrator/
     │   ├── CV0.3/
+    │   ├── CV0.4/
     │   └── ...
-    ├── 04_final_results/        # Best/only results
-    │   ├── phylo/
-    │   ├── run_summary.txt
-    │   └── README.txt
+    ├── 04_final_results/
     └── cv_threshold_search_results.csv
 
-Features:
-    - CV threshold search mode for optimal parameter selection
-    - Dynamic programming for pass tree detection
-    - FP/FN based quality control
-    - Artifact mutation removal
-    - Newick/JSON tree export
 """
+
 
 import time
 start_time = time.perf_counter()
@@ -183,24 +176,6 @@ remove_artifact_mutations = args.remove_artifact_mutations
 # Parse CV thresholds
 cv_thresholds = parse_cv_thresholds(cv_rank_thresh_str)
 is_search_mode = len(cv_thresholds) > 1
-
-
-# ============================================================
-# Directory structure
-# ============================================================
-# outputpath/
-# ├── 01_germline_filter/
-# ├── 02_scaffold_builder/
-# │   ├── CV0.3/
-# │   ├── CV0.4/
-# │   └── CV0.5/
-# ├── 03_mutation_integrator/
-# │   ├── CV0.3/
-# │   ├── CV0.4/
-# │   └── CV0.5/
-# ├── 04_final_results/
-# └── cv_threshold_search_results.csv
-# ============================================================
 
 # Create main output directories
 outputpath_01 = os.path.join(outputpath, "01_germline_filter")

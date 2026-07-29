@@ -1,20 +1,53 @@
 #!/usr/bin/env python3
+"""
+PhyloSOLID: Phylogenetic reconstruction from single-cell RNA sequencing data
+
+This pipeline constructs phylogenetic trees from single-cell RNA sequencing (scRNA-seq) data with somatic mutation inference and phylogenetic reconstruction.
+
+Features:
+    - Mosaic mutation identification via classifier (optional)
+    - Germline variant filtering (optional)
+    - Scaffold tree construction with CV threshold optimization
+    - Full-resolved tree building with mutation integration
+    - FP/FN based quality control
+    - Artifact mutation removal
+    - CV threshold search mode for optimal parameter selection
+    - Newick/JSON tree export and clone assignment
+
+Author: Qing
+Date: 2025/09/16
+Update: 2025/10/13
+Latest: 2026/07/22
+
+Usage:
+    python [this script] -s SAMPLE_ID -i /path/to/data -o /path/to/output
+
+Output Structure:
+    outputpath/
+    ├── 01_classifier_filter/
+    ├── 02_germline_filter/
+    ├── 03_scaffold_builder/
+    │   ├── CV0.3/
+    │   ├── CV0.4/
+    │   └── ...
+    ├── 04_mutation_integrator/
+    │   ├── CV0.3/
+    │   ├── CV0.4/
+    │   └── ...
+    ├── 05_final_results/
+    └── cv_threshold_search_results.csv
+
+"""
+
+
+import time
+start_time = time.perf_counter()
+
 import os
 os.environ['PYTHONHASHSEED'] = '42'
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
-
-
-# Date: 2025/09/16
-# Update: 2025/10/13
-# Latest: 2026/07/22
-# Author: Qing
-
-
-##### Time #####
-import time
-start_time = time.perf_counter()
 
 
 ################################################################################################
@@ -152,25 +185,6 @@ remove_artifact_mutations = args.remove_artifact_mutations
 # Parse CV thresholds
 cv_thresholds = parse_cv_thresholds(cv_rank_thresh_str)
 is_search_mode = len(cv_thresholds) > 1
-
-
-# ============================================================
-# Directory structure
-# ============================================================
-# outputpath/
-# ├── 01_classifier_filter/
-# ├── 02_germline_filter/
-# ├── 03_scaffold_builder/
-# │   ├── CV0.3/
-# │   ├── CV0.4/
-# │   └── CV0.5/
-# ├── 04_mutation_integrator/
-# │   ├── CV0.3/
-# │   ├── CV0.4/
-# │   └── CV0.5/
-# ├── 05_final_results/
-# └── cv_threshold_search_results.csv
-# ============================================================
 
 # Create main output directories
 outputpath_01 = os.path.join(outputpath, "01_classifier_filter")
