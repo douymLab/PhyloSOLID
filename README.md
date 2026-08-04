@@ -76,7 +76,7 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 - **v2.0.0** (2026-07-01): Major performance optimization
 - **v1.0.0** (2026-02-27): Initial public release
 
-For complete release notes, visit the [Releases page](https://github.com/yourusername/PhyloSOLID/releases).
+For complete release notes, visit the [Releases page](https://github.com/douymLab/PhyloSOLID/releases).
 
 ---
 
