@@ -69,39 +69,14 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 ---
 
-## Release Notes
+## Version History
 
-*PhyloSOLID is actively maintained. Check GitHub Releases for the latest updates.*
+- **v3.1.0** (2026-07-28): CV threshold auto-search, organized output structure, new `full_tree_builder.py` module
+- **v3.0.0** (2026-07-02): Smart conflict resolution, Leiden graph acceleration, multi-threaded data loading
+- **v2.0.0** (2026-07-01): Major performance optimization
+- **v1.0.0** (2026-02-27): Initial public release
 
-**Version 3.1.0** (2026-07-28) | [Full Changelog](https://github.com/douymLab/PhyloSOLID/releases)
-
-**New Features:**
-- **CV threshold auto-search**: The `--cv_rank_thresh` parameter now supports single values, comma-separated lists, ranges, and 'auto' mode
-- **Optimal threshold selection**: Automatically selects the CV threshold that minimizes `Ω (pre-QC) + Ω (final)`
-- **Organized output structure**: Results for each tested CV value are stored in separate directories (`CV0_3/`, `CV0_4/`, etc.)
-- **Final results directory**: Best CV results are copied to `05_final_results/` for easy access
-- **New module**: `full_tree_builder.py` encapsulates Steps 6-8 of the pipeline
-
-**Bug Fixes:**
-- Fixed `cluster_external_mutations_by_intersection` import issue
-- Fixed `high_cv_mutations` undefined variable error
-- Resolved various `NameError` issues in scaffold building
-
-**Version 3.0.0** (2026-07-02) | [Full Changelog](https://github.com/douymLab/PhyloSOLID/releases)
-
-**Core Improvements:**
-- Smarter conflict resolution with optimal candidate selection based on penalty scores
-- Refined mutation reattachment (sequential, one-by-one) for more robust tree building
-- Accelerated Leiden graph clustering for faster cell grouping
-- Multi-threaded data loading with `--load_workers` and `--export_workers` parameters
-
-**Version 2.0.0** (2026-07-01)
-- Performance optimization for core tree-building pipeline
-- Speed improvements in data loading and mutation integration
-
-**Version 1.0.0** (2026-02-27)
-- First public release, rebuilt from PhyloMosaicGenie prototype
-- Streamlined genotyping and phylogenetic analysis workflow
+For complete release notes, visit the [Releases page](https://github.com/yourusername/PhyloSOLID/releases).
 
 ---
 
