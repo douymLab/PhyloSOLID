@@ -266,6 +266,7 @@ def filter_scaffold_muts_by_na_proportion(filtered_sites, df_reads, df_celltype,
     reads = df_reads.drop(index='bulk', errors='ignore')
     # --- 2. 获取所有 cell type ---
     cell_types = df_celltype['cell_type'].unique()
+    
     # --- 3. 构建 coverage matrix（有覆盖记 1，无覆盖或 NA 记 0） ---
     def has_coverage(val):
         if pd.isna(val):
@@ -275,7 +276,9 @@ def filter_scaffold_muts_by_na_proportion(filtered_sites, df_reads, df_celltype,
             return 1 if int(total) > 0 else 0
         except:
             return 0
+    
     coverage_matrix = reads.applymap(has_coverage)
+    
     # --- 4. 计算 NA proportion ---
     df_NA_prop = pd.DataFrame(index=filtered_sites, columns=cell_types, dtype=float)
     for mut in filtered_sites:
@@ -287,13 +290,16 @@ def filter_scaffold_muts_by_na_proportion(filtered_sites, df_reads, df_celltype,
             else:
                 cov_values = coverage_matrix.loc[valid_cells, mut]
                 df_NA_prop.loc[mut, t] = 1.0 - cov_values.sum() / len(valid_cells)
+    
     # --- 5. 计算 cutoff ---
     if na_prop_thresh is not None:
         theta = pd.Series(na_prop_thresh, index=cell_types)
     else:
         theta = df_NA_prop.quantile(0.75, axis=0)
+    
     # --- 6. 判断 informative ---
     informative = df_NA_prop.lt(theta, axis=1)
+    
     # --- 7. 筛选 high-confidence scaffold mutations ---
     scaffold_mutations = []
     cell_prop = df_celltype['cell_type'].value_counts(normalize=True)
@@ -311,6 +317,7 @@ def filter_scaffold_muts_by_na_proportion(filtered_sites, df_reads, df_celltype,
         else:
             if n_informative >= 2:
                 scaffold_mutations.append(mut)
+    
     print("Step1 (coverage-based) mutations:", len(scaffold_mutations))
     return scaffold_mutations, df_NA_prop
 
@@ -3335,35 +3342,6 @@ def build_lineage_parent_dict_from_tree(tree, anchor):
     return filtered_dict
 
 
-# def find_all_intersect_muts_from_tree_by_matrix_scaffold(tree, matrix, target_mut, min_overlap=1):
-#     """
-#     返回所有与 target_mut 在 matrix 中有至少 min_overlap 个细胞共同出现的突变集合。
-#     """
-#     intersect_muts = set()
-    
-#     # 遍历所有节点（除 ROOT）
-#     for node in tree.all_nodes():
-#         if node.name == "ROOT":
-#             continue
-        
-#         for mut in node.name.split("|"):
-#             if mut == target_mut:
-#                 continue  # 跳过自身
-            
-#             if mut not in matrix.columns or target_mut not in matrix.columns:
-#                 continue  # 确保突变存在于矩阵中
-            
-#             # 计算两突变的共现数量
-#             mut_vec = matrix[mut].fillna(0)
-#             target_vec = matrix[target_mut].fillna(0)
-#             N11 = ((mut_vec == 1) & (target_vec == 1)).sum()
-            
-#             # 共现数量足够才认为有交集
-#             if N11 >= min_overlap:
-#                 intersect_muts.add(mut)
-    
-#     return intersect_muts
-
 def find_all_intersect_muts_from_tree_by_matrix_scaffold(tree, matrix, target_mut, min_overlap=1):
     """
     返回所有与 target_mut 在 matrix 中有至少 min_overlap 个细胞共同出现的树节点集合。
@@ -4116,37 +4094,12 @@ def compute_bayesian_penalty_for_all_positions_scaffold(
 # 将特定位置应用到树和矩阵
 # ============================================================
 
-def apply_position_to_tree_scaffold(
+def apply_position_to_tree(
     new_mut, position, imputed_vec, T_current, M_current, I_selected, parent_dict
 ):
     """
-    Apply a specific placement position to the tree and mutation matrix.
-    
-    Parameters
-    ----------
-    new_mut : str
-        Mutation to be added.
-    position : dict
-        Placement position containing anchor and placement_type.
-    imputed_vec : pd.Series
-        Imputed mutation vector for the new mutation.
-    T_current : dict
-        Current phylogenetic tree.
-    M_current : pd.DataFrame
-        Current mutation matrix (cells × mutations).
-    I_selected : pd.DataFrame
-        Mutation indicator matrix (unused but kept for API consistency).
-    parent_dict : dict
-        Parent-child relationships for mutation chain construction.
-    
-    Returns
-    -------
-    tuple
-        Updated tree and mutation matrix.
+    Apply the specific position to trees and matrices
     """
-    import pandas as pd
-    
-    # Deep copy to avoid modifying originals
     M_updated = M_current.copy()
     T_updated = T_current.copy()
     
@@ -4156,17 +4109,12 @@ def apply_position_to_tree_scaffold(
     # Get full mutation chain from anchor to ROOT
     full_mutnode_chain = get_full_mutnode_chain_with_anchor_scaffold(anchor, parent_dict)
     
-    # ----------------------------------------------------------------------
-    # Step 1: Update M_updated with imputed vector
-    # ----------------------------------------------------------------------
-    
     # Ensure imputed_vec has the same index as M_updated
     if not imputed_vec.index.equals(M_updated.index):
         imputed_vec = imputed_vec.reindex(M_updated.index, fill_value=0)
     
     # Get cells where imputed_vec = 1
     cells_with_final_one = imputed_vec[imputed_vec == 1].index.tolist()
-    
     if len(cells_with_final_one) > 0:
         # Propagate mutations along the chain
         for cell in cells_with_final_one:
@@ -4174,13 +4122,15 @@ def apply_position_to_tree_scaffold(
                 if M_updated.loc[cell, mutation] == 0:
                     M_updated.loc[cell, mutation] = 1
     
-    # Add new mutation column to M_updated
-    M_updated[new_mut] = imputed_vec
+    # Add new mutation column to M_updated (consider 'on_node')
+    if placement_type == 'on_node':
+        new_colname = anchor + "|" + new_mut
+        M_updated.drop(anchor, axis=1, inplace=True)
+        M_updated[new_colname] = imputed_vec
+    else:
+        M_updated[new_mut] = imputed_vec
     
-    # ----------------------------------------------------------------------
-    # Step 2: Update tree structure
-    # ----------------------------------------------------------------------
-    
+    # Update tree structure
     T_updated = add_new_mutation_to_tree_independent(new_mut, T_updated, position)
     
     return T_updated, M_updated

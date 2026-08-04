@@ -1816,8 +1816,10 @@ def build_fully_resolved_tree(
     
     if immune_mutations is None:
         immune_mutations = []
+    
     if spots_to_split is None:
         spots_to_split = []
+    
     if conflict_mutations is None:
         conflict_mutations = []
     

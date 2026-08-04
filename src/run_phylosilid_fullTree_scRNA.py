@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-PhyloSOLID: Phylogenetic reconstruction from single-cell RNA sequencing data
+PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity
 
-This pipeline constructs phylogenetic trees from single-cell RNA sequencing (scRNA-seq) data with somatic mutation inference and phylogenetic reconstruction.
-
-Features:
-    - Mosaic mutation identification via classifier (optional)
-    - Germline variant filtering (optional)
-    - Scaffold tree construction with CV threshold optimization
-    - Full-resolved tree building with mutation integration
-    - FP/FN based quality control
-    - Artifact mutation removal
-    - CV threshold search mode for optimal parameter selection
-    - Newick/JSON tree export and clone assignment
+This pipeline constructs phylogenetic trees from spatial transcriptomics data with:
+- Mosaic mutation identification via classifier (optional)
+- Germline variant filtering (optional)
+- Scaffold tree construction with CV threshold optimization
+- Full-resolved tree building with mutation integration
+- Artifact removal and discordance metric calculation
 
 Author: Qing
 Date: 2025/09/16
@@ -98,13 +93,13 @@ parser.add_argument("--features_file", default=None, type=str, help="The feature
 parser.add_argument("--is_predict_germ", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to predict germline mutations.")
 parser.add_argument("--is_detect_passtree_by_dp", default="no", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to run Dynamic programing step.")
 parser.add_argument("--is_filter_quality", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to filter mutations in scaffold steps by coverage quality.")
-parser.add_argument("--cv_rank_thresh", default="0.3", type=str, 
+parser.add_argument("--cv_rank_thresh", default="auto", type=str, 
                     help="""CV rank threshold for coverage-based filtration.
                     Options:
                       - Single value: '0.3' (run once with this value)
                       - Comma-separated: '0.3,0.5,0.7' (search over these values)
                       - Range: '0.3-0.7:0.1' (from 0.3 to 0.7 with step 0.1)
-                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7]""")
+                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]""")
 parser.add_argument("--remove_artifact_mutations", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to permanently remove artifact mutations.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 
@@ -127,13 +122,13 @@ def parse_cv_thresholds(cv_rank_thresh_str):
         '0.3,0.5,0.7'   -> [0.3, 0.5, 0.7]
         '0.3-0.7:0.1'   -> [0.3, 0.4, 0.5, 0.6, 0.7]
         '0.3-0.7'       -> [0.3, 0.4, 0.5, 0.6, 0.7]  (default step 0.1)
-        'auto'          -> [0.3, 0.4, 0.5, 0.6, 0.7]
+        'auto'          -> [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     """
     cv_rank_thresh_str = cv_rank_thresh_str.strip()
     
     # Case 1: 'auto' -> use default presets
     if cv_rank_thresh_str.lower() == 'auto':
-        return [0.3, 0.4, 0.5, 0.6, 0.7]
+        return [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
     
     # Case 2: Range format: '0.3-0.7:0.1'
     range_pattern = r'^([\d.]+)\s*-\s*([\d.]+)(?:\s*:\s*([\d.]+))?$'
@@ -302,12 +297,14 @@ I_raw = build_binary_I(P_raw, V_raw, C_raw, params["p_thresh"])
 logger.info(f"Loaded data: {len(P_raw)} cells, {len(I_raw.columns)} mutations")
 
 
-##### Output binary matrix with NA=0
+##### Output binary matrix
+I_raw.to_csv(os.path.join(outputpath, "I_raw.txt"), sep="\t")
+# NA=0
 I_raw_withNA0 = I_raw.replace({np.nan: 0}).astype(int)
 I_raw_withNA0.to_csv(os.path.join(outputpath, "I_raw_withNA0.txt"), sep="\t")
 I_raw_withNA0_T = I_raw_withNA0.T
 I_raw_withNA0_T.to_csv(os.path.join(outputpath, "I_raw_withNA0_T.txt"), sep="\t")
-
+# NA=3
 I_raw_withNA3 = I_raw.replace({np.nan: 3}).astype(int)
 I_raw_withNA3.to_csv(os.path.join(outputpath, "I_raw_withNA3.txt"), sep="\t")
 I_raw_withNA3_T = I_raw_withNA3.T

@@ -1740,26 +1740,39 @@ def apply_position_to_tree(
     new_mut, position, imputed_vec, T_current, M_current, I_selected, parent_dict
 ):
     """
-    将特定位置应用到树和矩阵上
+    Apply the specific position to trees and matrices
     """
     M_updated = M_current.copy()
     T_updated = T_current.copy()
     
     anchor = position['anchor']
+    placement_type = position['placement_type']
     
+    # Get full mutation chain from anchor to ROOT
     full_mutnode_chain = get_full_mutnode_chain_with_anchor(anchor, parent_dict)
     
+    # Ensure imputed_vec has the same index as M_updated
     if not imputed_vec.index.equals(M_updated.index):
         imputed_vec = imputed_vec.reindex(M_updated.index, fill_value=0)
     
+    # Get cells where imputed_vec = 1
     cells_with_final_one = imputed_vec[imputed_vec == 1].index.tolist()
     if len(cells_with_final_one) > 0:
+        # Propagate mutations along the chain
         for cell in cells_with_final_one:
             for mutation in full_mutnode_chain:
                 if M_updated.loc[cell, mutation] == 0:
                     M_updated.loc[cell, mutation] = 1
     
-    M_updated[new_mut] = imputed_vec
+    # Add new mutation column to M_updated (consider 'on_node')
+    if placement_type == 'on_node':
+        new_colname = anchor + "|" + new_mut
+        M_updated.drop(anchor, axis=1, inplace=True)
+        M_updated[new_colname] = imputed_vec
+    else:
+        M_updated[new_mut] = imputed_vec
+    
+    # Update tree structure
     T_updated = add_new_mutation_to_tree_independent(new_mut, T_updated, position)
     
     return T_updated, M_updated
@@ -3129,62 +3142,61 @@ def cluster_external_mutations_by_intersection(I_selected, external_mutations, m
 
 def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(root: TreeNode, df: pd.DataFrame) -> Dict[str, List[str]]:
     """
-    按 ROOT 的第一层级划分 clone，将复合突变完全拆分为独立突变。
-    对于复合突变的根，选择在数据框中出现频率最高的突变作为键。
+    Partition clones by the first level of ROOT, fully splitting compound mutations into individual mutations.
+    For compound mutation roots, select the mutation with the highest frequency in the dataframe as the key.
     
-    参数:
-        root: 系统发育树的根节点
-        df: 突变数据框，行是细胞，列是突变，值为0/1/NaN
+    Parameters:
+        root: Root node of the phylogenetic tree
+        df: Mutation dataframe, rows are cells, columns are mutations, values are 0/1/NaN
     
-    返回:
+    Returns:
         Dict[str, List[str]]: 
-            key: 在数据框中出现频率最高的根突变
-            value: clone 内包含的所有独立 mutation
+            key: Root mutation with the highest frequency in the dataframe
+            value: All individual mutations contained within the clone
     """
     def split_compound_mutations(mutation_name):
-        """将复合突变名称拆分为独立突变列表"""
+        """Split compound mutation name into a list of individual mutations"""
         if '|' in mutation_name:
             return mutation_name.split('|')
         else:
             return [mutation_name]
     
     def get_mutation_frequency(mutation, dataframe):
-        """计算突变在数据框中的出现频率（值为1的比例）"""
+        """Calculate the frequency of a mutation in the dataframe (proportion of cells with value 1)"""
         if mutation not in dataframe.columns:
             return 0
-        # col_data = dataframe[mutation].dropna()  # 去掉NaN值
-        col_data = dataframe[mutation]             # 保留NaN值
+        col_data = dataframe[mutation]             # Keep NaN values
         if len(col_data) == 0:
             return 0
         return (col_data == 1).sum() / len(col_data)
     
     clone_dict = {}
     for child in root.children:
-        # 获取子树中所有节点的名称并拆分复合突变
+        # Get all node names in the subtree and split compound mutations
         all_mutations = []
         for node in child.traverse():
             all_mutations.extend(split_compound_mutations(node.name))
         
-        # 处理根节点的复合突变
+        # Process compound mutations in the root node
         root_mutations = split_compound_mutations(child.name)
         
-        # 如果根节点只有一个突变，直接使用
+        # If the root has only one mutation, use it directly
         if len(root_mutations) == 1:
             clone_key = root_mutations[0]
         else:
-            # 对于复合突变，选择在数据框中出现频率最高的那个
+            # For compound mutations, select the one with the highest frequency in the dataframe
             mutation_frequencies = []
             for mutation in root_mutations:
                 freq = get_mutation_frequency(mutation, df)
                 mutation_frequencies.append((mutation, freq))
             
-            # 按频率排序，选择频率最高的
+            # Sort by frequency and select the highest one
             mutation_frequencies.sort(key=lambda x: x[1], reverse=True)
             clone_key = mutation_frequencies[0][0]
             
-            print(f"复合突变 {child.name} 拆分为: {root_mutations}")
-            print(f"频率统计: {mutation_frequencies}")
-            print(f"选择作为键: {clone_key}\n")
+            print(f"Compound mutation {child.name} split into: {root_mutations}")
+            print(f"Frequency statistics: {mutation_frequencies}")
+            print(f"Selected as key: {clone_key}\n")
         
         clone_dict[clone_key] = all_mutations
     
@@ -3239,48 +3251,48 @@ def calculate_intersection_counts_under_backbone_nodes(
     mutation_list_under_backbone_nodes, M_current, I_attached, new_mut
 ):
     """
-    计算new_mut与每个backbone node下mutation list的共现数量
+    Calculate the co-occurrence counts between new_mut and the mutation list under each backbone node
     """
     if new_mut not in I_attached.columns:
-        raise ValueError(f"突变 {new_mut} 不在 I_attached 数据框中")
+        raise ValueError(f"Mutation {new_mut} not found in I_attached dataframe")
     
     intersection_counts = {}
     
     for backbone_node, mutation_list in mutation_list_under_backbone_nodes.items():
-        # ===== 关键修复：找到backbone_node在M_current中的实际列名 =====
+        # ===== Key fix: find the actual column name of backbone_node in M_current =====
         actual_col = find_column_in_merged_columns(M_current, backbone_node)
         
         if actual_col is None:
-            # 如果找不到，尝试用backbone_node本身
+            # If not found, try using backbone_node itself
             actual_col = backbone_node
         
-        # 检查列是否存在于M_current中
+        # Check if the column exists in M_current
         if actual_col not in M_current.columns:
             print(f"Warning: column '{actual_col}' not found in M_current, skipping...")
             intersection_counts[backbone_node] = 0
             continue
         
-        # 1. 找到当前backbone node为1的细胞
+        # 1. Find cells where the current backbone node is 1
         backbone_cells = M_current[M_current[actual_col] == 1].index
         
-        # 2. 过滤出同时在I_attached中的细胞
+        # 2. Filter to cells that are also in I_attached
         common_cells = backbone_cells.intersection(I_attached.index)
         
         if len(common_cells) == 0:
             intersection_counts[backbone_node] = 0
             continue
         
-        # 3. 获取这些细胞在new_mut上的状态
+        # 3. Get the status of new_mut for these cells
         new_mut_status = I_attached.loc[common_cells, new_mut]
         
-        # 4. 过滤出new_mut为1的细胞
+        # 4. Filter to cells where new_mut is 1
         new_mut_positive_cells = new_mut_status[new_mut_status == 1].index
         
         if len(new_mut_positive_cells) == 0:
             intersection_counts[backbone_node] = 0
             continue
         
-        # 5. 对于每个mutation in mutation_list，计算与new_mut同时为1的数量
+        # 5. For each mutation in mutation_list, calculate the count of co-occurrence with new_mut
         total_intersection = 0
         
         for mutation in mutation_list:
@@ -3293,8 +3305,7 @@ def calculate_intersection_counts_under_backbone_nodes(
     
     return intersection_counts
 
-
-# # 使用示例
+# # Usage:
 # new_mut = 'chr8_91087030_T_G'
 # result = calculate_intersection_counts_under_backbone_nodes(mutation_list_under_backbone_nodes, M_current, I_attached, new_mut)
 # print(result)
@@ -3435,35 +3446,35 @@ def get_all_parents_for_mutation(T_current, mutation):
     return all_parents
 
 def calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_current, M_current, I_attached):
-    """正确版本：每个突变只返回一行统计结果"""
+    """Correct version: each mutation returns only one row of statistics"""
     
     results = []
     mutations = I_attached.columns.tolist()
     
-    # 对齐两个DataFrame的索引
+    # Align the indices of the two DataFrames
     common_index = I_attached.index.intersection(M_current.index)
     I_aligned = I_attached.loc[common_index]
     M_aligned = M_current.loc[common_index]
     
     for mutation in mutations:
-        # 找到当前突变在 M_current 中的对应列
+        # Find the corresponding column of the current mutation in M_current
         m_col = find_mutation_column(mutation, M_aligned.columns)
         
-        # 获取所有父突变
+        # Get all parent mutations
         all_parents = get_all_parents_for_mutation(T_current, m_col)
         
-        # 2. 如果找到了节点，获取它的所有直接子节点
+        # 2. If the node is found, get all its direct children
         all_children = []
         if T_current.find(m_col):
             children = T_current.find(m_col).children
             for child in children:
                 all_children.append(child.name)
         else:
-            print(f"未找到节点: {m_col}")
+            print(f"Node not found: {m_col}")
         
         if m_col is None:
-            print(f"警告: 在 M_current 中找不到突变 {mutation}")
-            # 如果找不到，填充NaN
+            print(f"Warning: mutation {mutation} not found in M_current")
+            # If not found, fill with NaN
             result = {
                 'mutation': mutation,
                 'total_retained_cells': np.nan,
@@ -3480,13 +3491,13 @@ def calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_current
             results.append(result)
             continue
         
-        # 找出保持为1的cells
+        # Find cells that remain as 1
         retained_mask = (I_aligned[mutation] == 1) & (M_aligned[m_col] == 1)
         retained_cells = I_aligned.index[retained_mask]
         total_retained = len(retained_cells)
         
         if len(retained_cells) == 0 or not all_parents:
-            # 没有保持的cells或没有父突变
+            # No retained cells or no parent mutations
             result = {
                 'mutation': mutation,
                 'total_retained_cells': len(retained_cells),
@@ -3503,7 +3514,7 @@ def calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_current
             results.append(result)
             continue
         
-        # 计算所有父突变的总体统计
+        # Calculate overall statistics for all parent mutations
         total_parent_intersection = 0
         total_parent_FNflipping = 0
         intersection_cells_on_mutation_parents = []
@@ -3537,7 +3548,7 @@ def calculate_intersection_and_inter_vs_fn_flipping_ratio_per_mutation(T_current
         unique_intersection_cells_on_mutation_parents = list(set(intersection_cells_on_mutation_parents))
         unique_intersection_cells_on_mutation_children = list(set(intersection_cells_on_mutation_children))
         intersection_cell_ratio_on_mutation = len(unique_intersection_cells_on_mutation_parents)/total_retained
-        # 计算总体比例：intersection / (intersection + FN)
+        # Calculate overall ratio: intersection / (intersection + FN)
         total_parent_events = total_parent_intersection + total_parent_FNflipping
         parent_ratio = total_parent_intersection / total_parent_events if total_parent_events > 0 else 0.0
         
