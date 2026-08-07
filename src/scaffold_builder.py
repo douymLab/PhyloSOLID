@@ -4094,7 +4094,7 @@ def compute_bayesian_penalty_for_all_positions_scaffold(
 # 将特定位置应用到树和矩阵
 # ============================================================
 
-def apply_position_to_tree(
+def apply_position_to_tree_scaffold(
     new_mut, position, imputed_vec, T_current, M_current, I_selected, parent_dict
 ):
     """

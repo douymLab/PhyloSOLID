@@ -1447,7 +1447,7 @@ def tree_QC_and_filter(
         to_be_removed_mutations_by_fp_mutations_cross_all_cells = artifact_candidates
         
         logger_obj.warning("=" * 80)
-        logger_obj.warning(f"🔴 PERMANENTLY REMOVED ARTIFACTUAL LOCI (M_artifact)")
+        logger_obj.warning(f"  PERMANENTLY REMOVED ARTIFACTUAL LOCI (M_artifact)")
         logger_obj.warning("-" * 80)
         logger_obj.warning(f"  |M_artifact|: {len(to_be_removed_mutations_by_fp_mutations_cross_all_cells)} total")
         for mut in to_be_removed_mutations_by_fp_mutations_cross_all_cells:
@@ -1576,7 +1576,7 @@ def tree_QC_and_filter(
                 all_conflict_mutations.extend(conflict_mutations_temp)
     
     else:
-        logger_obj.info(f"  ⚠️ Artifact mutation removal is DISABLED (remove_artifact_mutations=no)")
+        logger_obj.info(f"  Artifact mutation removal is DISABLED (remove_artifact_mutations=no)")
         logger_obj.info(f"  |M_artifact| candidates identified but NOT removed: {len(artifact_candidates)}")
         
         pd.Series(artifact_candidates).to_csv(
