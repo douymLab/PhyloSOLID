@@ -3756,6 +3756,13 @@ def compute_bayesian_penalty_for_all_positions_scaffold(
     """
     计算所有候选位置的罚分，不修改 M_current
     
+    优化策略：
+    1. 缓存所有可复用的计算结果（冲突掩码、突变链等）
+    2. 使用NumPy向量化操作替代循环
+    3. 根据候选位置数量自动决定是否使用并行
+       - <= 20: 串行（避免并行开销）
+       - > 20: 并行（充分利用多核）
+    
     Parameters:
     -----------
     new_mut : str
@@ -3789,203 +3796,187 @@ def compute_bayesian_penalty_for_all_positions_scaffold(
     """
     import pandas as pd
     import numpy as np
+    import logging
+    from joblib import Parallel, delayed
     
-    results = []
+    logger = logging.getLogger(__name__)
     
     # 如果没有候选位置，直接返回空 DataFrame
     if len(selected_positions) == 0:
         logger.warning(f"No selected positions for mutation {new_mut}")
         return pd.DataFrame()
     
-    # 获取 new_mut 的原始存在性向量（0/1，NA填充为0）
-    # 索引是 I_selected.index（细胞索引）
+    # ============================================================
+    # 1. 预计算公共数据
+    # ============================================================
+    
+    matrix_index = M_current.index
+    matrix_columns = M_current.columns.tolist()
+    
+    # 获取 new_mut 的原始存在性向量
     new_mut_bin_vector = I_selected[new_mut].replace({pd.NA: np.nan}).fillna(0).astype(int)
+    new_mut_mask = new_mut_bin_vector.reindex(matrix_index, fill_value=0).to_numpy(dtype=bool)
     
-    # 计算突变的统计特征，用于后续的动态罚分调整
+    # 计算突变的统计特征
     input_binary_vec_full = I_selected[new_mut].replace({pd.NA: np.nan})
-    na_ratio = input_binary_vec_full.isna().mean()  # NA比例
-    mut_ratio = input_binary_vec_full.fillna(0).mean()  # 突变比例
-    N_nodes_beforeT = len(T_current.all_nodes())  # 当前树的节点数
+    na_ratio = input_binary_vec_full.isna().mean()
+    mut_ratio = input_binary_vec_full.fillna(0).mean()
+    N_nodes_beforeT = len(T_current.all_nodes())
     
-    # 遍历每个候选位置
-    for idx, pos in enumerate(selected_positions):
-        placement_type = pos['placement_type']  # 放置类型: 'on_node', 'new_leaf', 'on_edge', 'new_parent_merge'
-        anchor = pos['anchor']  # 锚点突变名
+    # ============================================================
+    # 2. 建立缓存系统
+    # ============================================================
+    
+    # 缓存 M_current 的列
+    m_current_cache = {}
+    for col in matrix_columns:
+        if col != 'ROOT':
+            m_current_cache[col] = M_current[col].reindex(matrix_index, fill_value=0).to_numpy(dtype=np.int8)
+    
+    # 缓存 I_selected 的列
+    i_selected_cache = {}
+    for col in I_selected.columns:
+        i_selected_cache[col] = I_selected[col].reindex(matrix_index, fill_value=np.nan).to_numpy(dtype=np.float64)
+    
+    # 缓存冲突掩码
+    conflict_cache = {}
+    
+    def get_conflict_mask(anchor, sibling_nodes, exclude_nodes=None):
+        """获取冲突掩码（带缓存）"""
+        if exclude_nodes is None:
+            exclude_nodes = []
         
-        # 初始化 imputed vector，索引为 M_current.index（与原始函数一致）
-        # imputed vector 表示 new_mut 放置后，每个细胞的状态（0或1）
-        imputed_vec = pd.Series(0, index=M_current.index)
-        merge_penalty = 0  # 合并罚分，仅用于 new_parent_merge 类型
+        cache_key = (anchor, tuple(sorted(sibling_nodes)), tuple(sorted(exclude_nodes)))
         
-        # ============================================================
-        # 根据不同的放置类型，计算 imputed vector
-        # ============================================================
+        if cache_key in conflict_cache:
+            return conflict_cache[cache_key]
         
+        lineage_parent = build_lineage_parent_dict_from_tree(T_current, anchor)
+        lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(
+            anchor, lineage_parent, matrix_columns, exclude_nodes=exclude_nodes
+        )
+        
+        all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
+        
+        if not all_conflict_nodes:
+            conflict_mask = np.zeros(len(matrix_index), dtype=bool)
+        else:
+            conflict_mask = np.zeros(len(matrix_index), dtype=bool)
+            for node in all_conflict_nodes:
+                if node in m_current_cache:
+                    conflict_mask = conflict_mask | (m_current_cache[node] == 1)
+                elif node in matrix_columns:
+                    node_array = M_current[node].reindex(matrix_index, fill_value=0).to_numpy(dtype=np.int8)
+                    conflict_mask = conflict_mask | (node_array == 1)
+        
+        conflict_cache[cache_key] = conflict_mask
+        return conflict_mask
+    
+    # 缓存突变链
+    chain_cache = {}
+    def get_full_chain(anchor):
+        if anchor not in chain_cache:
+            chain_cache[anchor] = get_full_mutnode_chain_with_anchor_scaffold(anchor, parent_dict)
+        return chain_cache[anchor]
+    
+    # 缓存节点突变列表
+    node_mutations_cache = {}
+    def get_node_mutations(node_name):
+        if node_name not in node_mutations_cache:
+            node_mutations_cache[node_name] = node_name.split("|")
+        return node_mutations_cache[node_name]
+    
+    # 缓存 children
+    children_cache = {}
+    def get_children(node):
+        if node not in children_cache:
+            children_cache[node] = find_children_of_node_scaffold(node, matrix_columns, parent_dict)
+        return children_cache[node]
+    
+    # ============================================================
+    # 3. 单位置计算函数（核心逻辑）
+    # ============================================================
+    
+    def compute_single_position(idx, pos):
+        """计算单个候选位置的罚分"""
+        placement_type = pos['placement_type']
+        anchor = pos['anchor']
+        
+        imputed_array = np.zeros(len(matrix_index), dtype=np.int8)
+        merge_penalty = 0
+        N_nodes = N_nodes_beforeT
+        
+        # 根据放置类型计算 imputed vector
         if placement_type == 'on_node':
-            """
-            放置在现有节点上：new_mut 与 anchor 节点合并
-            逻辑：imputed_vec = anchor的向量 ∪ (new_mut的向量 - 所有冲突)
-            """
-            parent = anchor
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == anchor and n['name'] != new_mut]
+            conflict_mask = get_conflict_mask(anchor, sibling_nodes)
+            new_mut_cleaned = new_mut_mask & ~conflict_mask
             
-            # 获取直系sibling冲突节点（与 anchor 同父的其他子节点）
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
+            if anchor in m_current_cache:
+                anchor_array = m_current_cache[anchor]
+            else:
+                anchor_array = M_current[anchor].reindex(matrix_index, fill_value=0).to_numpy(dtype=np.int8)
             
-            # 获取 lineage 之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(
-                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns
-            )
-            
-            # 合并所有冲突节点（去重）
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量：只要有任何一个冲突节点在该细胞为1，则该细胞为冲突
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
-                vec_conflicts = vec_conflicts | conflict_series
-            
-            # 清理 new_mut：去除与冲突节点重叠的部分
-            # 让 Pandas 自动处理索引对齐（new_mut_bin_vector 索引是 I_selected.index，
-            # vec_conflicts 索引是 M_current.index，结果索引为两者并集）
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            
-            # 将 anchor 向量对齐到 new_mut_cleaned 的索引
-            anchor_series = M_current[anchor].reindex(new_mut_cleaned.index, fill_value=0)
-            
-            # 最终 imputed vector = anchor ∪ (清理后的 new_mut)
-            imputed_vec = (anchor_series | new_mut_cleaned).astype(int)
-            N_nodes = N_nodes_beforeT + 1  # 节点数不变（放在已有节点上）
+            imputed_array = ((anchor_array == 1) | new_mut_cleaned).astype(np.int8)
+            N_nodes = N_nodes_beforeT + 1
             
         elif placement_type == 'new_leaf':
-            """
-            创建新叶节点：new_mut 作为 anchor 的子节点
-            逻辑：imputed_vec = new_mut的向量 - 所有冲突
-            """
-            parent = anchor
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
-            
-            # 获取直系sibling冲突节点
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] != new_mut]
-            
-            # 获取 lineage 之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(
-                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns
-            )
-            
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
-                vec_conflicts = vec_conflicts | conflict_series
-            
-            # 清理 new_mut：去除与冲突节点重叠的部分
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            imputed_vec = new_mut_cleaned.astype(int)
-            N_nodes = N_nodes_beforeT + 2  # 新增一个叶子节点
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == anchor and n['name'] != new_mut]
+            conflict_mask = get_conflict_mask(anchor, sibling_nodes)
+            new_mut_cleaned = new_mut_mask & ~conflict_mask
+            imputed_array = new_mut_cleaned.astype(np.int8)
+            N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'on_edge':
-            """
-            放置在边（edge）上：在 parent 和 child 之间插入 new_mut
-            逻辑：imputed_vec = child的向量 ∪ (new_mut的向量 - 所有冲突)
-            """
-            parent = anchor
             child = pos['meta']['child']
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
-            vec_child = M_current[child]
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == anchor and n['name'] not in [child, new_mut]]
+            conflict_mask = get_conflict_mask(anchor, sibling_nodes)
+            new_mut_cleaned = new_mut_mask & ~conflict_mask
             
-            # 获取直系sibling冲突节点（排除 child 和 new_mut）
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] not in [child, new_mut]]
+            if child in m_current_cache:
+                child_array = m_current_cache[child]
+            else:
+                child_array = M_current[child].reindex(matrix_index, fill_value=0).to_numpy(dtype=np.int8)
             
-            # 获取 lineage 之外的所有冲突节点
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(
-                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns
-            )
-            
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
-                vec_conflicts = vec_conflicts | conflict_series
-            
-            # 清理 new_mut：去除与冲突节点重叠的部分
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            
-            # 将 child 向量对齐到 new_mut_cleaned 的索引
-            vec_child_aligned = vec_child.reindex(new_mut_cleaned.index, fill_value=0)
-            
-            # 最终 imputed vector = child ∪ (清理后的 new_mut)
-            imputed_vec = (vec_child_aligned | new_mut_cleaned).astype(int)
-            N_nodes = N_nodes_beforeT + 2  # 新增一个节点
+            imputed_array = ((child_array == 1) | new_mut_cleaned).astype(np.int8)
+            N_nodes = N_nodes_beforeT + 2
             
         elif placement_type == 'new_parent_merge':
-            """
-            创建新父节点合并：在 parent 和多个 child 之间插入 new_mut
-            逻辑：imputed_vec = children的联合向量 ∪ (new_mut的向量 - 所有冲突)
-            """
-            parent = anchor
-            merge_children = pos['meta']['merge_children']  # 要合并的子节点列表
-            vec_parent = M_current[parent] if parent != 'ROOT' else pd.Series(1, index=M_current.index)
+            merge_children = pos['meta']['merge_children']
+            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == anchor and n['name'] not in merge_children + [new_mut]]
+            conflict_mask = get_conflict_mask(anchor, sibling_nodes, merge_children)
+            new_mut_cleaned = new_mut_mask & ~conflict_mask
             
-            # 构建 children 的联合向量
-            vec_children = pd.Series(0, index=M_current.index)
+            children_union = np.zeros(len(matrix_index), dtype=bool)
             for c in merge_children:
-                child_series = M_current[c].reindex(M_current.index, fill_value=0)
-                vec_children = vec_children | child_series
+                if c in m_current_cache:
+                    children_union = children_union | (m_current_cache[c] == 1)
+                else:
+                    child_array = M_current[c].reindex(matrix_index, fill_value=0).to_numpy(dtype=np.int8)
+                    children_union = children_union | (child_array == 1)
             
-            # 获取直系sibling冲突节点（排除 merge_children 和 new_mut）
-            sibling_nodes = [n['name'] for n in pos['nodes'] if n['parent'] == parent and n['name'] not in merge_children + [new_mut]]
-            
-            # 获取 lineage 之外的所有冲突节点（排除 merge_children）
-            lineage_conflict_nodes = get_all_conflict_nodes_outside_lineage_scaffold(
-                parent, build_lineage_parent_dict_from_tree(T_current, anchor), M_current.columns, 
-                exclude_nodes=merge_children
-            )
-            
-            all_conflict_nodes = list(set(sibling_nodes + lineage_conflict_nodes))
-            
-            # 构建冲突向量
-            vec_conflicts = pd.Series(0, index=M_current.index)
-            for conflict in all_conflict_nodes:
-                conflict_series = M_current[conflict].reindex(M_current.index, fill_value=0)
-                vec_conflicts = vec_conflicts | conflict_series
-            
-            # 清理 new_mut：去除与冲突节点重叠的部分
-            new_mut_cleaned = new_mut_bin_vector & ~vec_conflicts
-            
-            # 将 children 联合向量对齐到 new_mut_cleaned 的索引
-            vec_children_aligned = vec_children.reindex(new_mut_cleaned.index, fill_value=0)
-            
-            # 最终 imputed vector = children ∪ (清理后的 new_mut)
-            imputed_vec = (vec_children_aligned | new_mut_cleaned).astype(int)
-            merge_penalty = np.log(len(merge_children)) * 0.5  # 合并罚分
-            N_nodes = N_nodes_beforeT + 2  # 新增一个父节点
+            imputed_array = (children_union | new_mut_cleaned).astype(np.int8)
+            merge_penalty = np.log(len(merge_children)) * 0.5
+            N_nodes = N_nodes_beforeT + 2
             
         else:
             raise ValueError(f"Unknown placement_type: {placement_type}")
         
-        # ============================================================
-        # 计算该候选位置的总罚分
-        # ============================================================
+        imputed_vec = pd.Series(imputed_array, index=matrix_index)
+        imputed_bool = imputed_array.astype(bool)
         
-        # 获取从锚点到 ROOT 的完整突变链
-        full_mutnode_chain = get_full_mutnode_chain_with_anchor_scaffold(anchor, parent_dict)
+        # 计算罚分
+        full_mutnode_chain = get_full_chain(anchor)
         
-        # 计算 new_mut 本身的罚分
         posterior_vec = P_selected[new_mut]
         input_binary_vec = I_selected[new_mut]
         
         new_mut_penalty, actual_na_flip_ratio, refined_ω_NA, φ_adjusted, weight_na_to_1, weight_na_to_0 = compute_dynamic_penalty_scaffold(
-            input_binary_vec, posterior_vec, imputed_vec, fnfp_ratio, ω_NA, φ, 
+            input_binary_vec, posterior_vec, imputed_vec, fnfp_ratio, ω_NA, φ,
             na_ratio, mut_ratio, placement_type, N_nodes
         )
         
-        # 计算完整突变链中其他突变的罚分
+        # 计算链中其他突变的罚分
         chain_penalty = 0
         chain_mutations_count = 0
         
@@ -3993,99 +3984,122 @@ def compute_bayesian_penalty_for_all_positions_scaffold(
             if node == 'ROOT':
                 continue
             
-            mutations_on_node = node.split("|")
+            mutations_on_node = get_node_mutations(node)
+            scored_mutations = [m for m in mutations_on_node if m != new_mut]
+            chain_mutations_count += len(scored_mutations)
             
-            for mutation in mutations_on_node:
-                if mutation == new_mut:  # 跳过 new_mut 本身
-                    continue
-                    
-                # 获取该突变的原始数据
-                mut_input_binary_vec = I_selected[mutation].replace({pd.NA: np.nan})
-                mut_posterior_vec = P_selected[mutation]
+            if not scored_mutations:
+                continue
+            
+            if node in m_current_cache:
+                node_array = m_current_cache[node]
+            else:
+                node_array = M_current[node].reindex(matrix_index, fill_value=0).to_numpy(dtype=np.float64)
+            
+            cells_to_flip_mask = imputed_bool & ((node_array == 0) | np.isnan(node_array))
+            
+            if not cells_to_flip_mask.any():
+                continue
+            
+            flip_indices = np.where(cells_to_flip_mask)[0]
+            imputed_ones = np.ones(len(flip_indices), dtype=np.int8)
+            
+            for mutation in scored_mutations:
+                if mutation in i_selected_cache:
+                    mut_input_array = i_selected_cache[mutation]
+                else:
+                    mut_input_array = I_selected[mutation].reindex(matrix_index, fill_value=np.nan).to_numpy(dtype=np.float64)
                 
-                # 计算该突变在 new_mut 放置后的新向量
-                mut_new_vec = M_current[node].copy()
-                cells_should_be_1 = imputed_vec[imputed_vec == 1].index
-                cells_to_flip = []
-                for cell in cells_should_be_1:
-                    if mut_new_vec[cell] == 0 or pd.isna(mut_new_vec[cell]):
-                        cells_to_flip.append(cell)
-                        mut_new_vec[cell] = 1
+                mut_input_subset = mut_input_array[flip_indices]
                 
-                # 计算该突变的罚分
                 mut_penalty = compute_bayesian_penalty_each_chain_mut_by_pos(
-                    mut_input_binary_vec[cells_to_flip], 
-                    mut_posterior_vec[cells_to_flip], 
-                    mut_new_vec[cells_to_flip], 
-                    weight_na_to_1, 
-                    weight_na_to_0, 
+                    mut_input_subset,
+                    None,
+                    imputed_ones,
+                    weight_na_to_1,
+                    weight_na_to_0,
                     fnfp_ratio
                 )
-                
                 chain_penalty += mut_penalty
-                chain_mutations_count += 1
         
-        # 总罚分 = new_mut罚分 + 完整突变链罚分
         total_chain_penalty = new_mut_penalty + chain_penalty
         
-        # BIC 罚分（贝叶斯信息准则）
         log_N_nodes_penalty = np.log(N_nodes)
         BIC_penalty = φ_adjusted * np.log(N_nodes)
         
-        # 如果锚点是 ROOT，增加根节点罚分
         root_penalty = 0
         if anchor == 'ROOT':
             root_penalty = np.log(N_nodes) * 0.5
         
-        # 基础总罚分
         base_total_penalty = total_chain_penalty + log_N_nodes_penalty + BIC_penalty + merge_penalty + root_penalty
         
-        # 基于 intersection 模式的精细调整罚分
         intersection_penalty = compute_intersection_based_penalty_scaffold(
             new_mut, pos, intersection_nodes, M_current, I_selected, na_ratio, mut_ratio, actual_na_flip_ratio
         )
         
-        # 基于层级的精细调整罚分
         hierarchy_penalty = compute_hierarchy_penalty_scaffold(
             new_mut, pos, M_current, I_selected, parent_dict, na_ratio, mut_ratio, actual_na_flip_ratio
         )
         
-        # 最终总罚分
         total_penalty = base_total_penalty + intersection_penalty + hierarchy_penalty
         
-        # 记录该候选位置的所有计算结果
-        results.append({
-            'position_index': idx,  # 候选位置索引
-            'placement_type': placement_type,  # 放置类型
-            'anchor': anchor,  # 锚点
-            'new_mut_penalty': new_mut_penalty,  # new_mut 的罚分
-            'chain_penalty': chain_penalty,  # 突变链罚分
-            'total_chain_penalty': total_chain_penalty,  # 总链罚分
-            'N_nodes': N_nodes,  # 节点数
-            'BIC_penalty': BIC_penalty,  # BIC 罚分
-            'log_N_nodes_penalty': log_N_nodes_penalty,  # 对数节点数罚分
-            'merge_penalty': merge_penalty,  # 合并罚分
-            'root_penalty': root_penalty,  # 根节点罚分
-            'base_total_penalty': base_total_penalty,  # 基础总罚分
-            'intersection_penalty': intersection_penalty,  # intersection 罚分
-            'hierarchy_penalty': hierarchy_penalty,  # 层级罚分
-            'total_penalty': total_penalty,  # 最终总罚分
-            'position': pos,  # 完整的位置信息字典
-            'imputed_vec': imputed_vec,  # 该位置的 imputed vector
-            'na_ratio': na_ratio,  # NA 比例
-            'mut_ratio': mut_ratio,  # 突变比例
-            'actual_na_flip_ratio': actual_na_flip_ratio,  # 实际 NA 翻转比例
-            'chain_mutations_count': chain_mutations_count,  # 突变链中的突变数
-            'weight_na_to_1': weight_na_to_1,  # NA 到 1 的权重
-            'weight_na_to_0': weight_na_to_0,  # NA 到 0 的权重
-            'refined_ω_NA': refined_ω_NA,  # 调整后的 ω_NA
-            'φ_adjusted': φ_adjusted,  # 调整后的 φ
-            'base_ω_NA': ω_NA,  # 原始 ω_NA
-            'base_φ': φ,  # 原始 φ
-            'full_mutnode_chain': full_mutnode_chain  # 完整突变链
-        })
+        return {
+            'position_index': idx,
+            'placement_type': placement_type,
+            'anchor': anchor,
+            'new_mut_penalty': new_mut_penalty,
+            'chain_penalty': chain_penalty,
+            'total_chain_penalty': total_chain_penalty,
+            'N_nodes': N_nodes,
+            'BIC_penalty': BIC_penalty,
+            'log_N_nodes_penalty': log_N_nodes_penalty,
+            'merge_penalty': merge_penalty,
+            'root_penalty': root_penalty,
+            'base_total_penalty': base_total_penalty,
+            'intersection_penalty': intersection_penalty,
+            'hierarchy_penalty': hierarchy_penalty,
+            'total_penalty': total_penalty,
+            'position': pos,
+            'imputed_vec': imputed_vec,
+            'na_ratio': na_ratio,
+            'mut_ratio': mut_ratio,
+            'actual_na_flip_ratio': actual_na_flip_ratio,
+            'chain_mutations_count': chain_mutations_count,
+            'weight_na_to_1': weight_na_to_1,
+            'weight_na_to_0': weight_na_to_0,
+            'refined_ω_NA': refined_ω_NA,
+            'φ_adjusted': φ_adjusted,
+            'base_ω_NA': ω_NA,
+            'base_φ': φ,
+            'full_mutnode_chain': full_mutnode_chain
+        }
     
-    # 将结果转换为 DataFrame 并返回
+    # ============================================================
+    # 4. 自动选择执行模式（内部决策，外部无感知）
+    # ============================================================
+    
+    n_positions = len(selected_positions)
+    
+    # 自动阈值：基于实际测试优化的经验值
+    # - <= 20: 串行（并行开销大于收益）
+    # - > 20: 并行（充分利用多核）
+    if n_positions <= 20:
+        # 串行执行（带缓存优化）
+        results = [compute_single_position(idx, pos) for idx, pos in enumerate(selected_positions)]
+    else:
+        # 并行执行（带缓存优化）
+        # 使用所有可用的CPU核心
+        n_jobs = -1
+        logger.info(f"Automatically using parallel mode for {n_positions} positions")
+        results = Parallel(n_jobs=n_jobs, verbose=10 if n_positions > 100 else 0)(
+            delayed(compute_single_position)(idx, pos)
+            for idx, pos in enumerate(selected_positions)
+        )
+    
+    # ============================================================
+    # 5. 返回结果
+    # ============================================================
+    
     df_penalty = pd.DataFrame(results)
     return df_penalty
 
