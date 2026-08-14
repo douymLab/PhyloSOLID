@@ -1004,15 +1004,6 @@ df_barcode_clones = assign_clone_labels(M_full, mutation_clones)
 
 df_barcode_clones.to_csv(os.path.join(phylo_dir, "df_barcode_clones_from_phylo_tree.csv"), sep=',', index=False)
 
-# ---- Export tree in Newick format ----
-try:
-    newick_str = tree_to_newick(T_full)
-    with open(os.path.join(phylo_dir, 'final_cleaned_tree.newick'), 'w') as f:
-        f.write(newick_str + ';')
-    logger.info("  Exported Newick format: final_cleaned_tree.newick")
-except NameError:
-    logger.warning("  tree_to_newick function not available, skipping Newick export")
-
 logger.info("")
 
 
