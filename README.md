@@ -71,6 +71,8 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 ## Version History
 
+- **v3.2.0** (2026-08-15): Parallel CV traversal, unified optimal selection, structured logging overhaul, full English localization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.2.0))
+- **v3.1.1** (2026-08-08): Performance optimization: 4-33x speedup in penalty calculation with caching and vectorization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.1.1))
 - **v3.1.0** (2026-07-28): CV threshold auto-search, organized output structure, new `full_tree_builder.py` module ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.1.0))
 - **v3.0.0** (2026-07-02): Smart conflict resolution, Leiden graph acceleration, multi-threaded data loading ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.0.0))
 - **v2.0.0** (2026-07-01): Major performance optimization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v2.0.0))
