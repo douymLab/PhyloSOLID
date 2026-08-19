@@ -1687,10 +1687,13 @@ def compute_corr_cache_with_new_mut(I_attached, existing_muts, new_mut):
     
     return corr_cache
 
-def compute_new_mut_clone_affinity_correct(new_mut, mutation_clones_rescue, I_attached, n_shuffle=100):
+def compute_new_mut_clone_affinity_correct(new_mut, mutation_clones_rescue, I_attached, n_shuffle=100, logger_obj=None):
     """
     Correct version: uses corr_cache that includes the new mutation
     """
+    
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
+    
     # Get all existing mutations
     all_existing_muts = []
     for clone in mutation_clones_rescue.values():
@@ -1703,7 +1706,7 @@ def compute_new_mut_clone_affinity_correct(new_mut, mutation_clones_rescue, I_at
     clone_affinity = {}
     detailed_scores = {}
     
-    logger.info(f"Calculating correlations with tree mutations for: {new_mut}")
+    log.info(f"Calculating correlations with tree mutations for: {new_mut}")
     
     for clone_rep, clone_muts in mutation_clones_rescue.items():
         clone_key = tuple(sorted(clone_muts))
@@ -3022,12 +3025,15 @@ def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist(tree_
 #     logger.info("")
 
 
-def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relaxed(tree_root, mutation_list):
+def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relaxed(tree_root, mutation_list, logger_obj=None):
     """
     Relaxed version: Allow a single mutation to form a group
     """
-    logger.info("=== Relaxed version: Single mutation allowed ===")
-    logger.info(f"Input mutation_list: {mutation_list}")
+    
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
+    
+    log.info("=== Relaxed version: Single mutation allowed ===")
+    log.info(f"Input mutation_list: {mutation_list}")
     
     target_mutations = set(mutation_list)
     all_groups = []
@@ -3040,7 +3046,7 @@ def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relax
         
         # Relaxed condition: record if there is at least 1 target mutation
         if len(branch_target_mutations) >= 1:
-            logger.info(f"Current node: {node.name}, branch target mutations: {branch_target_mutations}")
+            log.info(f"Current node: {node.name}, branch target mutations: {branch_target_mutations}")
             
             # Check if this group is already contained in other groups
             is_new_group = True
@@ -3051,7 +3057,7 @@ def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relax
             
             if is_new_group:
                 all_groups.append(branch_target_mutations.copy())
-                logger.info(f"  ➕ Added new group: {branch_target_mutations}")
+                log.info(f"  ➕ Added new group: {branch_target_mutations}")
         
         # Recursively search child nodes
         if hasattr(node, 'children') and node.children:
@@ -3062,10 +3068,10 @@ def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relax
         current_branch.pop()
     
     # Start DFS from root node
-    logger.info("Starting DFS traversal...")
+    log.info("Starting DFS traversal...")
     dfs(tree_root, [])
     
-    logger.info(f"All groups found: {all_groups}")
+    log.info(f"All groups found: {all_groups}")
     
     # Build dictionary: key is the first mutation of each group, value is the entire group
     result_dict = {}
@@ -3073,7 +3079,7 @@ def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relax
         earliest_mutation = group[0]  # The first element is the earliest mutation
         result_dict[earliest_mutation] = group
     
-    logger.info(f"Final result dictionary: {result_dict}")
+    log.info(f"Final result dictionary: {result_dict}")
     return result_dict
 
 
@@ -3249,7 +3255,7 @@ def cluster_external_mutations_by_intersection(I_selected, external_mutations, m
 
 
 ##### Partition barcode clones based on mutation clone from TreeNode format tree
-def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(root: TreeNode, df: pd.DataFrame) -> Dict[str, List[str]]:
+def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(root: TreeNode, df: pd.DataFrame, logger_obj=None):
     """
     Partition clones by the first level of ROOT, fully splitting compound mutations into individual mutations.
     For compound mutation roots, select the mutation with the highest frequency in the dataframe as the key.
@@ -3263,6 +3269,9 @@ def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(ro
             key: Root mutation with the highest frequency in the dataframe
             value: All individual mutations contained within the clone
     """
+    
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
+    
     def split_compound_mutations(mutation_name):
         """Split compound mutation name into a list of individual mutations"""
         if '|' in mutation_name:
@@ -3303,9 +3312,9 @@ def get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(ro
             mutation_frequencies.sort(key=lambda x: x[1], reverse=True)
             clone_key = mutation_frequencies[0][0]
             
-            logger.info(f"Compound mutation {child.name} split into: {root_mutations}")
-            logger.info(f"Frequency statistics: {mutation_frequencies}")
-            logger.info(f"Selected as key: {clone_key}\n")
+            log.info(f"Compound mutation {child.name} split into: {root_mutations}")
+            log.info(f"Frequency statistics: {mutation_frequencies}")
+            log.info(f"Selected as key: {clone_key}\n")
         
         clone_dict[clone_key] = all_mutations
     
@@ -3767,7 +3776,7 @@ def process_matrices_by_removed_some_mutations_from_tree(M_current, I_attached):
     return I_attached_removed_outgroup, M_current_modified
 
 
-def process_conflicting_cells_stay_outgroup(M_current_split_and_noROOT, I_attached_only_outgroup):
+def process_conflicting_cells_stay_outgroup(M_current_split_and_noROOT, I_attached_only_outgroup, logger_obj=None):
     """
     Process conflicting cells in two dataframes, return two processed dataframes
     
@@ -3779,6 +3788,8 @@ def process_conflicting_cells_stay_outgroup(M_current_split_and_noROOT, I_attach
     M_processed: Processed first dataframe
     I_processed: Processed second dataframe
     """
+    
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
     
     # Copy original dataframes to avoid modifying the originals
     M_processed = M_current_split_and_noROOT.copy()
@@ -3805,7 +3816,7 @@ def process_conflicting_cells_stay_outgroup(M_current_split_and_noROOT, I_attach
         if M_has_ones and I_has_ones:
             conflicting_cells.append(cell)
     
-    logger.info(f"Found {len(conflicting_cells)} cells with 1s in both dataframes")
+    log.info(f"Found {len(conflicting_cells)} cells with 1s in both dataframes")
     
     # Process each conflicting cell
     for cell in conflicting_cells:
@@ -3820,17 +3831,17 @@ def process_conflicting_cells_stay_outgroup(M_current_split_and_noROOT, I_attach
         if M_ones_count > I_ones_count:
             # Case 1: M has more 1s - set the entire row in I to 0
             I_processed.loc[cell] = 0
-            logger.debug(f"  -> M has more 1s, keeping M unchanged, setting I row to 0")
+            log.debug(f"  -> M has more 1s, keeping M unchanged, setting I row to 0")
             
         elif I_ones_count > M_ones_count:
             # Case 2: I has more 1s - set the entire row in M to 0
             M_processed.loc[cell] = 0
-            logger.debug(f"  -> I has more 1s, setting M row to 0, keeping I unchanged")
+            log.debug(f"  -> I has more 1s, setting M row to 0, keeping I unchanged")
             
         else:
             # Case 3: Equal number of 1s - set the entire row in M to 0, keep I unchanged
             M_processed.loc[cell] = 0
-            logger.debug(f"  -> Equal number of 1s, setting M row to 0, keeping I unchanged")
+            log.debug(f"  -> Equal number of 1s, setting M row to 0, keeping I unchanged")
     
     return M_processed, I_processed
 
@@ -3846,7 +3857,7 @@ def process_conflicting_cells_stay_outgroup(M_current_split_and_noROOT, I_attach
 # logger.info(I_attached_only_outgroup_processed)
 
 
-def process_conflicting_cells_stay_maintree(M_current_split_and_noROOT, I_attached_only_outgroup):
+def process_conflicting_cells_stay_maintree(M_current_split_and_noROOT, I_attached_only_outgroup, logger_obj=None):
     """
     Process conflicting cells in two dataframes
     
@@ -3858,6 +3869,8 @@ def process_conflicting_cells_stay_maintree(M_current_split_and_noROOT, I_attach
     M_current_split_and_noROOT_processed_unconflict: Processed first dataframe
     I_attached_only_outgroup_processed: Processed second dataframe
     """
+    
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
     
     # Copy original dataframes to avoid modifying the originals
     M_processed = M_current_split_and_noROOT.copy()
@@ -3874,7 +3887,7 @@ def process_conflicting_cells_stay_maintree(M_current_split_and_noROOT, I_attach
     conflicting_cells = M_has_ones & I_has_ones
     conflicting_indices = conflicting_cells[conflicting_cells].index
     
-    logger.info(f"Found {len(conflicting_indices)} conflicting cells")
+    log.info(f"Found {len(conflicting_indices)} conflicting cells")
     
     # 2. Process each conflicting cell
     for cell in conflicting_indices:
@@ -3882,7 +3895,7 @@ def process_conflicting_cells_stay_maintree(M_current_split_and_noROOT, I_attach
         M_ones_count = (M_processed.loc[cell] == 1).sum()
         I_ones_count = (I_processed.loc[cell] == 1).sum()
         
-        logger.debug(f"Cell {cell}: M has {M_ones_count} 1s, I has {I_ones_count} 1s")
+        log.debug(f"Cell {cell}: M has {M_ones_count} 1s, I has {I_ones_count} 1s")
         
         # Process according to rules
         if M_ones_count > I_ones_count:
@@ -3890,21 +3903,21 @@ def process_conflicting_cells_stay_maintree(M_current_split_and_noROOT, I_attach
             I_row = I_processed.loc[cell]
             I_row[I_row == 1] = 0
             I_processed.loc[cell] = I_row
-            logger.debug(f"  -> M has more 1s: keeping M unchanged, setting I row 1s to 0")
+            log.debug(f"  -> M has more 1s: keeping M unchanged, setting I row 1s to 0")
             
         elif I_ones_count > M_ones_count:
             # I has more 1s: set all 1s in M row to 0
             M_row = M_processed.loc[cell]
             M_row[M_row == 1] = 0
             M_processed.loc[cell] = M_row
-            logger.debug(f"  -> I has more 1s: setting M row 1s to 0, keeping I unchanged")
+            log.debug(f"  -> I has more 1s: setting M row 1s to 0, keeping I unchanged")
             
         else:
             # Equal number of 1s: keep M unchanged, set all 1s in I row to 0
             I_row = I_processed.loc[cell]
             I_row[I_row == 1] = 0
             I_processed.loc[cell] = I_row
-            logger.debug(f"  -> Equal number of 1s: keeping M unchanged, setting I row 1s to 0")
+            log.debug(f"  -> Equal number of 1s: keeping M unchanged, setting I row 1s to 0")
     
     return M_processed, I_processed
 

@@ -127,7 +127,7 @@ def setup_main_log_file(outputpath):
     ))
     root_logger.addHandler(console_handler)
     
-    print(f"Main log file: {main_log_file}")
+    root_logger.info(f"Main log file: {main_log_file}")
     return main_log_file
 
 
@@ -399,7 +399,7 @@ sample2 = 'bulk'
 remaining_cells = [idx for idx in df_corrected.index if idx not in ['pseudo_bulk', 'bulk']]
 sample3 = deterministic_choice(remaining_cells, salt="scRNA_bulk_sample")
 
-print(f"Using samples: {sample1}, {sample2}, {sample3}")
+logger.info(f"Using samples: {sample1}, {sample2}, {sample3}")
 
 for i, snp_name in enumerate(df_corrected.columns):
     sample1_value = df_corrected.loc[sample1, snp_name]
@@ -1603,4 +1603,4 @@ logger.info("=" * 80)
 # End of Process
 # ------------------------------
 finish_time = time.perf_counter()
-print("Program finished in {:.4f} seconds".format(finish_time - start_time))
+logger.info("Program finished in {:.4f} seconds".format(finish_time - start_time))

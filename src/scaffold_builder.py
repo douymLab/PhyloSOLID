@@ -136,10 +136,13 @@ def _apply_scaffold_lineage_fill_to_matrix(M_current, lineage_fill_update):
     return M_current
 
 
-def get_random_chromosome_position(snp_name):
+def get_random_chromosome_position(snp_name, logger_obj=None):
     """
     Parse or generate random chromosome and position information based on snp_name
     """
+    
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
+    
     parts = snp_name.split('_')
     
     # If the format is correct, contains parts separated by underscores
@@ -151,7 +154,7 @@ def get_random_chromosome_position(snp_name):
         # Generate random chromosome and position
         chromosome = str(random.randint(1, 22))  # Chromosomes 1-22
         position = str(random.randint(100000, 999999))  # 6-digit position
-        logger.info(f"Generated random position for {snp_name}: chromosome {chromosome}, position {position}")
+        log.info(f"Generated random position for {snp_name}: chromosome {chromosome}, position {position}")
         return chromosome, position
 
 
@@ -778,6 +781,7 @@ def _build_pairwise_correlation_cache_fast(
     mutant_cell_fraction = dict(zip(muts, mutant_cell_fraction_arr))
     mutant_cell_number = dict(zip(muts, mutant_cell_number_arr))
     return corr_cache, mutant_cell_fraction, mutant_cell_number
+
 def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed: int = 42, 
                                    cutoff_mcf_for_graph: float = 0.05, cutoff_mcn_for_graph: int = 5,
                                    logger_obj=None) -> Tuple[Dict[Tuple[str], float], Dict[Tuple[str,str], float]]:
@@ -835,6 +839,7 @@ def get_correlation_graph_elements(I_S: pd.DataFrame, n_shuffle: int = 100, seed
     log.info(f"Filtered out {filtered_count} singleton low-support mutations")
     
     return clone_weights, pair_weights
+
 def plot_mutation_graph(G_ig, mutation_group, pdf_file, figsize=(8,8), edge_scale=0.2, seed=42,
                         ordered_mutations=None, logger_obj=None):
     """
@@ -1033,6 +1038,52 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
     return mutation_group, partition, G_ig
 
 
+def build_cluster_graph(G_ig, mutation_group, logger_obj=None):
+    """
+    Build a weighted cluster-level graph from the mutation graph.
+    
+    Parameters
+    ----------
+    G_ig : igraph Graph
+        The constructed igraph graph
+    mutation_group : dict
+        {mutation_id: group_id} - Mapping of each mutation to its group
+    logger_obj : logging.Logger, optional
+        Logger instance for logging messages. If None, uses global logger.
+    
+    Returns
+    -------
+    cluster_graph : igraph Graph
+        Weighted graph where nodes are clusters and edges represent inter-cluster connections
+    """
+    # Use provided logger or fall back to global logger
+    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
+    
+    clusters = set(mutation_group.values())
+    cluster_graph = ig.Graph()
+    cluster_graph.add_vertices(list(clusters))
+    
+    # Calculate inter-cluster connection weights
+    inter_cluster_weights = {}
+    for edge in G_ig.es:
+        source_mut = G_ig.vs[edge.source]['name']
+        target_mut = G_ig.vs[edge.target]['name']
+        
+        source_cluster = mutation_group[source_mut]
+        target_cluster = mutation_group[target_mut]
+        
+        if source_cluster != target_cluster:
+            pair = tuple(sorted([source_cluster, target_cluster]))
+            inter_cluster_weights[pair] = inter_cluster_weights.get(pair, 0) + edge['weight']
+    
+    # Add edges
+    for (cluster1, cluster2), weight in inter_cluster_weights.items():
+        cluster_graph.add_edge(cluster1, cluster2, weight=weight)
+    
+    log.debug(f"Built cluster graph with {len(clusters)} clusters and {len(inter_cluster_weights)} inter-cluster connections")
+    
+    return cluster_graph
+
 def detect_hub_clusters(G_ig, mutation_group, logger_obj=None):
     """
     Detect hub clusters based on weighted degree centrality.
@@ -1081,53 +1132,6 @@ def detect_hub_clusters(G_ig, mutation_group, logger_obj=None):
     log.debug(f"Hub threshold: {hub_threshold:.4f}")
     
     return hub_clusters, cluster_degrees
-
-
-def build_cluster_graph(G_ig, mutation_group, logger_obj=None):
-    """
-    Build a weighted cluster-level graph from the mutation graph.
-    
-    Parameters
-    ----------
-    G_ig : igraph Graph
-        The constructed igraph graph
-    mutation_group : dict
-        {mutation_id: group_id} - Mapping of each mutation to its group
-    logger_obj : logging.Logger, optional
-        Logger instance for logging messages. If None, uses global logger.
-    
-    Returns
-    -------
-    cluster_graph : igraph Graph
-        Weighted graph where nodes are clusters and edges represent inter-cluster connections
-    """
-    # Use provided logger or fall back to global logger
-    log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
-    
-    clusters = set(mutation_group.values())
-    cluster_graph = ig.Graph()
-    cluster_graph.add_vertices(list(clusters))
-    
-    # Calculate inter-cluster connection weights
-    inter_cluster_weights = {}
-    for edge in G_ig.es:
-        source_mut = G_ig.vs[edge.source]['name']
-        target_mut = G_ig.vs[edge.target]['name']
-        
-        source_cluster = mutation_group[source_mut]
-        target_cluster = mutation_group[target_cluster]
-        
-        if source_cluster != target_cluster:
-            pair = tuple(sorted([source_cluster, target_cluster]))
-            inter_cluster_weights[pair] = inter_cluster_weights.get(pair, 0) + edge['weight']
-    
-    # Add edges
-    for (cluster1, cluster2), weight in inter_cluster_weights.items():
-        cluster_graph.add_edge(cluster1, cluster2, weight=weight)
-    
-    log.debug(f"Built cluster graph with {len(clusters)} clusters and {len(inter_cluster_weights)} inter-cluster connections")
-    
-    return cluster_graph
 
 
 def resolved_spots_by_immune_mutations(I_scaffold, immune_mutations, P_scaffold, V_scaffold, A_scaffold, C_scaffold, df_reads_scaffold, p_threshold=0.5, logger_obj=None):
@@ -2346,6 +2350,14 @@ class TreeNode:
     
     def __str__(self):
         return self.to_string()
+
+
+def print_tree_simple(node, level=0):
+    """Simple version, using only print and not going through logging"""
+    indent = "  " * level
+    print(f"{indent}└─ {node.name}")
+    for child in node.children:
+        print_tree_simple(child, level + 1)
 
 
 def print_tree(node, level=0, logger_obj=None):
@@ -6445,21 +6457,7 @@ def perform_subgrouping_within_backbone_groups_and_build_initial_scaffold_tree(
                     'mutations': subgroup_muts,
                     'is_trivial': False
                 }
-                
-            # Visualize subgroup results
-            try:
-                plot_heatmap_with_celltype_by_your_sorting(
-                    I_group_sorted, 
-                    None,
-                    mutation_subgroup,
-                    list(mut_df_sorted_sub['mutation']),
-                    os.path.join(dir_subgroup, f"{sampleid}.group_{group_id}_subgroup_heatmap.pdf"),
-                    logger_obj=log
-                )
-                log.debug(f"Group {group_id}: Heatmap generated successfully")
-            except Exception as e:
-                log.warning(f"Could not generate heatmap for group {group_id}: {str(e)}")
-            
+        
         except Exception as e:
             log.error(f"Error in sub-grouping for group {group_id}: {str(e)}")
             # If sub-grouping fails, create independent subgroups for each mutation
