@@ -71,6 +71,7 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 ## Version History
 
+- **v3.3.0** (2026-08-20): Improved optimal tree selection with `Omega_final` criterion and robust tie-breaking mechanism ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.3.0))
 - **v3.2.1** (2026-08-20): Critical bug fixes for CV threshold search: fixed logger `NameError`, eliminated duplicate mutation nodes in scaffold tree, standardized logger parameter passing ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.2.1))
 - **v3.2.0** (2026-08-15): Parallel CV traversal, unified optimal selection, structured logging overhaul, full English localization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.2.0))
 - **v3.1.1** (2026-08-08): Performance optimization: 4-33x speedup in penalty calculation with caching and vectorization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.1.1))
