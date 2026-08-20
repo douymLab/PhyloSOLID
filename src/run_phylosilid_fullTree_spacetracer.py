@@ -236,7 +236,7 @@ SETTING_PARAMS = {
     
     # 3.2 Coverage-based filtration
     "na_prop_thresh_global": 0.95,
-    "cv_thresh": 6.0,
+    # "cv_thresh": 6.0,
     # "cv_rank_thresh" will be set dynamically
     
     # 3.3 Consensus correlation graph
@@ -405,49 +405,65 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
     
     Returns
     -------
-    dict : {
-        'cv_value': float,
-        'omega_pre_qc': float,
-        'omega_final': float,
-        'omega_sum': float,
-        'scaffold_count': int,
-        'success': bool,
-        'error': str or None,
-        'scaffold_dir': str,
-        'mutint_dir': str,
-        'T_current': TreeNode,
-        'M_current': pd.DataFrame,
-        'root_mutations': List[str],
-        'all_conflict_mutations': List[str],
-        'I_attached': pd.DataFrame,
-        'attached_mutations': List[str],
-        'scaffold_mutations': List[str],
-        'somatic_mutations': List[str],
-        'no_group_mutations': List[str],
-        'to_be_removed_cells': List[str],
-        'identified_doublet_cells': List[str],
-        'to_be_removed_mutations_by_fp_mutations_cross_all_cells': List[str],
-        'final_remained_mutations': List[str],
-        'final_conflict_mutations': List[str],
-    }
+    dict : Result dictionary containing all outputs
     """
-    # Create a copy of params with the current cv_rank_thresh
-    params_local = copy.deepcopy(params)
-    params_local['cv_rank_thresh'] = cv_value
-    
-    # Create run-specific output directories under 02_scaffold_builder and 03_mutation_integrator
+    # Create run-specific output directories
     cv_label = str(cv_value).replace('.', '_')
     run_outputpath_scaffold = os.path.join(outputpath_02, f"CV{cv_label}")
     run_outputpath_full = os.path.join(outputpath_03, f"CV{cv_label}")
     os.makedirs(run_outputpath_scaffold, exist_ok=True)
     os.makedirs(run_outputpath_full, exist_ok=True)
     
-    logger.info(f"  Running with cv_rank_thresh = {cv_value}")
-    logger.info(f"  Scaffold output: {run_outputpath_scaffold}")
-    logger.info(f"  Mutation integrator output: {run_outputpath_full}")
+    # ============================================================
+    # Setup CV-specific logging (does NOT propagate to root logger)
+    # ============================================================
+    log_dir = os.path.join(output_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"cv_{cv_label}.log")
+    
+    # Create CV-specific logger (does not propagate to root)
+    cv_logger = logging.getLogger(f"CV_{cv_label}")
+    cv_logger.setLevel(logging.INFO)
+    cv_logger.propagate = False  # CRITICAL: prevents log messages from going to root logger
+    
+    # Clear existing handlers
+    cv_logger.handlers = []
+    
+    # File handler - each CV has its own log file
+    file_handler = logging.FileHandler(log_file, mode='w')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] [PID:%(process)d] %(message)s"
+    ))
+    cv_logger.addHandler(file_handler)
+    
+    # Console handler - with CV label for easy identification
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(
+        f"[CV{cv_label}] %(asctime)s [%(levelname)s] %(message)s"
+    ))
+    cv_logger.addHandler(console_handler)
+    
+    # Log CV start
+    cv_logger.info("=" * 80)
+    cv_logger.info(f"=== STARTING CV THRESHOLD SEARCH: cv_rank_thresh = {cv_value} ===")
+    cv_logger.info("=" * 80)
+    cv_logger.info(f"  Scaffold output: {run_outputpath_scaffold}")
+    cv_logger.info(f"  Mutation integrator output: {run_outputpath_full}")
+    cv_logger.info(f"  Log file: {log_file}")
+    cv_logger.info("=" * 80)
+    
+    # Create params copy and set current CV value
+    params_local = copy.deepcopy(params)
+    params_local['cv_rank_thresh'] = cv_value
     
     try:
         # ---- Scaffold builder ----
+        cv_logger.info("")
+        cv_logger.info("STEP 4: Building scaffold tree...")
+        cv_logger.info("-" * 40)
+        
         results_of_scaffold = build_scaffold_tree(
             P_somatic=P_somatic, 
             V_somatic=V_somatic, 
@@ -461,18 +477,24 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
             outputpath_scaffold=run_outputpath_scaffold,
             sampleid=sampleid,
             df_celltype=df_celltype,
-            immune_mutations=immune_mutations
+            immune_mutations=immune_mutations,
+            logger_obj=cv_logger
         )
         
-        # build_scaffold_tree now returns 14 values
+        # build_scaffold_tree returns 14 values
         (T_scaffold, M_scaffold, df_flipping_spots, df_total_flipping_count, 
          final_cleaned_I_selected_withNA3, final_cleaned_M_scaffold, 
          backbone_mutations, mutation_group, spots_to_split, group_mutations, 
          no_group_mutations, remained_mutations, conflict_mutations, root_mutations) = results_of_scaffold
         
         scaffold_mutations = list(M_scaffold.columns)
+        cv_logger.info(f"  Scaffold tree built: {len(scaffold_mutations)} mutations")
+        cv_logger.info("")
         
         # ---- Step 5: DP pass tree & prepare data ----
+        cv_logger.info("STEP 5: Dynamic programming pass tree...")
+        cv_logger.info("-" * 40)
+        
         if is_detect_passtree_by_dp == "yes":
             pass_tree_cutoff = params_local['pass_tree_cutoff']
             unpass_tree_cutoff = params_local['unpass_tree_cutoff']
@@ -496,6 +518,10 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
                              if i not in scaffold_mutations 
                              and i not in removed_germline_mutations 
                              and i not in removed_artifact_mutations]
+        
+        cv_logger.info(f"  Pass tree mutations: {len(passtree_mutations)}")
+        cv_logger.info(f"  Attached mutations: {len(attached_mutations)}")
+        cv_logger.info("")
         
         # Prepare data for full-resolved tree building
         I_attached_selected = I[scaffold_mutations + attached_mutations]
@@ -529,6 +555,9 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         all_conflict_mutations = conflict_mutations.copy()
         
         # ---- Step 6-8: Build fully resolved tree ----
+        cv_logger.info("STEP 6-8: Building fully resolved tree...")
+        cv_logger.info("-" * 40)
+        
         (T_current, M_current, root_mutations, all_conflict_mutations,
          omega_before_qc, to_be_removed_cells, identified_doublet_cells,
          to_be_removed_mutations_by_fp_mutations_cross_all_cells,
@@ -547,10 +576,20 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
             spots_to_split=spots_to_split,
             conflict_mutations=conflict_mutations,
             remove_artifact_mutations=remove_artifact_mutations,
-            logger_obj=logger
+            logger_obj=cv_logger,  # Pass CV-specific logger
+            cv_value=cv_value,
+            export_phylo=True
         )
         
+        # cv_logger.info("  Fully resolved tree structure ...")
+        # print_tree_logger(T_current, logger_obj=cv_logger)
+        cv_logger.info(f"  Fully resolved tree built: {M_current.shape[0]} cells, {M_current.shape[1]} mutations")
+        cv_logger.info("")
+        
         # ---- Compute omega_final (post-QC) ----
+        cv_logger.info("Computing final Omega (post-QC)...")
+        cv_logger.info("-" * 40)
+        
         M_for_omega = M_current.drop(columns=['ROOT'], errors='ignore')
         mutations_on_tree_for_omega = M_for_omega.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
         M_for_omega = split_merged_columns(M_for_omega, mutations_on_tree_for_omega)
@@ -565,10 +604,20 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         
         omega_final = N_deltaFP + params_local['fnfp_ratio'] * N_deltaFN
         
-        logger.info(f"  cv_rank_thresh={cv_value}:")
-        logger.info(f"    Omega (pre-QC): {omega_before_qc:.4f}")
-        logger.info(f"    Omega (final): {omega_final:.4f}")
-        logger.info(f"    Omega (sum): {omega_before_qc + omega_final:.4f}")
+        # ---- Summary for this CV ----
+        cv_logger.info("")
+        cv_logger.info("=" * 80)
+        cv_logger.info(f"CV THRESHOLD {cv_value} COMPLETED")
+        cv_logger.info("=" * 80)
+        cv_logger.info(f"  Omega (pre-QC):   {omega_before_qc:.4f}")
+        cv_logger.info(f"  Omega (final):    {omega_final:.4f}")
+        cv_logger.info(f"  Omega (sum):      {omega_before_qc + omega_final:.4f}")
+        cv_logger.info(f"  Scaffold count:   {len(scaffold_mutations)}")
+        cv_logger.info(f"  Final cells:      {M_current.shape[0]}")
+        cv_logger.info(f"  Final mutations:  {M_current.shape[1]}")
+        cv_logger.info("=" * 80)
+        cv_logger.info(f"  Log file: {log_file}")
+        cv_logger.info("=" * 80)
         
         return {
             'cv_value': cv_value,
@@ -597,9 +646,11 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         }
         
     except Exception as e:
-        logger.error(f"Error for cv_rank_thresh={cv_value}: {e}")
+        cv_logger.error(f"Error for cv_rank_thresh={cv_value}: {e}")
         import traceback
         traceback.print_exc()
+        cv_logger.error(traceback.format_exc())
+        
         return {
             'cv_value': cv_value,
             'omega_pre_qc': float('inf'),
@@ -628,80 +679,311 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
 
 
 # ============================================================
+# Wrapper function for parallel execution (MUST be at module level)
+# ============================================================
+def run_single_cv(cv_value):
+    """
+    Wrapper function for parallel execution of a single CV threshold.
+    
+    Parameters
+    ----------
+    cv_value : float
+        The CV threshold value to test
+    
+    Returns
+    -------
+    dict : Result dictionary containing all outputs
+    """
+    try:
+        # Run the pipeline - logging is handled internally by run_pipeline_for_cv_threshold
+        result = run_pipeline_for_cv_threshold(cv_value, outputpath)
+        
+        # Return result if successful
+        if result['success']:
+            return result
+        else:
+            return {
+                'cv_value': cv_value,
+                'success': False,
+                'error': result.get('error', 'Unknown error'),
+                'scaffold_dir': None,
+                'mutint_dir': None,
+            }
+    except Exception as e:
+        # Log critical errors using the root logger
+        logger.error(f"Critical error for CV={cv_value}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'cv_value': cv_value,
+            'success': False,
+            'error': str(e),
+            'scaffold_dir': None,
+            'mutint_dir': None,
+        }
+
+
+# ============================================================
+# Parallel execution function for CV threshold search
+# ============================================================
+def run_parallel_cv_search(cv_thresholds, max_workers=None):
+    """
+    Run the PhyloSOLID pipeline for multiple CV thresholds in parallel.
+    
+    Parameters
+    ----------
+    cv_thresholds : list
+        List of CV threshold values to test
+    max_workers : int or None
+        Maximum number of parallel processes. If None, uses CPU count - 1.
+    
+    Returns
+    -------
+    list : Results for all CV thresholds
+    """
+    
+    # Determine number of workers
+    if max_workers is None:
+        max_workers = max(1, mp.cpu_count() - 1)
+    
+    # Log summary to main logger (not detailed)
+    logger.info("=" * 80)
+    logger.info(f"Starting parallel CV search with {max_workers} workers...")
+    logger.info(f"Testing {len(cv_thresholds)} thresholds: {cv_thresholds}")
+    logger.info(f"Detailed CV logs are saved in: {outputpath}/logs/cv_*.log")
+    logger.info("=" * 80)
+    
+    # Use multiprocessing Pool
+    with mp.Pool(processes=max_workers) as pool:
+        # Use imap_unordered for better performance and progress tracking
+        results = []
+        # Simple progress display without tqdm to avoid log pollution
+        for i, result in enumerate(pool.imap_unordered(run_single_cv, cv_thresholds)):
+            results.append(result)
+            # Only log completion status to main logger
+            if result['success']:
+                logger.info(f"[{i+1}/{len(cv_thresholds)}] ✓ CV={result['cv_value']}: Omega={result.get('omega_sum', 'N/A'):.4f}")
+            else:
+                logger.info(f"[{i+1}/{len(cv_thresholds)}] ✗ CV={result['cv_value']}: Failed - {result.get('error', 'Unknown error')}")
+    
+    return results
+
+
+# ============================================================
+# Helper functions for parallel execution
+# ============================================================
+
+def save_comprehensive_results(search_results, outputpath):
+    """
+    Save comprehensive results including all CV outputs.
+    
+    Parameters
+    ----------
+    search_results : list
+        List of result dictionaries
+    outputpath : str
+        Base output directory
+    """
+    # Create a master summary CSV
+    master_summary = []
+    for result in search_results:
+        row = {
+            'cv_value': result.get('cv_value', 'N/A'),
+            'success': result.get('success', False),
+            'omega_pre_qc': result.get('omega_pre_qc', float('inf')),
+            'omega_final': result.get('omega_final', float('inf')),
+            'omega_sum': result.get('omega_sum', float('inf')),
+            'scaffold_count': result.get('scaffold_count', 0),
+            'scaffold_dir': result.get('scaffold_dir', ''),
+            'mutint_dir': result.get('mutint_dir', ''),
+            'error': result.get('error', ''),
+        }
+        master_summary.append(row)
+    
+    df_master = pd.DataFrame(master_summary)
+    df_master.to_csv(os.path.join(outputpath, "cv_search_master_summary.csv"), index=False)
+    
+    # Create a README for the search results
+    with open(os.path.join(outputpath, "CV_SEARCH_README.txt"), 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("CV THRESHOLD SEARCH RESULTS\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(f"Search completed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Total thresholds tested: {len(search_results)}\n")
+        f.write(f"Successful runs: {len([r for r in search_results if r.get('success', False)])}\n")
+        f.write(f"Failed runs: {len([r for r in search_results if not r.get('success', False)])}\n\n")
+        
+        f.write("-" * 80 + "\n")
+        f.write("DIRECTORY STRUCTURE\n")
+        f.write("-" * 80 + "\n")
+        f.write("  cv_search_summary/           - Pickled results and summaries for each CV\n")
+        f.write("  03_scaffold_builder/CV*/    - Scaffold outputs for each CV\n")
+        f.write("  04_mutation_integrator/CV*/ - Mutation integration outputs for each CV\n")
+        f.write("  05_final_results/            - Best results only\n\n")
+        
+        f.write("-" * 80 + "\n")
+        f.write("FILES\n")
+        f.write("-" * 80 + "\n")
+        f.write("  cv_search_master_summary.csv - Complete overview of all CV results\n")
+        f.write("  cv_threshold_search_results.csv - Detailed search results\n")
+        f.write("=" * 80 + "\n")
+
+
+# ============================================================
 # Main execution: Single or search mode
 # ============================================================
 
 if is_search_mode:
     # ============================================================
-    # SEARCH MODE: Run pipeline for all CV thresholds
+    # SEARCH MODE: Parallel execution
     # ============================================================
     logger.info("=" * 80)
-    logger.info("=== CV THRESHOLD SEARCH MODE ===")
+    logger.info("=== CV THRESHOLD SEARCH MODE (PARALLEL) ===")
     logger.info(f"Searching over {len(cv_thresholds)} values: {cv_thresholds}")
     logger.info("=" * 80)
     
-    search_results = []
+    # Create search summary directory
+    search_summary_dir = os.path.join(outputpath, "cv_search_summary")
+    os.makedirs(search_summary_dir, exist_ok=True)
     
-    for cv_val in tqdm(cv_thresholds, desc="Searching CV thresholds"):
-        logger.info(f"\n--- Testing cv_rank_thresh = {cv_val} ---")
-        result = run_pipeline_for_cv_threshold(cv_val, outputpath)
-        search_results.append(result)
+    # Run parallel search
+    search_results = run_parallel_cv_search(
+        cv_thresholds=cv_thresholds,
+        max_workers=max_workers
+    )
     
     # ---- Summarize results ----
+    # Convert to DataFrame
     df_results = pd.DataFrame(search_results)
     
-    # Find optimal threshold (minimize omega_sum)
-    df_valid = df_results[df_results['omega_sum'] != float('inf')]
+    # Filter valid results
+    df_valid = df_results[df_results['success'] == True]
+    df_valid = df_valid[df_valid['omega_final'].notna()]
+    df_valid = df_valid[df_valid['omega_final'] != float('inf')]
     
     logger.info("=" * 80)
     logger.info("=== CV THRESHOLD SEARCH RESULTS ===")
     logger.info("=" * 80)
-    logger.info("\n" + df_results.to_string())
+    logger.info("CV    Omega_pre   Omega_final   Omega_sum   Scaffold_count")
+    logger.info("-" * 70)
+    for idx, row in df_results.iterrows():
+        if row['success']:
+            scaffold_count = row.get('scaffold_count', 'N/A')
+            logger.info(f"{row['cv_value']:5.1f}  {row['omega_pre_qc']:10.4f}  {row['omega_final']:10.4f}  {row['omega_sum']:10.4f}  {scaffold_count:>15}")
+        else:
+            logger.info(f"{row['cv_value']:5.1f}  {'FAILED':>10}  {'FAILED':>10}  {'FAILED':>10}  {'N/A':>15}")
+    logger.info("=" * 80)
     
+    # Save complete search results
+    df_results.to_csv(os.path.join(outputpath, "cv_threshold_search_results.csv"), index=False)
+    
+    # ---- Save detailed results for each CV ----
+    for idx, result in enumerate(search_results):
+        cv_val = result['cv_value']
+        cv_label = str(cv_val).replace('.', '_')
+        result_file = os.path.join(search_summary_dir, f"cv_{cv_label}_result.pkl")
+        
+        # Save the result object for future use
+        with open(result_file, 'wb') as f:
+            pickle.dump(result, f)
+        
+        # Also save a CSV summary for each CV
+        if result['success']:
+            summary_df = pd.DataFrame([{
+                'cv_value': result['cv_value'],
+                'omega_pre_qc': result['omega_pre_qc'],
+                'omega_final': result['omega_final'],
+                'omega_sum': result['omega_sum'],
+                'scaffold_count': result['scaffold_count'],
+                'scaffold_dir': result.get('scaffold_dir'),
+                'mutint_dir': result.get('mutint_dir'),
+                'success': result['success'],
+            }])
+            summary_df.to_csv(
+                os.path.join(search_summary_dir, f"cv_{cv_label}_summary.csv"),
+                index=False
+            )
+    
+    # Save comprehensive results
+    save_comprehensive_results(search_results, outputpath)
+    
+    # ---- Find and select the best result with tie-breaking ----
     if not df_valid.empty:
-        best_idx = df_valid['omega_sum'].idxmin()
-        best_cv = df_valid.loc[best_idx, 'cv_value']
-        best_omega_sum = df_valid.loc[best_idx, 'omega_sum']
+        # Sort by: omega_final (primary), omega_sum (secondary), omega_pre_qc (tertiary)
+        # All ascending (lower is better)
+        df_sorted = df_valid.sort_values(
+            by=['omega_final', 'omega_sum', 'omega_pre_qc'],
+            ascending=[True, True, True]
+        )
+        
+        # Get the best row (first after sorting)
+        best_idx = df_sorted.index[0]
+        best_cv = df_sorted.loc[best_idx, 'cv_value']
+        best_omega_final = df_sorted.loc[best_idx, 'omega_final']
+        
+        # Check for ties in omega_final (for logging purposes)
+        min_omega_final = best_omega_final
+        ties = df_valid[df_valid['omega_final'] == min_omega_final]
+        if len(ties) > 1:
+            logger.info("=" * 80)
+            logger.info(f"⚠️  Multiple CV thresholds have the same minimum Omega_final = {min_omega_final:.4f}")
+            logger.info(f"   Tie-breaking: selecting by lowest Omega_sum, then Omega_pre-QC")
+            logger.info(f"   Candidates: {ties['cv_value'].tolist()}")
+            logger.info(f"   Selected: CV={best_cv} (Omega_sum={df_sorted.loc[best_idx, 'omega_sum']:.4f})")
+            logger.info("=" * 80)
         
         logger.info("=" * 80)
-        logger.info(f"BEST CV RANK THRESHOLD: {best_cv}")
-        logger.info(f"  Omega (pre-QC): {df_valid.loc[best_idx, 'omega_pre_qc']:.4f}")
-        logger.info(f"  Omega (final): {df_valid.loc[best_idx, 'omega_final']:.4f}")
-        logger.info(f"  Omega sum: {best_omega_sum:.4f}")
-        logger.info(f"  Scaffold count: {df_valid.loc[best_idx, 'scaffold_count']}")
+        logger.info(f"✓ BEST CV RANK THRESHOLD: {best_cv}")
+        logger.info(f"  Omega (pre-QC): {df_sorted.loc[best_idx, 'omega_pre_qc']:.4f}")
+        logger.info(f"  Omega (final): {best_omega_final:.4f}")
+        logger.info(f"  Omega (combined): {df_sorted.loc[best_idx, 'omega_sum']:.4f}")
+        logger.info(f"  Scaffold count: {df_sorted.loc[best_idx, 'scaffold_count']}")
         logger.info("=" * 80)
-        
-        # Save search results
-        df_results.to_csv(os.path.join(outputpath, "cv_threshold_search_results.csv"), index=False)
         
         # ---- Extract all variables from the best result ----
-        best_result = df_valid.loc[best_idx]
+        best_result = df_sorted.loc[best_idx].to_dict()
+        # Convert dict to use attribute-style access
+        best_result_obj = {
+            'T_current': best_result.get('T_current'),
+            'M_current': best_result.get('M_current'),
+            'root_mutations': best_result.get('root_mutations', []),
+            'all_conflict_mutations': best_result.get('all_conflict_mutations', []),
+            'omega_before_qc': best_result.get('omega_pre_qc', 0.0),
+            'I_attached': best_result.get('I_attached'),
+            'attached_mutations': best_result.get('attached_mutations', []),
+            'scaffold_mutations': best_result.get('scaffold_mutations', []),
+            'somatic_mutations': best_result.get('somatic_mutations', []),
+            'no_group_mutations': best_result.get('no_group_mutations', []),
+            'to_be_removed_cells': best_result.get('to_be_removed_cells', []),
+            'identified_doublet_cells': best_result.get('identified_doublet_cells', []),
+            'to_be_removed_mutations_by_fp_mutations_cross_all_cells': best_result.get('to_be_removed_mutations_by_fp_mutations_cross_all_cells', []),
+            'final_remained_mutations': best_result.get('final_remained_mutations', []),
+            'final_conflict_mutations': best_result.get('final_conflict_mutations', []),
+            'best_mutint_dir': best_result.get('mutint_dir'),
+        }
         
-        T_current = best_result.get('T_current')
-        M_current = best_result.get('M_current')
-        root_mutations = best_result.get('root_mutations', [])
-        all_conflict_mutations = best_result.get('all_conflict_mutations', [])
-        omega_before_qc = best_result.get('omega_pre_qc', 0.0)
-        
-        # Step 9 required variables
-        I_attached = best_result.get('I_attached')
-        attached_mutations = best_result.get('attached_mutations', [])
-        scaffold_mutations = best_result.get('scaffold_mutations', [])
-        somatic_mutations = best_result.get('somatic_mutations', [])
-        no_group_mutations = best_result.get('no_group_mutations', [])
-        to_be_removed_cells = best_result.get('to_be_removed_cells', [])
-        identified_doublet_cells = best_result.get('identified_doublet_cells', [])
-        to_be_removed_mutations_by_fp_mutations_cross_all_cells = best_result.get('to_be_removed_mutations_by_fp_mutations_cross_all_cells', [])
-        final_remained_mutations = best_result.get('final_remained_mutations', [])
-        final_conflict_mutations = best_result.get('final_conflict_mutations', [])
-        best_mutint_dir = best_result.get('mutint_dir')
-        
-        # Store best_cv for summary
+        # Unpack for use in Step 9
+        T_current = best_result_obj['T_current']
+        M_current = best_result_obj['M_current']
+        root_mutations = best_result_obj['root_mutations']
+        all_conflict_mutations = best_result_obj['all_conflict_mutations']
+        omega_before_qc = best_result_obj['omega_before_qc']
+        I_attached = best_result_obj['I_attached']
+        attached_mutations = best_result_obj['attached_mutations']
+        scaffold_mutations = best_result_obj['scaffold_mutations']
+        somatic_mutations = best_result_obj['somatic_mutations']
+        no_group_mutations = best_result_obj['no_group_mutations']
+        to_be_removed_cells = best_result_obj['to_be_removed_cells']
+        identified_doublet_cells = best_result_obj['identified_doublet_cells']
+        to_be_removed_mutations_by_fp_mutations_cross_all_cells = best_result_obj['to_be_removed_mutations_by_fp_mutations_cross_all_cells']
+        final_remained_mutations = best_result_obj['final_remained_mutations']
+        final_conflict_mutations = best_result_obj['final_conflict_mutations']
+        best_mutint_dir = best_result_obj['best_mutint_dir']
         optimal_cv = best_cv
         
-        # ---- Copy best results to 04_final_results ----
+        # ---- Copy best results to 05_final_results ----
         logger.info("=" * 80)
-        logger.info(f"Copying best results (CV={best_cv}) to 04_final_results/")
+        logger.info(f"Copying best results (CV={best_cv}) to 05_final_results/")
         logger.info("=" * 80)
         
         if best_mutint_dir and os.path.exists(best_mutint_dir):
@@ -723,22 +1005,30 @@ if is_search_mode:
                     if os.path.isfile(src):
                         shutil.copy2(src, dst)
         
-        # Create a README file in final_results
+        # Create comprehensive README
         with open(os.path.join(outputpath_04, "README.txt"), 'w') as f:
             f.write("=" * 80 + "\n")
             f.write("PhyloSOLID FINAL RESULTS\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Sample ID: {sampleid}\n")
             f.write(f"Optimal CV threshold: {best_cv}\n")
-            f.write(f"Omega (pre-QC): {df_valid.loc[best_idx, 'omega_pre_qc']:.4f}\n")
-            f.write(f"Omega (final): {df_valid.loc[best_idx, 'omega_final']:.4f}\n")
-            f.write(f"Omega (combined): {best_omega_sum:.4f}\n")
-            f.write(f"Scaffold count: {df_valid.loc[best_idx, 'scaffold_count']}\n\n")
+            f.write(f"Omega (pre-QC): {df_sorted.loc[best_idx, 'omega_pre_qc']:.4f}\n")
+            f.write(f"Omega (final): {best_omega_final:.4f}\n")
+            f.write(f"Omega (combined): {df_sorted.loc[best_idx, 'omega_sum']:.4f}\n")
+            f.write(f"Scaffold count: {df_sorted.loc[best_idx, 'scaffold_count']}\n\n")
+            f.write("Selection criterion: Minimum Omega (final)\n")
             f.write("This directory contains the best results only.\n")
             f.write("For detailed outputs for all CV thresholds, see:\n")
-            f.write(f"  - {outputpath_02}/\n")
-            f.write(f"  - {outputpath_03}/\n")
+            f.write(f"  - {outputpath_02}/ (scaffold outputs for each CV)\n")
+            f.write(f"  - {outputpath_03}/ (mutation integrator outputs for each CV)\n")
+            f.write(f"  - {search_summary_dir}/ (summary files and pickled results)\n")
             f.write("=" * 80 + "\n")
+        
+        # Also create a CSV with all CV results in final_results
+        shutil.copy2(
+            os.path.join(outputpath, "cv_threshold_search_results.csv"),
+            os.path.join(outputpath_04, "all_cv_search_results.csv")
+        )
         
     else:
         logger.error("No valid results from threshold search!")
@@ -782,7 +1072,7 @@ else:
     # Store cv_value for summary
     optimal_cv = cv_value
     
-    # ---- Copy results to 04_final_results ----
+    # ---- Copy results to 05_final_results ----
     best_mutint_dir = result.get('mutint_dir')
     if best_mutint_dir and os.path.exists(best_mutint_dir):
         for f in os.listdir(best_mutint_dir):
@@ -1152,6 +1442,11 @@ logger.info(f"  │  Omega (combined)               : {omega_before_qc + omega_f
 logger.info("  │                                   (lower is better)               │")
 logger.info("  └─────────────────────────────────────────────────────────────────────┘")
 logger.info("")
+if is_search_mode:
+    logger.info(f"  ✓ CV threshold search completed: {len(cv_thresholds)} values tested")
+    logger.info(f"  ✓ Optimal CV threshold: {optimal_cv} (selected by minimum Omega_final)")
+    logger.info(f"  ✓ All CV results saved to: {search_summary_dir}/")
+logger.info("")
 logger.info("=" * 80)
 logger.info("PhyloSOLID completed successfully!")
 logger.info("=" * 80)
@@ -1161,4 +1456,4 @@ logger.info("=" * 80)
 # End of Process
 # ------------------------------
 finish_time = time.perf_counter()
-print("Program finished in {:.4f} seconds".format(finish_time - start_time))
+logger.info("Program finished in {:.4f} seconds".format(finish_time - start_time))

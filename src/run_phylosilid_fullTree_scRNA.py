@@ -152,7 +152,7 @@ parser.add_argument("--cv_rank_thresh", default="auto", type=str,
                       - Single value: '0.3' (run once with this value)
                       - Comma-separated: '0.3,0.5,0.7' (search over these values)
                       - Range: '0.3-0.7:0.1' (from 0.3 to 0.7 with step 0.1)
-                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]""")
+                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7]""")
 parser.add_argument("--remove_artifact_mutations", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to permanently remove artifact mutations.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 parser.add_argument("--max_workers", default=None, type=int, help="Maximum number of parallel workers for CV search. If not specified, uses CPU count - 1.")
@@ -176,13 +176,13 @@ def parse_cv_thresholds(cv_rank_thresh_str):
         '0.3,0.5,0.7'   -> [0.3, 0.5, 0.7]
         '0.3-0.7:0.1'   -> [0.3, 0.4, 0.5, 0.6, 0.7]
         '0.3-0.7'       -> [0.3, 0.4, 0.5, 0.6, 0.7]  (default step 0.1)
-        'auto'          -> [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        'auto'          -> [0.3, 0.4, 0.5, 0.6, 0.7]
     """
     cv_rank_thresh_str = cv_rank_thresh_str.strip()
     
     # Case 1: 'auto' -> use default presets
     if cv_rank_thresh_str.lower() == 'auto':
-        return [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        return [0.3, 0.4, 0.5, 0.6, 0.7]
     
     # Case 2: Range format: '0.3-0.7:0.1'
     range_pattern = r'^([\d.]+)\s*-\s*([\d.]+)(?:\s*:\s*([\d.]+))?$'
@@ -303,7 +303,7 @@ SETTING_PARAMS = {
     
     # 3.2 Coverage-based filtration
     "na_prop_thresh_global": 0.95,
-    "cv_thresh": 6.0,
+    # "cv_thresh": 6.0,
     # "cv_rank_thresh" will be set dynamically
     
     # 3.3 Consensus correlation graph
@@ -1026,7 +1026,8 @@ if is_search_mode:
     
     # Filter valid results
     df_valid = df_results[df_results['success'] == True]
-    df_valid = df_valid[df_valid['omega_sum'].notna()]
+    df_valid = df_valid[df_valid['omega_final'].notna()]
+    df_valid = df_valid[df_valid['omega_final'] != float('inf')]
     
     logger.info("=" * 80)
     logger.info("=== CV THRESHOLD SEARCH RESULTS ===")
@@ -1074,22 +1075,41 @@ if is_search_mode:
     # Save comprehensive results
     save_comprehensive_results(search_results, outputpath)
     
-    # ---- Find and select the best result ----
+    # ---- Find and select the best result with tie-breaking ----
     if not df_valid.empty:
-        best_idx = df_valid['omega_sum'].idxmin()
-        best_cv = df_valid.loc[best_idx, 'cv_value']
-        best_omega_sum = df_valid.loc[best_idx, 'omega_sum']
+        # Sort by: omega_final (primary), omega_sum (secondary), omega_pre_qc (tertiary)
+        # All ascending (lower is better)
+        df_sorted = df_valid.sort_values(
+            by=['omega_final', 'omega_sum', 'omega_pre_qc'],
+            ascending=[True, True, True]
+        )
+        
+        # Get the best row (first after sorting)
+        best_idx = df_sorted.index[0]
+        best_cv = df_sorted.loc[best_idx, 'cv_value']
+        best_omega_final = df_sorted.loc[best_idx, 'omega_final']
+        
+        # Check for ties in omega_final (for logging purposes)
+        min_omega_final = best_omega_final
+        ties = df_valid[df_valid['omega_final'] == min_omega_final]
+        if len(ties) > 1:
+            logger.info("=" * 80)
+            logger.info(f"⚠️  Multiple CV thresholds have the same minimum Omega_final = {min_omega_final:.4f}")
+            logger.info(f"   Tie-breaking: selecting by lowest Omega_sum, then Omega_pre-QC")
+            logger.info(f"   Candidates: {ties['cv_value'].tolist()}")
+            logger.info(f"   Selected: CV={best_cv} (Omega_sum={df_sorted.loc[best_idx, 'omega_sum']:.4f})")
+            logger.info("=" * 80)
         
         logger.info("=" * 80)
         logger.info(f"✓ BEST CV RANK THRESHOLD: {best_cv}")
-        logger.info(f"  Omega (pre-QC): {df_valid.loc[best_idx, 'omega_pre_qc']:.4f}")
-        logger.info(f"  Omega (final): {df_valid.loc[best_idx, 'omega_final']:.4f}")
-        logger.info(f"  Omega (combined): {best_omega_sum:.4f}")
-        logger.info(f"  Scaffold count: {df_valid.loc[best_idx, 'scaffold_count']}")
+        logger.info(f"  Omega (pre-QC): {df_sorted.loc[best_idx, 'omega_pre_qc']:.4f}")
+        logger.info(f"  Omega (final): {best_omega_final:.4f}")
+        logger.info(f"  Omega (combined): {df_sorted.loc[best_idx, 'omega_sum']:.4f}")
+        logger.info(f"  Scaffold count: {df_sorted.loc[best_idx, 'scaffold_count']}")
         logger.info("=" * 80)
         
         # ---- Extract all variables from the best result ----
-        best_result = df_valid.loc[best_idx].to_dict()
+        best_result = df_sorted.loc[best_idx].to_dict()
         # Convert dict to use attribute-style access
         best_result_obj = {
             'T_current': best_result.get('T_current'),
@@ -1160,10 +1180,11 @@ if is_search_mode:
             f.write("=" * 80 + "\n\n")
             f.write(f"Sample ID: {sampleid}\n")
             f.write(f"Optimal CV threshold: {best_cv}\n")
-            f.write(f"Omega (pre-QC): {df_valid.loc[best_idx, 'omega_pre_qc']:.4f}\n")
-            f.write(f"Omega (final): {df_valid.loc[best_idx, 'omega_final']:.4f}\n")
-            f.write(f"Omega (combined): {best_omega_sum:.4f}\n")
-            f.write(f"Scaffold count: {df_valid.loc[best_idx, 'scaffold_count']}\n\n")
+            f.write(f"Omega (pre-QC): {df_sorted.loc[best_idx, 'omega_pre_qc']:.4f}\n")
+            f.write(f"Omega (final): {best_omega_final:.4f}\n")
+            f.write(f"Omega (combined): {df_sorted.loc[best_idx, 'omega_sum']:.4f}\n")
+            f.write(f"Scaffold count: {df_sorted.loc[best_idx, 'scaffold_count']}\n\n")
+            f.write("Selection criterion: Minimum Omega (final)\n")
             f.write("This directory contains the best results only.\n")
             f.write("For detailed outputs for all CV thresholds, see:\n")
             f.write(f"  - {outputpath_03}/ (scaffold outputs for each CV)\n")
@@ -1591,7 +1612,7 @@ logger.info("  └────────────────────�
 logger.info("")
 if is_search_mode:
     logger.info(f"  ✓ CV threshold search completed: {len(cv_thresholds)} values tested")
-    logger.info(f"  ✓ Optimal CV threshold: {optimal_cv}")
+    logger.info(f"  ✓ Optimal CV threshold: {optimal_cv} (selected by minimum Omega_final)")
     logger.info(f"  ✓ All CV results saved to: {search_summary_dir}/")
 logger.info("")
 logger.info("=" * 80)
