@@ -1417,8 +1417,8 @@ def find_all_path_nodes(intersection_nodes, parent_dict, logger_obj=None):
     
     Parameters
     ----------
-    intersection_nodes : set
-        Set of intersection node names
+    intersection_nodes : set or list
+        Set/list of intersection node names
     parent_dict : dict
         Parent-child dictionary (tree_parent_dict)
     logger_obj : logging.Logger, optional
@@ -1426,8 +1426,8 @@ def find_all_path_nodes(intersection_nodes, parent_dict, logger_obj=None):
     
     Returns
     -------
-    set
-        Set of all node names on paths between intersection nodes
+    list
+        Sorted list of all node names on paths between intersection nodes
     """
     # Use provided logger or fall back to global logger
     log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
@@ -1447,9 +1447,10 @@ def find_all_path_nodes(intersection_nodes, parent_dict, logger_obj=None):
             path_between = get_path_between_nodes(intersection_list[i], intersection_list[j], parent_dict)
             all_path_nodes.update(path_between)
     
-    log.debug(f"Found {len(all_path_nodes)} nodes on paths between intersection nodes")
-    
-    return all_path_nodes
+    # ============================================================
+    # CRITICAL FIX: Return sorted list to ensure deterministic iteration order
+    # ============================================================
+    return sorted(all_path_nodes)
 
 
 # ============================================================================
@@ -1469,30 +1470,6 @@ def find_intersection_positions_within_tree_directly(
     """
     Optimized version based on intersection analysis, directly finding relevant positions.
     Follows the original logic using TreeNode objects.
-    
-    Parameters
-    ----------
-    T_current : TreeNode
-        Current tree
-    new_mut : str
-        New mutation to place
-    matrix : pd.DataFrame
-        Mutation presence matrix
-    min_overlap : int, default=1
-        Minimum overlap threshold
-    intersection_nodes : set, optional
-        Pre-computed intersection nodes
-    tree_parent_dict : dict, optional
-        Pre-computed parent-child dictionary
-    node_lookup : dict, optional
-        Pre-computed node lookup dictionary
-    logger_obj : logging.Logger, optional
-        Logger instance for logging messages. If None, uses global logger.
-    
-    Returns
-    -------
-    list
-        List of candidate positions
     """
     # Use provided logger or fall back to global logger
     log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
@@ -1513,7 +1490,7 @@ def find_intersection_positions_within_tree_directly(
     if tree_parent_dict is None:
         tree_parent_dict = build_tree_parent_dict(T_current)
     
-    # 3. Find all path nodes
+    # 3. Find all path nodes (returns sorted list for deterministic iteration)
     all_path_nodes = find_all_path_nodes(intersection_nodes, tree_parent_dict, logger_obj=log)
     
     # 4. Pre-create a deep copy of the base tree
@@ -1522,14 +1499,14 @@ def find_intersection_positions_within_tree_directly(
     # 5. Generate candidate positions only on relevant nodes
     candidate_positions = []
     
+    # ============================================================
+    # CRITICAL FIX: Iterate over sorted all_path_nodes to ensure deterministic order
+    # ============================================================
     for node_name in all_path_nodes:
         if node_name == "ROOT":
-            # Keep on_node type positions on ROOT
             node = base_tree_copy.find(node_name)
             if node is None:
                 continue
-            
-            # Generate on_node candidate on ROOT
             candidate_positions.append(_create_on_node_candidate_fast(base_tree_copy, node, new_mut))
             continue
         
@@ -1537,18 +1514,13 @@ def find_intersection_positions_within_tree_directly(
         if node is None:
             continue
         
-        # --- 1) Place on node ---
         candidate_positions.append(_create_on_node_candidate_fast(base_tree_copy, node, new_mut))
-        
-        # --- 2) New leaf ---
         candidate_positions.append(_create_new_leaf_candidate_fast(base_tree_copy, node, new_mut))
         
-        # --- 3) Place on each edge ---
         for child in node.children:
             if child.name in all_path_nodes:
                 candidate_positions.append(_create_on_edge_candidate_fast(base_tree_copy, node, child, new_mut))
         
-        # --- 4) New parent merging multiple children ---
         if len(node.children) >= 2:
             path_children = [child for child in node.children if child.name in all_path_nodes]
             if len(path_children) >= 2:

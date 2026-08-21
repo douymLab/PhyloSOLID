@@ -937,38 +937,25 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
     """
     Build a weighted co-occurrence graph from clone_weights and pair_weights,
     and use the Leiden algorithm to partition mutations into groups.
-    
-    Parameters
-    ----------
-    clone_weights : dict
-        {tuple(mutations): weight} - Global weight for each clone
-    pair_weights : dict
-        {tuple(m1, m2): weight} - Weight for each mutation pair
-    pdf_file : str
-        Output PDF file path for the graph visualization
-    resolution : float
-        Resolution parameter for the Leiden algorithm (higher = more groups)
-    seed : int
-        Random seed for reproducibility
-    ordered_mutations : list, optional
-        Predefined list of mutation order. If provided, nodes will be ordered accordingly.
-        If not provided, nodes are sorted alphabetically for deterministic ordering.
-    logger_obj : logging.Logger, optional
-        Logger instance for logging messages. If None, uses global logger.
-    
-    Returns
-    -------
-    mutation_group : dict
-        {mutation_id: group_id} - Mapping of each mutation to its group
-    partition : leidenalg VertexPartition
-        Partition object returned by the Leiden algorithm
-    G_ig : igraph Graph
-        The constructed igraph graph
     """
     # Use provided logger or fall back to global logger
     log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
     
     log.info("Running Leiden algorithm for mutation group detection...")
+    
+    # ============================================================
+    # CRITICAL FIX: Force deterministic RNG state for Leiden algorithm
+    # ============================================================
+    # The Leiden algorithm uses randomness for optimization. Even though we pass
+    # a 'seed' parameter, the underlying igraph and numpy RNG states may have
+    # been perturbed by parallel execution or previous operations. We explicitly
+    # reset both random and numpy random states here to ensure deterministic
+    # community detection results across parallel workers.
+    # ============================================================
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    # ============================================================
     
     # 1. Collect all mutations
     all_mutations = set()
@@ -979,11 +966,8 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
     
     # ===== Sort according to ordered_mutations =====
     if ordered_mutations is not None:
-        # Keep only mutations that appear in ordered_mutations
-        # and order them according to ordered_mutations
         ordered_mutations_set = set(ordered_mutations)
         all_mutations = [mut for mut in ordered_mutations if mut in all_mutations]
-        # Append any extra mutations not in ordered_mutations to the end
         extra_mutations = sorted([mut for mut in all_mutations if mut not in ordered_mutations_set])
         all_mutations = all_mutations + extra_mutations
     else:
@@ -997,7 +981,6 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
     G_ig.add_vertices(all_mutations)
     
     # 3. Add edges with deterministic order
-    # Sort pair_weights by mutation names
     sorted_pairs = sorted(pair_weights.items())
     edge_count = 0
     for (m1, m2), w in sorted_pairs:
@@ -1006,7 +989,7 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
     
     log.debug(f"Added {edge_count} edges to the graph")
     
-    # 4. Set random seeds
+    # 4. Set random seeds (redundant but ensures safety)
     random.seed(seed)
     np.random.seed(seed)
     
@@ -1030,7 +1013,7 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
             mutation_group[G_ig.vs[v]['name']] = idx
         log.debug(f"Group {idx}: {len(community)} mutations")
     
-    # 7. Plot graph (pass ordered_mutations to plot function)
+    # 7. Plot graph
     log.info(f"Saving mutation graph plot to: {pdf_file}")
     plot_mutation_graph(G_ig, mutation_group, pdf_file, seed=seed, 
                        ordered_mutations=all_mutations, logger_obj=log)
@@ -3285,42 +3268,31 @@ def split_merged_columns(merged_matrix: pd.DataFrame, mut_list: list):
 #   - parent_dict
 # -------------------------
 
-def find_intersection_positions_within_group_directly(T_current: TreeNode, new_mut: str, matrix, mutation_group, min_overlap=1, logger_obj=None):
+def find_intersection_positions_within_group_directly_scaffold(
+    T_current: TreeNode,
+    new_mut: str,
+    matrix,
+    mutation_group: dict,
+    min_overlap: int = 1,
+    intersection_nodes: Optional[Set] = None,
+    logger_obj=None
+):
     """
     Optimized version based on intersection analysis, directly finding relevant positions,
     only considering nodes under clones that belong to the same group as the current mutation.
-    
-    Parameters
-    ----------
-    T_current : TreeNode
-        Current tree
-    new_mut : str
-        New mutation to place
-    matrix : pd.DataFrame
-        Mutation matrix
-    mutation_group : dict
-        Mapping of mutation to group ID
-    min_overlap : int, default=1
-        Minimum overlap threshold
-    logger_obj : logging.Logger, optional
-        Logger instance for logging messages. If None, uses global logger.
-    
-    Returns
-    -------
-    list
-        List of candidate positions
     """
     # Use provided logger or fall back to global logger
     log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
     
     # 1. Find all nodes that intersect with the target mutation
-    intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
-        T_current, matrix, new_mut, min_overlap, logger_obj=log
-    )
+    if intersection_nodes is None:
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current, matrix, new_mut, min_overlap, logger_obj=log
+        )
     
     if len(intersection_nodes) == 0:
         log.debug(f"No intersection nodes found for {new_mut}")
-        return []  # No intersection, return empty list
+        return []
     
     # 2. Build tree parent-child dictionary
     tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
@@ -3328,7 +3300,7 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
     # 3. Get the group of the new mutation
     target_group = mutation_group[new_mut]
     
-    # 4. Find all path nodes, filtered to only clones in the target group
+    # 4. Find all path nodes, filtered to only clones in the target group (returns sorted list)
     all_path_nodes = get_all_path_nodes_with_group_filter(intersection_nodes, tree_parent_dict, mutation_group, target_group)
     
     # 5. Pre-create a deep copy of the base tree
@@ -3337,6 +3309,9 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
     # 6. Generate candidate positions only on relevant nodes
     candidate_positions = []
     
+    # ============================================================
+    # CRITICAL FIX: Iterate over sorted all_path_nodes to ensure deterministic order
+    # ============================================================
     for node_name in all_path_nodes:
         if node_name == "ROOT":
             continue
@@ -3346,23 +3321,16 @@ def find_intersection_positions_within_group_directly(T_current: TreeNode, new_m
             log.warning(f"Node {node_name} not found in tree")
             continue
         
-        # --- 1) Place on node ---
         candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
-        
-        # --- 2) New leaf ---
         candidate_positions.append(_create_new_leaf_candidate_fast_scaffold(base_tree_copy, node, new_mut))
         
-        # --- 3) Place on each edge ---
         for child in node.children:
-            if child.name in all_path_nodes:  # Only consider path children
+            if child.name in all_path_nodes:
                 candidate_positions.append(_create_on_edge_candidate_fast_scaffold(base_tree_copy, node, child, new_mut))
         
-        # --- 4) New parent merging multiple children ---
         if len(node.children) >= 2:
-            # Only consider path children combinations
             path_children = [child for child in node.children if child.name in all_path_nodes]
             if len(path_children) >= 2:
-                # Limit combinations to avoid explosion
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
@@ -3467,44 +3435,34 @@ def find_new_leaf_positions_for_target_node(T_current: TreeNode, new_mut: str, m
     return target_positions
 
 
-def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNode, new_mut: str, matrix, min_overlap=1, logger_obj=None):
+def find_intersection_positions_within_tree_directly_scaffold(
+    T_current: TreeNode,
+    new_mut: str,
+    matrix,
+    min_overlap: int = 1,
+    intersection_nodes: Optional[Set] = None,
+    logger_obj=None
+):
     """
     Optimized version based on intersection analysis, directly finding relevant positions.
-    
-    Parameters
-    ----------
-    T_current : TreeNode
-        Current tree
-    new_mut : str
-        New mutation to place
-    matrix : pd.DataFrame
-        Mutation matrix
-    min_overlap : int, default=1
-        Minimum overlap threshold
-    logger_obj : logging.Logger, optional
-        Logger instance for logging messages. If None, uses global logger.
-    
-    Returns
-    -------
-    list
-        List of candidate positions
     """
     # Use provided logger or fall back to global logger
     log = logger_obj if logger_obj is not None else logging.getLogger(__name__)
     
     # 1. Find all nodes that intersect with the target mutation
-    intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
-        T_current, matrix, new_mut, min_overlap, logger_obj=log
-    )
+    if intersection_nodes is None:
+        intersection_nodes = find_all_intersect_muts_from_tree_by_matrix_scaffold(
+            T_current, matrix, new_mut, min_overlap, logger_obj=log
+        )
     
     if len(intersection_nodes) == 0:
         log.debug(f"No intersection nodes found for {new_mut}")
-        return []  # No intersection, return empty list
+        return []
     
     # 2. Build tree parent-child dictionary
     tree_parent_dict = build_tree_parent_dict_scaffold(T_current)
     
-    # 3. Find all path nodes
+    # 3. Find all path nodes (returns sorted list for deterministic iteration)
     all_path_nodes = find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict)
     
     # 4. Pre-create a deep copy of the base tree
@@ -3513,18 +3471,17 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
     # 5. Generate candidate positions only on relevant nodes
     candidate_positions = []
     
+    # ============================================================
+    # CRITICAL FIX: Iterate over sorted all_path_nodes to ensure deterministic order
+    # ============================================================
     for node_name in all_path_nodes:
         if node_name == "ROOT":
-            # Keep on_node type positions on ROOT
             node = base_tree_copy.find(node_name)
             if node is None:
                 log.warning(f"Node {node_name} not found in tree")
                 continue
-            
-            # Generate on_node candidate on ROOT
             candidate_positions.append(_create_on_node_candidate_fast_scaffold(base_tree_copy, node, new_mut))
-            
-            continue  # Skip other position types on ROOT
+            continue
         
         node = base_tree_copy.find(node_name)
         if node is None:
@@ -3539,15 +3496,13 @@ def find_intersection_positions_within_tree_directly_scaffold(T_current: TreeNod
         
         # --- 3) Place on each edge ---
         for child in node.children:
-            if child.name in all_path_nodes:  # Only consider path children
+            if child.name in all_path_nodes:
                 candidate_positions.append(_create_on_edge_candidate_fast_scaffold(base_tree_copy, node, child, new_mut))
         
         # --- 4) New parent merging multiple children ---
         if len(node.children) >= 2:
-            # Only consider path children combinations
             path_children = [child for child in node.children if child.name in all_path_nodes]
             if len(path_children) >= 2:
-                # Limit combinations to avoid explosion
                 for r in range(2, min(4, len(path_children) + 1)):
                     for combo in combinations(path_children, r):
                         candidate_positions.append(_create_merge_candidate_fast_scaffold(base_tree_copy, node, combo, new_mut))
@@ -3591,6 +3546,22 @@ def get_all_path_nodes_with_group_filter(intersection_nodes, tree_parent_dict, m
     """
     Get path nodes related to intersection nodes, but only those belonging to the target_group
     in mutation_group.
+    
+    Parameters
+    ----------
+    intersection_nodes : set or list
+        Set/list of intersection node names
+    tree_parent_dict : dict
+        Parent-child dictionary
+    mutation_group : dict
+        Mapping of mutation to group ID
+    target_group : int or str
+        Target group ID to filter nodes
+    
+    Returns
+    -------
+    list
+        Sorted list of path nodes belonging to the target group
     """
     all_path_nodes = set()
     all_path_nodes.add('ROOT')  # Always include ROOT
@@ -3609,7 +3580,10 @@ def get_all_path_nodes_with_group_filter(intersection_nodes, tree_parent_dict, m
     # Only keep nodes belonging to target_group
     all_path_nodes = {node for node in all_path_nodes if valid_node_with_group(node, mutation_group, target_group)}
     
-    return all_path_nodes
+    # ============================================================
+    # CRITICAL FIX: Return sorted list to ensure deterministic iteration order
+    # ============================================================
+    return sorted(all_path_nodes)
 
 
 def valid_node_with_group(node, mutation_group, target_group):
@@ -3828,6 +3802,18 @@ def find_all_intersect_muts_from_tree_by_matrix_scaffold(tree, matrix, target_mu
 def find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict):
     """
     Find all nodes on the paths connecting intersection nodes.
+    
+    Parameters
+    ----------
+    intersection_nodes : set or list
+        Set/list of intersection node names
+    tree_parent_dict : dict
+        Parent-child dictionary (tree_parent_dict)
+    
+    Returns
+    -------
+    list
+        Sorted list of all node names on paths between intersection nodes
     """
     all_path_nodes = set()
     all_path_nodes.add('ROOT')  # Always include ROOT
@@ -3844,7 +3830,14 @@ def find_all_path_nodes_scaffold(intersection_nodes, tree_parent_dict):
             path_between = get_path_between_nodes_scaffold(intersection_list[i], intersection_list[j], tree_parent_dict)
             all_path_nodes.update(path_between)
     
-    return all_path_nodes
+    # ============================================================
+    # CRITICAL FIX: Return sorted list to ensure deterministic iteration order
+    # ============================================================
+    # In parallel execution, set iteration order can vary across processes
+    # due to different memory layouts or hash randomization. Sorting ensures
+    # that all workers iterate over nodes in the exact same order.
+    # ============================================================
+    return sorted(all_path_nodes)
 
 
 def get_path_to_root_scaffold(node, tree_parent_dict):
@@ -5532,8 +5525,8 @@ def integrate_mutations_to_scaffold_within_group(
             continue
         
         # 2. Get candidate positions
-        refined_positions = find_intersection_positions_within_group_directly(
-            T_current, new_mut, I_attached, mutation_group, min_overlap=1, logger_obj=log
+        refined_positions = find_intersection_positions_within_group_directly_scaffold(
+            T_current, new_mut, I_attached, mutation_group, min_overlap=1, intersection_nodes=intersection_nodes, logger_obj=log
         )
         parent_dict = build_parent_dict_from_candidates_scaffold(refined_positions)
         
@@ -6740,7 +6733,7 @@ def process_misassigned_mutations_direct_to_root(
                 else:
                     # Get candidate positions
                     potential_positions = find_intersection_positions_within_tree_directly_scaffold(
-                        T_current, subtree_mut, I_attached, min_overlap=1, logger_obj=log
+                        T_current, subtree_mut, I_attached, min_overlap=1, intersection_nodes=intersection_nodes, logger_obj=log
                     )
                     root_new_leaf_position = generate_new_leaf_on_root_scaffold(T_current, subtree_mut, logger_obj=log)
                     selected_positions = potential_positions + [root_new_leaf_position]
@@ -6830,7 +6823,7 @@ def process_misassigned_mutations_direct_to_root(
                     selected_positions = [root_new_leaf_position]
                 else:
                     potential_positions = find_intersection_positions_within_tree_directly_scaffold(
-                        T_current, subtree_mut, I_attached, min_overlap=1, logger_obj=log
+                        T_current, subtree_mut, I_attached, min_overlap=1, intersection_nodes=intersection_nodes, logger_obj=log
                     )
                     root_new_leaf_position = generate_new_leaf_on_root_scaffold(T_current, subtree_mut, logger_obj=log)
                     selected_positions = potential_positions + [root_new_leaf_position]
@@ -7000,7 +6993,7 @@ def process_misassigned_mutations_direct_to_root(
         
         # Get candidate positions using optimized method
         potential_positions = find_intersection_positions_within_tree_directly_scaffold(
-            T_current, subtree_mut, I_attached, min_overlap=1, logger_obj=log
+            T_current, subtree_mut, I_attached, min_overlap=1, intersection_nodes=intersection_nodes, logger_obj=log
         )
         root_new_leaf_position = generate_new_leaf_on_root_scaffold(T_current, subtree_mut, logger_obj=log)
         parent_dict = build_parent_dict_from_candidates_scaffold(potential_positions)

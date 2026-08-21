@@ -152,7 +152,7 @@ parser.add_argument("--cv_rank_thresh", default="auto", type=str,
                       - Single value: '0.3' (run once with this value)
                       - Comma-separated: '0.3,0.5,0.7' (search over these values)
                       - Range: '0.3-0.7:0.1' (from 0.3 to 0.7 with step 0.1)
-                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7]""")
+                      - 'auto': use default presets [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]""")
 parser.add_argument("--remove_artifact_mutations", default="yes", choices=["yes", "no"], type=str, help="Select 'yes' or 'no' to determine whether to permanently remove artifact mutations.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 parser.add_argument("--max_workers", default=None, type=int, help="Maximum number of parallel workers for CV search. If not specified, uses CPU count - 1.")
@@ -176,13 +176,13 @@ def parse_cv_thresholds(cv_rank_thresh_str):
         '0.3,0.5,0.7'   -> [0.3, 0.5, 0.7]
         '0.3-0.7:0.1'   -> [0.3, 0.4, 0.5, 0.6, 0.7]
         '0.3-0.7'       -> [0.3, 0.4, 0.5, 0.6, 0.7]  (default step 0.1)
-        'auto'          -> [0.3, 0.4, 0.5, 0.6, 0.7]
+        'auto'          -> [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
     """
     cv_rank_thresh_str = cv_rank_thresh_str.strip()
     
     # Case 1: 'auto' -> use default presets
     if cv_rank_thresh_str.lower() == 'auto':
-        return [0.3, 0.4, 0.5, 0.6, 0.7]
+        return [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
     
     # Case 2: Range format: '0.3-0.7:0.1'
     range_pattern = r'^([\d.]+)\s*-\s*([\d.]+)(?:\s*:\s*([\d.]+))?$'
@@ -862,6 +862,29 @@ def run_single_cv(cv_value):
     -------
     dict : Result dictionary containing all outputs
     """
+    # ============================================================
+    # CRITICAL FIX: Re-initialize random seed at worker process entry point
+    # ============================================================
+    # When using multiprocessing, worker processes inherit the parent's RNG state
+    # via fork(). This can lead to identical or non-deterministic RNG sequences
+    # across parallel workers. We force a seed reset based on the CV value
+    # to ensure each threshold has a deterministic and independent RNG state.
+    # ============================================================
+    import random
+    import numpy as np
+    
+    base_seed = 42  # Must match args.seed in the main script
+    # Use a large multiplier to avoid seed collisions across different CV values
+    specific_seed = int(base_seed + cv_value * 100000)
+    random.seed(specific_seed)
+    np.random.seed(specific_seed)
+    os.environ['PYTHONHASHSEED'] = str(specific_seed)
+    
+    # Also re-set the reproducibility module's seed
+    from src.reproducibility import set_seed
+    set_seed(specific_seed, verbose=False)
+    # ============================================================
+    
     try:
         # Run the pipeline - logging is handled internally by run_pipeline_for_cv_threshold
         result = run_pipeline_for_cv_threshold(cv_value, outputpath)
