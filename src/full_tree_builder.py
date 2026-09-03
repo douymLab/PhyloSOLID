@@ -1187,20 +1187,6 @@ def build_refined_tree(
     logger_obj.info(f"  │  Mutations                               : {M_for_omega_clean.shape[1]:>10}│")
     logger_obj.info("  └─────────────────────────────────────────────────────────────────────┘")
     
-    omega_checkpoint_file = os.path.join(outputpath_full, "weighted_discordance_index_pre_qc.txt")
-    with open(omega_checkpoint_file, 'w') as f:
-        f.write("=" * 60 + "\n")
-        f.write("WEIGHTED DISCORDANCE INDEX (PRE-QC)\n")
-        f.write("=" * 60 + "\n\n")
-        f.write(f"Omega (Weighted Discordance Index): {omega_before_qc:.2f}\n")
-        f.write(f"  N_deltaFP: {N_deltaFP}\n")
-        f.write(f"  N_deltaFN: {N_deltaFN}\n")
-        f.write(f"  lambda (FN/FP weight): {params.get('fnfp_ratio', 0.1)}\n\n")
-        f.write(f"Cells: {M_for_omega_clean.shape[0]}\n")
-        f.write(f"Mutations: {M_for_omega_clean.shape[1]}\n")
-        f.write("=" * 60 + "\n")
-    
-    logger_obj.info(f"  Checkpoint saved to: {omega_checkpoint_file}")
     logger_obj.info("")
     
     return T_current, M_current, root_mutations, all_conflict_mutations, omega_before_qc, outgroup_mutations

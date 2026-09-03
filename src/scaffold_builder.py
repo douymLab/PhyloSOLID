@@ -926,6 +926,83 @@ def plot_mutation_graph(G_ig, mutation_group, pdf_file, figsize=(8,8), edge_scal
     log.info(f"Mutation graph plot saved to: {pdf_file}")
 
 
+def compute_adaptive_resolution(I_matrix: pd.DataFrame, 
+                                min_resolution: float = 0.5,
+                                max_resolution: float = 2.0,
+                                logger_obj=None) -> Tuple[float, Dict]:
+    """
+    Compute adaptive resolution based on data sparsity
+
+    Core logic:
+        - Higher NA ratio → higher resolution
+        - More rare mutations → higher resolution
+        - Better data quality → lower resolution
+    """
+    if logger_obj is None:
+        logger_obj = logging.getLogger(__name__)
+    
+    n_cells, n_muts = I_matrix.shape
+    
+    # 1. NA ratio
+    na_ratio = I_matrix.isna().sum().sum() / (n_cells * n_muts)
+    
+    # 2. Rare mutation ratio (mutations present in <= 3 cells)
+    mut_counts = (I_matrix.fillna(0) == 1).sum(axis=0)
+    rare_ratio = (mut_counts <= 3).sum() / n_muts if n_muts > 0 else 0
+    
+    # 3. Effective mutation ratio (mutations with coverage >= 5)
+    coverage = I_matrix.notna().sum(axis=0)
+    effective_ratio = (coverage >= 5).sum() / n_muts if n_muts > 0 else 0
+    
+    # 4. Data Quality Index (DQI)
+    # Higher DQI = better quality → lower resolution
+    # Lower DQI = poorer quality → higher resolution
+    
+    # NA score (higher score for fewer NAs)
+    na_score = 1 - min(1.0, na_ratio * 1.5)
+    
+    # Rare mutation score (higher score for fewer rare mutations)
+    rare_score = 1 - min(1.0, rare_ratio * 2.0)
+    
+    # Effective mutation score (higher score for more effective mutations)
+    effective_score = effective_ratio
+    
+    # Combined DQI
+    dqi = (na_score * 0.4 + rare_score * 0.35 + effective_score * 0.25)
+    
+    # 5. DQI → Resolution mapping
+    if dqi >= 0.7:
+        resolution = min_resolution + (max_resolution - min_resolution) * 0.2  # 0.8
+    elif dqi >= 0.5:
+        resolution = min_resolution + (max_resolution - min_resolution) * 0.5  # 1.25
+    elif dqi >= 0.3:
+        resolution = min_resolution + (max_resolution - min_resolution) * 0.75  # 1.625
+    else:
+        resolution = max_resolution  # 2.0
+    
+    # Additional fine-tuning based on rare mutation ratio
+    if rare_ratio > 0.3:
+        resolution += 0.2
+    elif rare_ratio > 0.2:
+        resolution += 0.1
+    
+    resolution = round(min(max_resolution, max(min_resolution, resolution)), 1)
+    
+    metrics = {
+        'na_ratio': na_ratio,
+        'rare_ratio': rare_ratio,
+        'effective_ratio': effective_ratio,
+        'na_score': na_score,
+        'rare_score': rare_score,
+        'effective_score': effective_score,
+        'dqi': dqi,
+        'resolution': resolution,
+        'n_cells': n_cells,
+        'n_muts': n_muts
+    }
+    
+    return resolution, metrics
+
 import igraph as ig
 import leidenalg
 import random
@@ -7344,6 +7421,22 @@ def build_scaffold_tree(
     # Step 6: Mutation Grouping with Leiden Algorithm
     # ------------------------------
     log.info("Performing mutation grouping with Leiden algorithm...")
+    
+    # Calculate adaptive resolution
+    if 'resolution_of_graph' in params and params['resolution_of_graph'] is not None:
+        resolution = params['resolution_of_graph']
+        log.info(f"Using user-specified resolution: {resolution}")
+    else:
+        resolution, metrics = compute_adaptive_resolution(
+            I_resolved,
+            min_resolution=params.get('min_resolution', 0.5),
+            max_resolution=params.get('max_resolution', 2.0),
+            logger_obj=log
+        )
+        log.info(f"Adaptive resolution based on I_resolved: {resolution:.2f}")
+        params['resolution_of_graph'] = resolution
+    
+    # Set cutoff_mcf_for_graph and cutoff_mcn_for_graph
     if is_filter_quality == "yes":
         cutoff_mcf_for_graph = 0.05
         cutoff_mcn_for_graph = 5
@@ -7351,6 +7444,7 @@ def build_scaffold_tree(
         cutoff_mcf_for_graph = 0
         cutoff_mcn_for_graph = 0
     
+    # Calculate correlation for mutations
     clone_weights, pair_weights = get_correlation_graph_elements(
         I_resolved, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph, logger_obj=log
     )
