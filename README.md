@@ -71,6 +71,7 @@ PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from sing
 
 ## Version History
 
+- **v3.4.0** (2026-09-03): Adaptive Leiden graph resolution and pruning confidence CV selection: automatic resolution tuning based on data sparsity; new `pruning_confidence` criterion prevents over-pruning by evaluating `pruning_ratio = (Ω_pre-QC - Ω_final) / Ω_final < 10.0`; cleaner output structure with reduced file redundancy ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.4.0))
 - **v3.3.1** (2026-08-21): Deterministic parallel CV search: fixed non-determinism where same CV threshold produced different results in parallel vs single-run mode ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.3.1))
 - **v3.3.0** (2026-08-20): Improved optimal tree selection with `Omega_final` criterion and robust tie-breaking mechanism ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.3.0))
 - **v3.2.1** (2026-08-20): Critical bug fixes for CV threshold search: fixed logger `NameError`, eliminated duplicate mutation nodes in scaffold tree, standardized logger parameter passing ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.2.1))
@@ -303,8 +304,12 @@ PhyloSOLID now supports **automatic CV threshold search** to find the optimal th
 2. Two metrics are computed for each tree:
    - **Ω (pre-QC)**: Discordance index before quality control (full data)
    - **Ω (final)**: Discordance index after QC (cleaned data)
-3. The optimal threshold is selected by minimizing **Ω (pre-QC) + Ω (final)**
-   - This ensures balance between removing noise and preserving true signal
+3. The optimal threshold is selected using the **pruning confidence criterion**:
+   - **Pruning ratio**: `pruning_ratio = (Ω_pre-QC - Ω_final) / Ω_final`
+   - **Confident pruning**: `pruning_ratio < 10.0` (the "One-Tenth Rule")
+   - If confident trees exist: select the one with lowest **Ω (final)**
+   - If no confident trees: fallback to lowest **Ω (pre-QC)**
+   - This prevents over-pruning while preserving biologically valid signal
 
 **Usage examples:**
 
@@ -346,9 +351,14 @@ your_results/
 |--------|-------------|-------------------|
 | Ω (pre-QC) | Discordance before QC | How well the initial tree fits all data |
 | Ω (final) | Discordance after QC | How well the cleaned tree fits remaining data |
-| Ω (pre-QC) + Ω (final) | Combined metric | Balance between removing noise and preserving signal |
+| Ω (reduced) | Ω_pre-QC - Ω_final | Amount of discordance removed by QC |
+| pruning_ratio | Ω_reduced / Ω_final | Confidence of pruning; < 10.0 indicates confident pruning |
+| **Selection rule** | If confident trees exist → lowest Ω_final; else → lowest Ω_pre-QC | Prevents over-pruning while preserving biological signal |
 
-A lower combined Ω indicates a better balance: the QC process removed noise without losing meaningful signal.
+**Pruning Confidence Criterion (v3.4.0+):**
+
+The pruning confidence criterion detects over-pruning by comparing the discordance removed by QC against the discordance that remains. A threshold of 10.0 was empirically determined through systematic benchmark analysis across eight datasets spanning a wide range of data quality (Ω_pre-QC from ~175 to ~2600), ensuring optimal balance between preserving biological signal and excluding over-pruned trees.
+
 
 ### scRNA-seq mode
 
@@ -813,22 +823,25 @@ If the search results file is empty:
 2. Single value mode does not generate a search results file
 3. Ensure the pipeline completed successfully for all tested values
 
-### Understanding the Omega metrics in search results
+### Understanding the search results metrics
 
-The search results CSV contains:
+The search results CSV contains the following columns:
 
 | Column | Description |
 |--------|-------------|
 | `cv_value` | The CV threshold tested |
 | `omega_pre_qc` | Discordance before QC (lower is better) |
 | `omega_final` | Discordance after QC (lower is better) |
-| `omega_sum` | Combined metric used for selection |
+| `omega_reduced` | Ω_pre-QC - Ω_final (discordance removed by QC) |
+| `pruning_ratio` | omega_reduced / omega_final (confidence of pruning) |
+| `is_confident` | True if pruning_ratio < 10.0 (confident pruning) |
 | `scaffold_count` | Number of scaffold mutations selected |
 
 **Interpretation:**
-- A large reduction from `omega_pre_qc` to `omega_final` indicates effective QC
-- The optimal threshold balances both metrics
-- If `omega_pre_qc` is high but `omega_final` is low, QC may have removed real signal
+- A `pruning_ratio < 10.0` indicates confident pruning: QC removed noise without eliminating meaningful signal
+- A `pruning_ratio >= 10.0` suggests over-pruning: QC may have removed too much biological signal
+- If `is_confident` is True for one or more CV values, the pipeline selects the one with lowest `omega_final`
+- If `is_confident` is False for all CV values, the pipeline falls back to the lowest `omega_pre_qc`
 
 ### Large BAM files?
 
@@ -863,11 +876,6 @@ PhyloSOLID is licensed under the MIT License - see the [LICENSE](LICENSE) file f
 ### Code Availability
 
 The source code, documentation and examples are available on GitHub at [https://github.com/douymLab/PhyloSOLID](https://github.com/douymLab/PhyloSOLID).
-
-**Note**: The PhyloSOLID source code is currently being prepared for public release. 
-It will be made publicly available on GitHub by **March 1, 2026**, or upon the manuscript's 
-formal acceptance, whichever comes first. Until then, the code is available for review 
-purposes upon request.
 
 ### Third-party Dependencies
 
