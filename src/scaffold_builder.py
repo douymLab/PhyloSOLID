@@ -7402,14 +7402,16 @@ def build_scaffold_tree(
         C_resolved = C_scaffold.copy()
         df_reads_resolved = df_reads_scaffold.copy()
         spots_to_split = []
+        I_somatic_resolved = I_somatic.copy()
+        P_somatic_resolved = P_somatic.copy()
     else:
         I_resolved, P_resolved, V_resolved, A_resolved, C_resolved, df_reads_resolved, spots_to_split = resolved_spots_by_immune_mutations(
             I_scaffold, immune_mutations, P_scaffold, V_scaffold, A_scaffold, C_scaffold, df_reads_scaffold, p_threshold=0.5, logger_obj=log
         )
+        I_somatic_resolved, P_somatic_resolved = split_spots_by_immune_mutations_scaffold(
+            spots_to_split, [i for i in immune_mutations if i in I_somatic.columns], I_somatic, P_somatic
+        )
     
-    I_somatic_resolved, P_somatic_resolved = split_spots_by_immune_mutations_scaffold(
-        spots_to_split, [i for i in immune_mutations if i in I_somatic.columns], I_somatic, P_somatic
-    )
     I_somatic_resolved_withNA3 = I_somatic_resolved.replace({np.nan: 3}).astype(int)
     I_somatic_resolved_withNA3.to_csv(os.path.join(outputpath_scaffold, "I_somatic_resolved_withNA3.txt"), sep="\t")
     final_cleaned_I_somatic_resolved = I_somatic_resolved.loc[:, (I_somatic_resolved == 1).any(axis=0)]
