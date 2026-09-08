@@ -13,6 +13,7 @@ Date: 2025/09/16
 Update: 2025/10/13
 Latest: 2026/07/29
 Update: 2026/08/21 - Fixed parallel CV search determinism with spawn context
+Update: 2026/09/08 - Added pruning_confidence criterion for optimal CV selection (aligned with scRNA version)
 
 Usage:
     python [this script] -s SAMPLE_ID -i /path/to/data -o /path/to/output
@@ -29,7 +30,9 @@ Output Structure:
     │   ├── CV0.4/
     │   └── ...
     ├── 04_final_results/
-    └── cv_threshold_search_results.csv
+    ├── logs/
+    ├── cv_search_summary.csv
+    └── cv_selection_report.txt
 
 """
 
@@ -39,6 +42,9 @@ start_time = time.perf_counter()
 
 import os
 os.environ['PYTHONHASHSEED'] = '42'
+# Force matplotlib to use non-interactive backend (required for parallel execution)
+os.environ['MPLBACKEND'] = 'Agg'
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -150,6 +156,11 @@ parser.add_argument("--remove_artifact_mutations", default="yes", choices=["yes"
 parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
 parser.add_argument("--max_workers", default=None, type=int, help="Maximum number of parallel workers for CV search. If not specified, uses CPU count - 1.")
 
+# Pruning confidence threshold (fixed)
+# pruning_ratio = omega_reduced / omega_final
+# Confident if pruning_ratio < 10.0 (the "1/3 rule")
+PRUNING_CONFIDENCE_THRESHOLD = 10.0
+
 args = parser.parse_args()
 
 # Set all random seeds
@@ -255,6 +266,7 @@ logger.info(f"  -> parsed as: {cv_thresholds}")
 logger.info(f"  -> mode: {'SEARCH' if is_search_mode else 'SINGLE'}")
 logger.info(f"remove_artifact_mutations: {remove_artifact_mutations}")
 logger.info(f"max_workers: {max_workers if max_workers else 'auto (CPU count - 1)'}")
+logger.info(f"pruning_confidence_threshold: {PRUNING_CONFIDENCE_THRESHOLD} (pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD} = confident)")
 logger.info("")
 logger.info("Directory structure:")
 logger.info(f"  01_germline_filter: {outputpath_01}")
@@ -291,7 +303,6 @@ SETTING_PARAMS = {
     
     # 3.2 Coverage-based filtration
     "na_prop_thresh_global": 0.95,
-    # "cv_thresh": 6.0,
     # "cv_rank_thresh" will be set dynamically
     
     # 3.3 Consensus correlation graph
@@ -530,6 +541,11 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
     params_local = copy.deepcopy(params)
     params_local['cv_rank_thresh'] = cv_value
     
+    # Store initial data dimensions for statistics
+    initial_cells = I_somatic.shape[0]
+    initial_muts = I_somatic.shape[1]
+    initial_total = initial_cells + initial_muts
+    
     try:
         # ---- Scaffold builder ----
         cv_logger.info("")
@@ -656,8 +672,8 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         cv_logger.info(f"  Fully resolved tree built: {M_current.shape[0]} cells, {M_current.shape[1]} mutations")
         cv_logger.info("")
         
-        # ---- Compute omega_final (post-QC) ----
-        cv_logger.info("Computing final Omega (post-QC)...")
+        # ---- Compute omega_final (post-QC) and flipping counts ----
+        cv_logger.info("Computing final metrics...")
         cv_logger.info("-" * 40)
         
         M_for_omega = M_current.drop(columns=['ROOT'], errors='ignore')
@@ -669,36 +685,75 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         
         I_for_omega = I_attached.loc[M_for_omega_clean.index, M_for_omega_clean.columns].replace({np.nan: 3}).astype(int)
         
+        # Count flipping stats
         N_deltaFP = ((I_for_omega == 1) & (M_for_omega_clean == 0)).sum().sum()
         N_deltaFN = ((I_for_omega == 0) & (M_for_omega_clean == 1)).sum().sum()
+        N_NAto0 = ((I_for_omega == 3) & (M_for_omega_clean == 0)).sum().sum()
+        N_NAto1 = ((I_for_omega == 3) & (M_for_omega_clean == 1)).sum().sum()
         
         omega_final = N_deltaFP + params_local['fnfp_ratio'] * N_deltaFN
+        
+        # ---- Calculate pruning metrics ----
+        final_cells = M_for_omega_clean.shape[0]
+        final_muts = M_for_omega_clean.shape[1]
+        final_total = final_cells + final_muts
+        
+        omega_reduced = omega_before_qc - omega_final
+        pruning_ratio = omega_reduced / omega_final if omega_final > 0 else float('inf')
+        is_confident = pruning_ratio < PRUNING_CONFIDENCE_THRESHOLD
+        retention_rate = final_total / initial_total if initial_total > 0 else 0.0
         
         # ---- Summary for this CV ----
         cv_logger.info("")
         cv_logger.info("=" * 80)
         cv_logger.info(f"CV THRESHOLD {cv_value} COMPLETED")
         cv_logger.info("=" * 80)
-        cv_logger.info(f"  Omega (pre-QC):   {omega_before_qc:.4f}")
-        cv_logger.info(f"  Omega (final):    {omega_final:.4f}")
-        cv_logger.info(f"  Omega (sum):      {omega_before_qc + omega_final:.4f}")
-        cv_logger.info(f"  Scaffold count:   {len(scaffold_mutations)}")
-        cv_logger.info(f"  Final cells:      {M_current.shape[0]}")
-        cv_logger.info(f"  Final mutations:  {M_current.shape[1]}")
+        cv_logger.info(f"  Omega (pre-QC):        {omega_before_qc:.4f}")
+        cv_logger.info(f"  Omega (final):         {omega_final:.4f}")
+        cv_logger.info(f"  Omega (reduced):       {omega_reduced:.4f}")
+        cv_logger.info(f"  Pruning ratio:         {pruning_ratio:.4f} {'✓ Confident' if is_confident else '✗ Over-pruned'}")
+        cv_logger.info("")
+        cv_logger.info(f"  Flipping stats (final):")
+        cv_logger.info(f"    delta_FP:            {N_deltaFP}")
+        cv_logger.info(f"    delta_FN:            {N_deltaFN}")
+        cv_logger.info(f"    NA->0:               {N_NAto0}")
+        cv_logger.info(f"    NA->1:               {N_NAto1}")
+        cv_logger.info("")
+        cv_logger.info(f"  Cells:                 {M_current.shape[0]}")
+        cv_logger.info(f"  Mutations:             {M_current.shape[1]}")
+        cv_logger.info(f"  Retention rate:        {retention_rate:.4f}")
         cv_logger.info("=" * 80)
         cv_logger.info(f"  Log file: {log_file}")
         cv_logger.info("=" * 80)
         
         return {
             'cv_value': cv_value,
-            'omega_pre_qc': omega_before_qc,
-            'omega_final': omega_final,
-            'omega_sum': omega_before_qc + omega_final,
-            'scaffold_count': len(scaffold_mutations),
             'success': True,
             'error': None,
             'scaffold_dir': run_outputpath_scaffold,
             'mutint_dir': run_outputpath_full,
+            # Omega metrics
+            'omega_pre_qc': omega_before_qc,
+            'omega_final': omega_final,
+            'omega_sum': omega_before_qc + omega_final,
+            'omega_reduced': omega_reduced,
+            'pruning_ratio': pruning_ratio,
+            'is_confident': is_confident,
+            # Flipping counts
+            'N_deltaFP': N_deltaFP,
+            'N_deltaFN': N_deltaFN,
+            'N_NAto0': N_NAto0,
+            'N_NAto1': N_NAto1,
+            # Data dimensions
+            'initial_cells': initial_cells,
+            'initial_muts': initial_muts,
+            'initial_total': initial_total,
+            'final_cells': final_cells,
+            'final_muts': final_muts,
+            'final_total': final_total,
+            'retention_rate': retention_rate,
+            'scaffold_count': len(scaffold_mutations),
+            # Tree objects
             'T_current': T_current,
             'M_current': M_current,
             'root_mutations': root_mutations,
@@ -723,14 +778,28 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         
         return {
             'cv_value': cv_value,
-            'omega_pre_qc': float('inf'),
-            'omega_final': float('inf'),
-            'omega_sum': float('inf'),
-            'scaffold_count': 0,
             'success': False,
             'error': str(e),
             'scaffold_dir': None,
             'mutint_dir': None,
+            'omega_pre_qc': float('inf'),
+            'omega_final': float('inf'),
+            'omega_sum': float('inf'),
+            'omega_reduced': float('inf'),
+            'pruning_ratio': float('inf'),
+            'is_confident': False,
+            'N_deltaFP': 0,
+            'N_deltaFN': 0,
+            'N_NAto0': 0,
+            'N_NAto1': 0,
+            'initial_cells': 0,
+            'initial_muts': 0,
+            'initial_total': 0,
+            'final_cells': 0,
+            'final_muts': 0,
+            'final_total': 0,
+            'retention_rate': 0.0,
+            'scaffold_count': 0,
             'T_current': None,
             'M_current': None,
             'root_mutations': [],
@@ -754,36 +823,21 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
 def run_single_cv(cv_value):
     """
     Wrapper function for parallel execution of a single CV threshold.
-    
-    Parameters
-    ----------
-    cv_value : float
-        The CV threshold value to test
-    
-    Returns
-    -------
-    dict : Result dictionary containing all outputs
     """
-    # ============================================================
-    # Use fixed seed 42 to match single-run mode
-    # spawn context ensures each process starts fresh
-    # ============================================================
     import random
     import numpy as np
     
-    random.seed(42)
-    np.random.seed(42)
-    os.environ['PYTHONHASHSEED'] = '42'
+    base_seed = 42
+    specific_seed = int(base_seed + cv_value * 100000)
+    random.seed(specific_seed)
+    np.random.seed(specific_seed)
+    os.environ['PYTHONHASHSEED'] = str(specific_seed)
     
     from src.reproducibility import set_seed
-    set_seed(42, verbose=False)
-    # ============================================================
+    set_seed(specific_seed, verbose=False)
     
     try:
-        # Run the pipeline - logging is handled internally by run_pipeline_for_cv_threshold
         result = run_pipeline_for_cv_threshold(cv_value, outputpath)
-        
-        # Return result if successful
         if result['success']:
             return result
         else:
@@ -795,7 +849,6 @@ def run_single_cv(cv_value):
                 'mutint_dir': None,
             }
     except Exception as e:
-        # Log critical errors using the root logger
         logger.error(f"Critical error for CV={cv_value}: {e}")
         import traceback
         traceback.print_exc()
@@ -812,111 +865,269 @@ def run_single_cv(cv_value):
 # Parallel execution function for CV threshold search
 # ============================================================
 def run_parallel_cv_search(cv_thresholds, max_workers=None):
-    """
-    Run the PhyloSOLID pipeline for multiple CV thresholds in parallel.
-    
-    Parameters
-    ----------
-    cv_thresholds : list
-        List of CV threshold values to test
-    max_workers : int or None
-        Maximum number of parallel processes. If None, uses CPU count - 1.
-    
-    Returns
-    -------
-    list : Results for all CV thresholds
-    """
-    
-    # Determine number of workers
     if max_workers is None:
         max_workers = max(1, mp.cpu_count() - 1)
     
-    # Log summary to main logger (not detailed)
     logger.info("=" * 80)
     logger.info(f"Starting parallel CV search with {max_workers} workers...")
     logger.info(f"Testing {len(cv_thresholds)} thresholds: {cv_thresholds}")
-    logger.info(f"Detailed CV logs are saved in: {outputpath}/logs/cv_*.log")
+    logger.info(f"Pruning confidence threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}")
     logger.info("=" * 80)
     
-    # ============================================================
-    # Use 'spawn' context to ensure each worker starts with a clean RNG state
-    # This prevents fork() from copying parent's RNG state
-    # ============================================================
     ctx = mp.get_context('spawn')
     
     with ctx.Pool(processes=max_workers) as pool:
-        # Use imap_unordered for better performance and progress tracking
         results = []
-        # Simple progress display without tqdm to avoid log pollution
         for i, result in enumerate(pool.imap_unordered(run_single_cv, cv_thresholds)):
             results.append(result)
-            # Only log completion status to main logger
             if result['success']:
-                logger.info(f"[{i+1}/{len(cv_thresholds)}] ✓ CV={result['cv_value']}: Omega={result.get('omega_sum', 'N/A'):.4f}")
+                confident = "✓" if result.get('is_confident', False) else "⚠️"
+                logger.info(f"[{i+1}/{len(cv_thresholds)}] {confident} CV={result['cv_value']}: "
+                           f"Omega_final={result.get('omega_final', 'N/A'):.4f}, "
+                           f"Pruning_ratio={result.get('pruning_ratio', 'N/A'):.4f}")
             else:
-                logger.info(f"[{i+1}/{len(cv_thresholds)}] ✗ CV={result['cv_value']}: Failed - {result.get('error', 'Unknown error')}")
+                logger.info(f"[{i+1}/{len(cv_thresholds)}] ✗ CV={result['cv_value']}: Failed")
     
     return results
 
 
 # ============================================================
-# Helper functions for parallel execution
+# Selection function: Choose best CV using pruning_confidence
 # ============================================================
-
-def save_comprehensive_results(search_results, outputpath):
+def select_best_cv(df_valid):
     """
-    Save comprehensive results including all CV outputs.
+    Select the best CV threshold using the pruning_confidence criterion.
+    
+    Logic:
+        1. Calculate pruning_ratio = omega_reduced / omega_final
+        2. Confident if pruning_ratio < PRUNING_CONFIDENCE_THRESHOLD
+        3. If there are confident trees: select the one with LOWEST omega_final
+        4. If NO confident trees: select the one with LOWEST omega_pre_qc
+    
+    Parameters
+    ----------
+    df_valid : pd.DataFrame
+        DataFrame with valid results (success=True, finite values)
+    
+    Returns
+    -------
+    tuple : (best_idx, best_cv, best_score, df_sorted, selection_details, summary_stats)
+    """
+    if df_valid.empty:
+        return None, None, None, None, None, None
+    
+    df_valid = df_valid.copy()
+    
+    # Calculate pruning metrics
+    df_valid['omega_sum'] = df_valid['omega_pre_qc'] + df_valid['omega_final']
+    df_valid['omega_reduced'] = df_valid['omega_pre_qc'] - df_valid['omega_final']
+    df_valid['pruning_ratio'] = df_valid['omega_reduced'] / df_valid['omega_final']
+    df_valid['is_confident'] = df_valid['pruning_ratio'] < PRUNING_CONFIDENCE_THRESHOLD
+    
+    # Separate confident and over-pruned
+    df_confident = df_valid[df_valid['is_confident'] == True]
+    df_overpruned = df_valid[df_valid['is_confident'] == False]
+    
+    n_confident = len(df_confident)
+    n_overpruned = len(df_overpruned)
+    
+    selection_details = []
+    selection_details.append("=" * 80)
+    selection_details.append("CV SELECTION: Pruning Confidence Criterion")
+    selection_details.append("-" * 80)
+    selection_details.append(f"  Confidence rule: pruning_ratio = omega_reduced / omega_final < {PRUNING_CONFIDENCE_THRESHOLD}")
+    selection_details.append("  discordance must remain in the final tree.")
+    selection_details.append("")
+    selection_details.append(f"  Found {n_confident} confident trees, {n_overpruned} over-pruned trees")
+    selection_details.append("")
+    selection_details.append("  ┌────────────────────────────────────────────────────────────────────────────────────────────┐")
+    selection_details.append("  │  CV    Omega_pre    Omega_final    Omega_reduced   Pruning_ratio   Status                │")
+    selection_details.append("  ├────────────────────────────────────────────────────────────────────────────────────────────┤")
+    
+    for idx, row in df_valid.iterrows():
+        cv = row['cv_value']
+        omega_pre = row['omega_pre_qc']
+        omega_final = row['omega_final']
+        omega_reduced = row['omega_reduced']
+        pruning_ratio = row['pruning_ratio']
+        is_confident = row['is_confident']
+        status = "✓ Confident" if is_confident else "✗ Over-pruned"
+        selection_details.append(
+            f"  │  {cv:5.1f}  {omega_pre:>11.1f}  {omega_final:>13.1f}  {omega_reduced:>15.1f}  {pruning_ratio:>13.4f}  {status:>19} │"
+        )
+    selection_details.append("  └────────────────────────────────────────────────────────────────────────────────────────────┘")
+    selection_details.append("")
+    
+    # -------- Step 1: If there are confident trees, select by LOWEST omega_final --------
+    if not df_confident.empty:
+        df_sorted = df_confident.sort_values(
+            by=['omega_final', 'omega_sum'], 
+            ascending=[True, True]
+        )
+        best_idx = df_sorted.index[0]
+        best_cv = df_sorted.loc[best_idx, 'cv_value']
+        best_score = df_sorted.loc[best_idx, 'omega_final']
+        
+        best_row = df_sorted.loc[best_idx]
+        selection_details.append(f"  ✓ Selected from confident trees by LOWEST omega_final: CV = {best_cv}")
+        selection_details.append(f"      omega_final     = {best_row['omega_final']:.4f}")
+        selection_details.append(f"      omega_pre_qc    = {best_row['omega_pre_qc']:.4f}")
+        selection_details.append(f"      omega_reduced   = {best_row['omega_reduced']:.4f}")
+        selection_details.append(f"      pruning_ratio   = {best_row['pruning_ratio']:.4f} (confident ✓)")
+        selection_details.append("")
+        selection_details.append("=" * 80)
+        
+        summary_stats = {
+            'selection_method': 'confident_trees_lowest_omega_final',
+            'n_confident': n_confident,
+            'n_overpruned': n_overpruned,
+            'selected_cv': best_cv,
+            'selected_omega_final': best_row['omega_final'],
+            'selected_omega_pre_qc': best_row['omega_pre_qc'],
+            'selected_omega_reduced': best_row['omega_reduced'],
+            'selected_pruning_ratio': best_row['pruning_ratio'],
+            'selected_retention_rate': best_row['retention_rate'],
+            'selected_scaffold_count': best_row['scaffold_count'],
+        }
+        
+        return best_idx, best_cv, best_score, df_sorted, selection_details, summary_stats
+    
+    # -------- Step 2: If NO confident trees, select by LOWEST omega_pre_qc --------
+    else:
+        df_sorted = df_valid.sort_values(
+            by=['omega_pre_qc', 'omega_final'], 
+            ascending=[True, True]
+        )
+        best_idx = df_sorted.index[0]
+        best_cv = df_sorted.loc[best_idx, 'cv_value']
+        best_score = df_sorted.loc[best_idx, 'omega_pre_qc']
+        
+        best_row = df_sorted.loc[best_idx]
+        selection_details.append("  ⚠️ WARNING: No confident trees found (all have pruning_ratio >= 10.0)")
+        selection_details.append("     This indicates potential over-pruning across all CV thresholds.")
+        selection_details.append(f"  ✓ Falling back to LOWEST omega_pre_qc: CV = {best_cv}")
+        selection_details.append(f"      omega_pre_qc    = {best_row['omega_pre_qc']:.4f}")
+        selection_details.append(f"      omega_final     = {best_row['omega_final']:.4f}")
+        selection_details.append(f"      omega_reduced   = {best_row['omega_reduced']:.4f}")
+        selection_details.append(f"      pruning_ratio   = {best_row['pruning_ratio']:.4f} (over-pruned ⚠️)")
+        selection_details.append("")
+        selection_details.append("  Note: When all trees are over-pruned, we select the one with")
+        selection_details.append("  the lowest pre-QC discordance, as it represents the least")
+        selection_details.append("  aggressive initial model fit.")
+        selection_details.append("")
+        selection_details.append("=" * 80)
+        
+        summary_stats = {
+            'selection_method': 'fallback_lowest_omega_pre_qc',
+            'n_confident': n_confident,
+            'n_overpruned': n_overpruned,
+            'selected_cv': best_cv,
+            'selected_omega_final': best_row['omega_final'],
+            'selected_omega_pre_qc': best_row['omega_pre_qc'],
+            'selected_omega_reduced': best_row['omega_reduced'],
+            'selected_pruning_ratio': best_row['pruning_ratio'],
+            'selected_retention_rate': best_row['retention_rate'],
+            'selected_scaffold_count': best_row['scaffold_count'],
+        }
+        
+        return best_idx, best_cv, best_score, df_sorted, selection_details, summary_stats
+
+
+# ============================================================
+# Helper function: Save comprehensive results (SIMPLIFIED)
+# ============================================================
+def save_comprehensive_results(search_results, outputpath, sampleid,
+                               best_cv=None, best_score=None, 
+                               selection_details=None, best_row=None):
+    """
+    Save comprehensive results - SIMPLIFIED VERSION.
+    Only creates:
+        - cv_search_summary.csv (all CV metrics)
+        - cv_selection_report.txt (selection details)
     
     Parameters
     ----------
     search_results : list
-        List of result dictionaries
+        List of result dictionaries for all CVs
     outputpath : str
         Base output directory
+    sampleid : str
+        Sample ID
+    best_cv : float, optional
+        Best CV threshold
+    best_score : float, optional
+        Best score
+    selection_details : list, optional
+        List of selection detail strings
+    best_row : pd.Series, optional
+        Best result row from df_sorted
     """
-    # Create a master summary CSV
-    master_summary = []
+    
+    # ---- 1. Master summary (one file, all CVs) ----
+    master_rows = []
     for result in search_results:
-        row = {
-            'cv_value': result.get('cv_value', 'N/A'),
-            'success': result.get('success', False),
-            'omega_pre_qc': result.get('omega_pre_qc', float('inf')),
-            'omega_final': result.get('omega_final', float('inf')),
-            'omega_sum': result.get('omega_sum', float('inf')),
-            'scaffold_count': result.get('scaffold_count', 0),
-            'scaffold_dir': result.get('scaffold_dir', ''),
-            'mutint_dir': result.get('mutint_dir', ''),
-            'error': result.get('error', ''),
-        }
-        master_summary.append(row)
+        if result.get('success', False):
+            row = {
+                'cv': result['cv_value'],
+                'selected': result['cv_value'] == best_cv if best_cv is not None else False,
+                'omega_pre_qc': result.get('omega_pre_qc', float('inf')),
+                'omega_final': result.get('omega_final', float('inf')),
+                'omega_sum': result.get('omega_sum', float('inf')),
+                'omega_reduced': result.get('omega_reduced', float('inf')),
+                'pruning_ratio': result.get('pruning_ratio', float('inf')),
+                'confident': result.get('is_confident', False),
+                'scaffold_count': result.get('scaffold_count', 0),
+                'retention_rate': result.get('retention_rate', 0.0),
+                'N_deltaFP': result.get('N_deltaFP', 0),
+                'N_deltaFN': result.get('N_deltaFN', 0),
+                'N_NAto0': result.get('N_NAto0', 0),
+                'N_NAto1': result.get('N_NAto1', 0),
+                'final_cells': result.get('final_cells', 0),
+                'final_muts': result.get('final_muts', 0),
+            }
+            master_rows.append(row)
     
-    df_master = pd.DataFrame(master_summary)
-    df_master.to_csv(os.path.join(outputpath, "cv_search_master_summary.csv"), index=False)
+    df_master = pd.DataFrame(master_rows)
+    if not df_master.empty:
+        df_master = df_master.sort_values('cv')
+        df_master.to_csv(os.path.join(outputpath, "cv_search_summary.csv"), index=False)
+        logger.info(f"  CV summary saved to: cv_search_summary.csv")
     
-    # Create a README for the search results
-    with open(os.path.join(outputpath, "CV_SEARCH_README.txt"), 'w') as f:
+    # ---- 2. Selection report ----
+    with open(os.path.join(outputpath, "cv_selection_report.txt"), 'w') as f:
         f.write("=" * 80 + "\n")
-        f.write("CV THRESHOLD SEARCH RESULTS\n")
+        f.write("CV SELECTION REPORT\n")
         f.write("=" * 80 + "\n\n")
-        f.write(f"Search completed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Total thresholds tested: {len(search_results)}\n")
-        f.write(f"Successful runs: {len([r for r in search_results if r.get('success', False)])}\n")
-        f.write(f"Failed runs: {len([r for r in search_results if not r.get('success', False)])}\n\n")
+        f.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Sample ID: {sampleid}\n")
+        f.write(f"Total CVs tested: {len(master_rows)}\n")
+        f.write(f"Confident pruning threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}\n")
+        f.write(f"Selection criterion: pruning_confidence\n\n")
         
-        f.write("-" * 80 + "\n")
-        f.write("DIRECTORY STRUCTURE\n")
-        f.write("-" * 80 + "\n")
-        f.write("  cv_search_summary/           - Pickled results and summaries for each CV\n")
-        f.write("  02_scaffold_builder/CV*/    - Scaffold outputs for each CV\n")
-        f.write("  03_mutation_integrator/CV*/ - Mutation integration outputs for each CV\n")
-        f.write("  04_final_results/            - Best results only\n\n")
+        # Selection details
+        if selection_details:
+            f.write("-" * 80 + "\n")
+            f.write("SELECTION DETAILS\n")
+            f.write("-" * 80 + "\n")
+            for detail in selection_details:
+                f.write(detail + "\n")
+            f.write("\n")
         
-        f.write("-" * 80 + "\n")
-        f.write("FILES\n")
-        f.write("-" * 80 + "\n")
-        f.write("  cv_search_master_summary.csv - Complete overview of all CV results\n")
-        f.write("  cv_threshold_search_results.csv - Detailed search results\n")
-        f.write("=" * 80 + "\n")
+        # Selected CV
+        if best_cv is not None and best_row is not None:
+            f.write("-" * 80 + "\n")
+            f.write("SELECTED OPTIMAL CV\n")
+            f.write("-" * 80 + "\n")
+            f.write(f"  CV:                 {best_cv}\n")
+            f.write(f"  omega_pre_qc:       {best_row.get('omega_pre_qc', 0):.4f}\n")
+            f.write(f"  omega_final:        {best_row.get('omega_final', 0):.4f}\n")
+            f.write(f"  omega_reduced:      {best_row.get('omega_reduced', 0):.4f}\n")
+            f.write(f"  pruning_ratio:      {best_row.get('pruning_ratio', 0):.4f}\n")
+            f.write(f"  scaffold_count:     {best_row.get('scaffold_count', 0)}\n")
+            f.write(f"  retention_rate:     {best_row.get('retention_rate', 0):.4f}\n")
+            f.write("=" * 80 + "\n")
+    
+    logger.info(f"  Selection report saved to: cv_selection_report.txt")
 
 
 # ============================================================
@@ -924,10 +1135,6 @@ def save_comprehensive_results(search_results, outputpath):
 # ============================================================
 
 if __name__ == '__main__':
-    # ============================================================
-    # CRITICAL: Required for spawn context on Linux/macOS
-    # Without this, spawn will recursively import the main module
-    # ============================================================
     from multiprocessing import freeze_support
     freeze_support()
     
@@ -938,11 +1145,8 @@ if __name__ == '__main__':
         logger.info("=" * 80)
         logger.info("=== CV THRESHOLD SEARCH MODE (PARALLEL) ===")
         logger.info(f"Searching over {len(cv_thresholds)} values: {cv_thresholds}")
+        logger.info(f"Pruning confidence threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}")
         logger.info("=" * 80)
-        
-        # Create search summary directory
-        search_summary_dir = os.path.join(outputpath, "cv_search_summary")
-        os.makedirs(search_summary_dir, exist_ok=True)
         
         # Run parallel search
         search_results = run_parallel_cv_search(
@@ -951,7 +1155,6 @@ if __name__ == '__main__':
         )
         
         # ---- Summarize results ----
-        # Convert to DataFrame
         df_results = pd.DataFrame(search_results)
         
         # Filter valid results
@@ -962,138 +1165,65 @@ if __name__ == '__main__':
         logger.info("=" * 80)
         logger.info("=== CV THRESHOLD SEARCH RESULTS ===")
         logger.info("=" * 80)
-        logger.info("CV    Omega_pre   Omega_final   Omega_sum   Scaffold_count")
-        logger.info("-" * 70)
+        logger.info("CV    Omega_pre   Omega_final   Omega_red   Pruning_ratio   Confident   Scaffold")
+        logger.info("-" * 95)
         for idx, row in df_results.iterrows():
             if row['success']:
-                scaffold_count = row.get('scaffold_count', 'N/A')
-                logger.info(f"{row['cv_value']:5.1f}  {row['omega_pre_qc']:10.4f}  {row['omega_final']:10.4f}  {row['omega_sum']:10.4f}  {scaffold_count:>15}")
+                is_confident = "✓" if row.get('is_confident', False) else "✗"
+                logger.info(f"{row['cv_value']:5.1f}  {row['omega_pre_qc']:10.4f}  {row['omega_final']:10.4f}  "
+                           f"{row.get('omega_reduced', 0):10.4f}  {row.get('pruning_ratio', 0):13.4f}  "
+                           f"{is_confident:>9}  {row.get('scaffold_count', 0):>8}")
             else:
-                logger.info(f"{row['cv_value']:5.1f}  {'FAILED':>10}  {'FAILED':>10}  {'FAILED':>10}  {'N/A':>15}")
+                logger.info(f"{row['cv_value']:5.1f}  {'FAILED':>10}  {'FAILED':>10}  {'FAILED':>10}  {'FAILED':>13}  {'FAILED':>9}  {'N/A':>8}")
         logger.info("=" * 80)
         
-        # Save complete search results
-        df_results.to_csv(os.path.join(outputpath, "cv_threshold_search_results.csv"), index=False)
-        
-        # ---- Save detailed results for each CV ----
-        for idx, result in enumerate(search_results):
-            cv_val = result['cv_value']
-            cv_label = str(cv_val).replace('.', '_')
-            result_file = os.path.join(search_summary_dir, f"cv_{cv_label}_result.pkl")
-            
-            # Save the result object for future use
-            with open(result_file, 'wb') as f:
-                pickle.dump(result, f)
-            
-            # Also save a CSV summary for each CV
-            if result['success']:
-                summary_df = pd.DataFrame([{
-                    'cv_value': result['cv_value'],
-                    'omega_pre_qc': result['omega_pre_qc'],
-                    'omega_final': result['omega_final'],
-                    'omega_sum': result['omega_sum'],
-                    'scaffold_count': result['scaffold_count'],
-                    'scaffold_dir': result.get('scaffold_dir'),
-                    'mutint_dir': result.get('mutint_dir'),
-                    'success': result['success'],
-                }])
-                summary_df.to_csv(
-                    os.path.join(search_summary_dir, f"cv_{cv_label}_summary.csv"),
-                    index=False
-                )
-        
-        # Save comprehensive results
-        save_comprehensive_results(search_results, outputpath)
-        
-        # ---- Find and select the best result with tie-breaking ----
+        # ---- Select the best CV ----
         if not df_valid.empty:
-            # Sort by: omega_final (primary), omega_sum (secondary), omega_pre_qc (tertiary)
-            # All ascending (lower is better)
-            df_sorted = df_valid.sort_values(
-                by=['omega_final', 'omega_sum', 'omega_pre_qc'],
-                ascending=[True, True, True]
-            )
+            best_idx, best_cv, best_score, df_sorted, selection_details, summary_stats = select_best_cv(df_valid)
             
-            # Get the best row (first after sorting)
-            best_idx = df_sorted.index[0]
-            best_cv = df_sorted.loc[best_idx, 'cv_value']
-            best_omega_final = df_sorted.loc[best_idx, 'omega_final']
-            
-            # Check for ties in omega_final (for logging purposes)
-            min_omega_final = best_omega_final
-            ties = df_valid[df_valid['omega_final'] == min_omega_final]
-            if len(ties) > 1:
-                logger.info("=" * 80)
-                logger.info(f"⚠️  Multiple CV thresholds have the same minimum Omega_final = {min_omega_final:.4f}")
-                logger.info(f"   Tie-breaking: selecting by lowest Omega_sum, then Omega_pre-QC")
-                logger.info(f"   Candidates: {ties['cv_value'].tolist()}")
-                logger.info(f"   Selected: CV={best_cv} (Omega_sum={df_sorted.loc[best_idx, 'omega_sum']:.4f})")
-                logger.info("=" * 80)
-            
-            logger.info("=" * 80)
-            logger.info(f"✓ BEST CV RANK THRESHOLD: {best_cv}")
-            logger.info(f"  Omega (pre-QC): {df_sorted.loc[best_idx, 'omega_pre_qc']:.4f}")
-            logger.info(f"  Omega (final): {best_omega_final:.4f}")
-            logger.info(f"  Omega (combined): {df_sorted.loc[best_idx, 'omega_sum']:.4f}")
-            logger.info(f"  Scaffold count: {df_sorted.loc[best_idx, 'scaffold_count']}")
-            logger.info("=" * 80)
-            
-            # ---- Extract all variables from the best result ----
-            best_result = df_sorted.loc[best_idx].to_dict()
-            # Convert dict to use attribute-style access
-            best_result_obj = {
-                'T_current': best_result.get('T_current'),
-                'M_current': best_result.get('M_current'),
-                'root_mutations': best_result.get('root_mutations', []),
-                'all_conflict_mutations': best_result.get('all_conflict_mutations', []),
-                'omega_before_qc': best_result.get('omega_pre_qc', 0.0),
-                'I_attached': best_result.get('I_attached'),
-                'attached_mutations': best_result.get('attached_mutations', []),
-                'scaffold_mutations': best_result.get('scaffold_mutations', []),
-                'somatic_mutations': best_result.get('somatic_mutations', []),
-                'no_group_mutations': best_result.get('no_group_mutations', []),
-                'to_be_removed_cells': best_result.get('to_be_removed_cells', []),
-                'identified_doublet_cells': best_result.get('identified_doublet_cells', []),
-                'to_be_removed_mutations_by_fp_mutations_cross_all_cells': best_result.get('to_be_removed_mutations_by_fp_mutations_cross_all_cells', []),
-                'final_remained_mutations': best_result.get('final_remained_mutations', []),
-                'final_conflict_mutations': best_result.get('final_conflict_mutations', []),
-                'best_mutint_dir': best_result.get('mutint_dir'),
-            }
-            
-            # Unpack for use in Step 9
-            T_current = best_result_obj['T_current']
-            M_current = best_result_obj['M_current']
-            root_mutations = best_result_obj['root_mutations']
-            all_conflict_mutations = best_result_obj['all_conflict_mutations']
-            omega_before_qc = best_result_obj['omega_before_qc']
-            I_attached = best_result_obj['I_attached']
-            attached_mutations = best_result_obj['attached_mutations']
-            scaffold_mutations = best_result_obj['scaffold_mutations']
-            somatic_mutations = best_result_obj['somatic_mutations']
-            no_group_mutations = best_result_obj['no_group_mutations']
-            to_be_removed_cells = best_result_obj['to_be_removed_cells']
-            identified_doublet_cells = best_result_obj['identified_doublet_cells']
-            to_be_removed_mutations_by_fp_mutations_cross_all_cells = best_result_obj['to_be_removed_mutations_by_fp_mutations_cross_all_cells']
-            final_remained_mutations = best_result_obj['final_remained_mutations']
-            final_conflict_mutations = best_result_obj['final_conflict_mutations']
-            best_mutint_dir = best_result_obj['best_mutint_dir']
-            optimal_cv = best_cv
-            
-            # ---- Copy best results to 04_final_results ----
-            logger.info("=" * 80)
-            logger.info(f"Copying best results (CV={best_cv}) to 04_final_results/")
-            logger.info("=" * 80)
-            
-            if best_mutint_dir and os.path.exists(best_mutint_dir):
-                for f in os.listdir(best_mutint_dir):
-                    src = os.path.join(best_mutint_dir, f)
-                    dst = os.path.join(outputpath_04, f)
-                    if os.path.isfile(src):
-                        shutil.copy2(src, dst)
-                        logger.info(f"  Copied: {f}")
+            if best_idx is not None:
+                best_row = df_sorted.loc[best_idx]
                 
-                # Also copy the scaffold directory summary
+                logger.info("=" * 80)
+                logger.info("=== CV SELECTION DETAILS ===")
+                for detail in selection_details:
+                    logger.info(f"  {detail}")
+                logger.info("=" * 80)
+                
+                # ---- Extract variables from best result ----
+                best_result = best_row.to_dict()
+                T_current = best_result.get('T_current')
+                M_current = best_result.get('M_current')
+                root_mutations = best_result.get('root_mutations', [])
+                all_conflict_mutations = best_result.get('all_conflict_mutations', [])
+                omega_before_qc = best_result.get('omega_pre_qc', 0.0)
+                I_attached = best_result.get('I_attached')
+                attached_mutations = best_result.get('attached_mutations', [])
+                scaffold_mutations = best_result.get('scaffold_mutations', [])
+                somatic_mutations = best_result.get('somatic_mutations', [])
+                no_group_mutations = best_result.get('no_group_mutations', [])
+                to_be_removed_cells = best_result.get('to_be_removed_cells', [])
+                identified_doublet_cells = best_result.get('identified_doublet_cells', [])
+                to_be_removed_mutations_by_fp_mutations_cross_all_cells = best_result.get('to_be_removed_mutations_by_fp_mutations_cross_all_cells', [])
+                final_remained_mutations = best_result.get('final_remained_mutations', [])
+                final_conflict_mutations = best_result.get('final_conflict_mutations', [])
+                best_mutint_dir = best_result.get('mutint_dir')
                 best_scaffold_dir = best_result.get('scaffold_dir')
+                optimal_cv = best_cv
+                
+                # ---- Copy best results to 04_final_results ----
+                logger.info("=" * 80)
+                logger.info(f"Copying best results (CV={best_cv}) to 04_final_results/")
+                logger.info("=" * 80)
+                
+                if best_mutint_dir and os.path.exists(best_mutint_dir):
+                    for f in os.listdir(best_mutint_dir):
+                        src = os.path.join(best_mutint_dir, f)
+                        dst = os.path.join(outputpath_04, f)
+                        if os.path.isfile(src):
+                            shutil.copy2(src, dst)
+                            logger.info(f"  Copied: {f}")
+                
                 if best_scaffold_dir and os.path.exists(best_scaffold_dir):
                     scaffold_dst = os.path.join(outputpath_04, "scaffold_summary")
                     os.makedirs(scaffold_dst, exist_ok=True)
@@ -1102,36 +1232,25 @@ if __name__ == '__main__':
                         dst = os.path.join(scaffold_dst, f)
                         if os.path.isfile(src):
                             shutil.copy2(src, dst)
+                
+                # ---- Save comprehensive results (SIMPLIFIED) ----
+                save_comprehensive_results(
+                    search_results=search_results,
+                    outputpath=outputpath,
+                    sampleid=sampleid,
+                    best_cv=best_cv,
+                    best_score=best_score,
+                    selection_details=selection_details,
+                    best_row=best_row
+                )
             
-            # Create comprehensive README
-            with open(os.path.join(outputpath_04, "README.txt"), 'w') as f:
-                f.write("=" * 80 + "\n")
-                f.write("PhyloSOLID FINAL RESULTS\n")
-                f.write("=" * 80 + "\n\n")
-                f.write(f"Sample ID: {sampleid}\n")
-                f.write(f"Optimal CV threshold: {best_cv}\n")
-                f.write(f"Omega (pre-QC): {df_sorted.loc[best_idx, 'omega_pre_qc']:.4f}\n")
-                f.write(f"Omega (final): {best_omega_final:.4f}\n")
-                f.write(f"Omega (combined): {df_sorted.loc[best_idx, 'omega_sum']:.4f}\n")
-                f.write(f"Scaffold count: {df_sorted.loc[best_idx, 'scaffold_count']}\n\n")
-                f.write("Selection criterion: Minimum Omega (final)\n")
-                f.write("This directory contains the best results only.\n")
-                f.write("For detailed outputs for all CV thresholds, see:\n")
-                f.write(f"  - {outputpath_02}/ (scaffold outputs for each CV)\n")
-                f.write(f"  - {outputpath_03}/ (mutation integrator outputs for each CV)\n")
-                f.write(f"  - {search_summary_dir}/ (summary files and pickled results)\n")
-                f.write("=" * 80 + "\n")
-            
-            # Also create a CSV with all CV results in final_results
-            shutil.copy2(
-                os.path.join(outputpath, "cv_threshold_search_results.csv"),
-                os.path.join(outputpath_04, "all_cv_search_results.csv")
-            )
-            
+            else:
+                logger.error("No valid results from threshold search!")
+                sys.exit(1)
         else:
             logger.error("No valid results from threshold search!")
             sys.exit(1)
-            
+    
     else:
         # ============================================================
         # SINGLE MODE: Run with the single CV threshold
@@ -1141,21 +1260,18 @@ if __name__ == '__main__':
         logger.info(f"SINGLE CV THRESHOLD MODE: cv_rank_thresh = {cv_value}")
         logger.info("=" * 80)
         
-        # Run the full pipeline with the single CV threshold
         result = run_pipeline_for_cv_threshold(cv_value, outputpath)
         
         if not result['success']:
             logger.error(f"Pipeline failed for cv_rank_thresh={cv_value}")
             sys.exit(1)
         
-        # ---- Extract all variables from result ----
+        # Extract variables
         T_current = result.get('T_current')
         M_current = result.get('M_current')
         root_mutations = result.get('root_mutations', [])
         all_conflict_mutations = result.get('all_conflict_mutations', [])
         omega_before_qc = result.get('omega_pre_qc', 0.0)
-        
-        # Step 9 required variables
         I_attached = result.get('I_attached')
         attached_mutations = result.get('attached_mutations', [])
         scaffold_mutations = result.get('scaffold_mutations', [])
@@ -1166,11 +1282,9 @@ if __name__ == '__main__':
         to_be_removed_mutations_by_fp_mutations_cross_all_cells = result.get('to_be_removed_mutations_by_fp_mutations_cross_all_cells', [])
         final_remained_mutations = result.get('final_remained_mutations', [])
         final_conflict_mutations = result.get('final_conflict_mutations', [])
-        
-        # Store cv_value for summary
         optimal_cv = cv_value
         
-        # ---- Copy results to 04_final_results ----
+        # Copy results to final_results
         best_mutint_dir = result.get('mutint_dir')
         if best_mutint_dir and os.path.exists(best_mutint_dir):
             for f in os.listdir(best_mutint_dir):
@@ -1179,33 +1293,53 @@ if __name__ == '__main__':
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
         
-        # Save cv threshold search results (single value)
+        # Save single CV results
         df_single = pd.DataFrame([{
             'cv_value': cv_value,
             'omega_pre_qc': result['omega_pre_qc'],
             'omega_final': result['omega_final'],
             'omega_sum': result['omega_sum'],
-            'scaffold_count': result['scaffold_count'],
+            'omega_reduced': result.get('omega_reduced', float('inf')),
+            'pruning_ratio': result.get('pruning_ratio', float('inf')),
+            'is_confident': result.get('is_confident', False),
+            'N_deltaFP': result.get('N_deltaFP', 0),
+            'N_deltaFN': result.get('N_deltaFN', 0),
+            'N_NAto0': result.get('N_NAto0', 0),
+            'N_NAto1': result.get('N_NAto1', 0),
+            'scaffold_count': result.get('scaffold_count', 0),
+            'retention_rate': result.get('retention_rate', 0.0),
             'scaffold_dir': result.get('scaffold_dir'),
             'mutint_dir': result.get('mutint_dir'),
         }])
         df_single.to_csv(os.path.join(outputpath, "cv_threshold_search_results.csv"), index=False)
         
-        # Create README
+        # Save selection report for single mode
+        with open(os.path.join(outputpath, "cv_selection_report.txt"), 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("CV SELECTION REPORT (SINGLE MODE)\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Sample ID: {sampleid}\n")
+            f.write(f"CV threshold: {cv_value}\n")
+            f.write(f"Pruning confidence threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}\n")
+            f.write(f"omega_pre_qc: {result['omega_pre_qc']:.4f}\n")
+            f.write(f"omega_final: {result['omega_final']:.4f}\n")
+            f.write(f"omega_reduced: {result.get('omega_reduced', float('inf')):.4f}\n")
+            f.write(f"pruning_ratio: {result.get('pruning_ratio', float('inf')):.4f}\n")
+            f.write(f"is_confident: {result.get('is_confident', False)}\n")
+            f.write(f"Scaffold count: {result['scaffold_count']}\n")
+            f.write("=" * 80 + "\n")
+        
         with open(os.path.join(outputpath_04, "README.txt"), 'w') as f:
             f.write("=" * 80 + "\n")
             f.write("PhyloSOLID FINAL RESULTS\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Sample ID: {sampleid}\n")
             f.write(f"CV threshold: {cv_value}\n")
-            f.write(f"Omega (pre-QC): {result['omega_pre_qc']:.4f}\n")
-            f.write(f"Omega (final): {result['omega_final']:.4f}\n")
-            f.write(f"Omega (combined): {result['omega_sum']:.4f}\n")
-            f.write(f"Scaffold count: {result['scaffold_count']}\n\n")
-            f.write("This directory contains the final results.\n")
-            f.write("For detailed outputs, see:\n")
-            f.write(f"  - {outputpath_02}/CV{str(cv_value).replace('.', '_')}/\n")
-            f.write(f"  - {outputpath_03}/CV{str(cv_value).replace('.', '_')}/\n")
+            f.write(f"Pruning confidence threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}\n")
+            f.write(f"omega_pre_qc: {result['omega_pre_qc']:.4f}\n")
+            f.write(f"omega_final: {result['omega_final']:.4f}\n")
+            f.write(f"pruning_ratio: {result.get('pruning_ratio', float('inf')):.4f}\n")
+            f.write(f"Scaffold count: {result['scaffold_count']}\n")
             f.write("=" * 80 + "\n")
     
     
@@ -1218,19 +1352,15 @@ if __name__ == '__main__':
     logger.info("=" * 80)
     logger.info("")
     
-    # ----------------------------------------------------------------------------
-    # Step 9.1: Prepare final data
-    # ----------------------------------------------------------------------------
+    # ---- Step 9.1: Prepare final data ----
     logger.info("STEP 9.1: Prepare final data")
     logger.info("-" * 80)
     
-    # ---- Drop ROOT column and add root mutations back ----
     M_current_filtered = M_current.drop(columns=['ROOT'], errors='ignore')
     
     for mut_on_root in root_mutations:
         M_current_filtered.insert(0, mut_on_root, 1)
     
-    # ---- Expand merged columns ----
     mutations_on_T_current = M_current_filtered.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
     
     T_full = copy.deepcopy(T_current)
@@ -1243,25 +1373,19 @@ if __name__ == '__main__':
     logger.info(f"  Final tree mutations: {M_full.shape[1]}")
     logger.info("")
     
-    
-    # ----------------------------------------------------------------------------
-    # Step 9.2: Output results to final_results
-    # ----------------------------------------------------------------------------
+    # ---- Step 9.2: Output results ----
     logger.info("STEP 9.2: Output result files")
     logger.info("-" * 80)
     
-    # ---- Create output directory inside final_results ----
     phylo_dir = os.path.join(outputpath_04, "phylo")
     os.makedirs(phylo_dir, exist_ok=True)
     
-    # ---- Export I matrix with NA=3 ----
     I_full_withNA3 = I_attached.replace({np.nan: 3}).astype(int)
     I_full_withNA3.to_csv(os.path.join(phylo_dir, "I_full_withNA3.txt"), sep="\t")
     
-    # ---- Export M matrix ----
-    WriteTfile(os.path.join(phylo_dir, "M_full_basedPivots.filtered_sites_inferred"), M_full, M_full.index.tolist(), M_full.columns.tolist(), judge="yes")
+    WriteTfile(os.path.join(phylo_dir, "M_full_basedPivots.filtered_sites_inferred"), 
+               M_full, M_full.index.tolist(), M_full.columns.tolist(), judge="yes")
     
-    # ---- Clean and export final matrices ----
     final_cleaned_M_full = M_full.loc[:, (M_full != 0).any(axis=0)]
     final_cleaned_M_full = final_cleaned_M_full.loc[(final_cleaned_M_full != 0).any(axis=1)]
     
@@ -1271,23 +1395,22 @@ if __name__ == '__main__':
     final_cleaned_I_full_withNA3 = I_full_withNA3.loc[kept_rows, kept_cols]
     
     WriteTfile(os.path.join(phylo_dir, "final_cleaned_M_full_basedPivots.filtered_sites_inferred"), 
-               final_cleaned_M_full, final_cleaned_M_full.index.tolist(), final_cleaned_M_full.columns.tolist(), judge="yes")
-    final_cleaned_I_full_withNA3.to_csv(os.path.join(phylo_dir, "final_cleaned_I_full_withNA3_for_circosPlot.txt"), sep="\t")
+               final_cleaned_M_full, final_cleaned_M_full.index.tolist(), 
+               final_cleaned_M_full.columns.tolist(), judge="yes")
+    final_cleaned_I_full_withNA3.to_csv(
+        os.path.join(phylo_dir, "final_cleaned_I_full_withNA3_for_circosPlot.txt"), sep="\t"
+    )
     
     logger.info(f"  Output directory: {phylo_dir}")
     logger.info("")
     
-    
-    # ----------------------------------------------------------------------------
-    # Step 9.3: Identify flipping spots
-    # ----------------------------------------------------------------------------
+    # ---- Step 9.3: Identify flipping spots ----
     logger.info("STEP 9.3: Identify flipping spots")
     logger.info("-" * 80)
     
     df_bin_withNA3_for_flipping = final_cleaned_I_full_withNA3.copy()
     df_phylogeny = final_cleaned_M_full.copy()
     
-    # ---- Compute flipping spots ----
     false_negative_flipping_spots = df_bin_withNA3_for_flipping.apply(
         lambda col: find_flipping_spots(col, df_phylogeny[col.name], condition_in_bin=0, condition_phylogeny=1)
     )
@@ -1301,20 +1424,15 @@ if __name__ == '__main__':
         lambda col: find_flipping_spots(col, df_phylogeny[col.name], condition_in_bin=3, condition_phylogeny=0)
     )
     
-    # ---- Handle empty results ----
     if false_negative_flipping_spots.empty:
         false_negative_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    
     if false_positive_flipping_spots.empty:
         false_positive_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    
     if NAto1_flipping_spots.empty:
         NAto1_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    
     if NAto0_flipping_spots.empty:
         NAto0_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
     
-    # ---- Build flipping spots dataframe ----
     df_flipping_spots = pd.DataFrame({
         'Mutation': df_bin_withNA3_for_flipping.columns,
         'delta_FN_spots': [', '.join(false_negative_flipping_spots.get(col, [])) for col in df_bin_withNA3_for_flipping.columns],
@@ -1326,14 +1444,10 @@ if __name__ == '__main__':
     
     logger.info("")
     
-    
-    # ----------------------------------------------------------------------------
-    # Step 9.4: Calculate total flipping counts
-    # ----------------------------------------------------------------------------
+    # ---- Step 9.4: Calculate total flipping counts ----
     logger.info("STEP 9.4: Calculate total flipping counts")
     logger.info("-" * 80)
     
-    # ---- Compute total discordance counts ----
     total_FN_flipping = ((df_bin_withNA3_for_flipping == 0) & (df_phylogeny == 1)).sum().sum()
     total_FP_flipping = ((df_bin_withNA3_for_flipping == 1) & (df_phylogeny == 0)).sum().sum()
     total_NAto0 = ((df_bin_withNA3_for_flipping == 3) & (df_phylogeny == 0)).sum().sum()
@@ -1353,7 +1467,6 @@ if __name__ == '__main__':
     logger.info(f"  │    - FN/FP weight (lambda)                 : {params['fnfp_ratio']:>10.1f}      │")
     logger.info("  └─────────────────────────────────────────────────────────────────────┘")
     
-    # ---- Save total flipping counts ----
     df_total_flipping_count = pd.DataFrame({
         'total_delta_FP': [total_FP_flipping],
         'total_delta_FN': [total_FN_flipping],
@@ -1363,155 +1476,30 @@ if __name__ == '__main__':
     })
     df_total_flipping_count.to_csv(os.path.join(phylo_dir, "df_total_flipping_count.txt"), sep="\t", index=False)
     
-    # ---- Save per-site flipping counts ----
     df_flip_counts_tree = calculate_flip_counts_per_site(df_bin_withNA3_for_flipping, df_phylogeny)
     df_flip_counts_tree.to_csv(os.path.join(phylo_dir, "df_flipping_count_for_each_mut.txt"), sep="\t", index=True)
     
     logger.info(f"The shape of final_cleaned_M_full.shape: {final_cleaned_M_full.shape}")
     logger.info("")
     
-    
-    # ----------------------------------------------------------------------------
-    # Step 9.5: Tree format and clone information
-    # ----------------------------------------------------------------------------
+    # ---- Step 9.5: Tree format and clone information ----
     logger.info("STEP 9.5: Tree format and clone information")
     logger.info("-" * 80)
     
-    # ---- Export tree as JSON ----
     tree_dict = tree_to_dict(T_full)
-    
     with open(os.path.join(phylo_dir, 'final_cleaned_tree_node.json'), 'w') as f:
         json.dump(tree_dict, f, indent=4)
     
-    # ---- Export tree as text ----
     T_full.save_to_file(os.path.join(phylo_dir, 'final_cleaned_tree_node.txt'))
     
-    # ---- Assign clone labels to cells ----
     mutation_clones = get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(T_full, I_attached)
     df_barcode_clones = assign_clone_labels(M_full, mutation_clones)
-    
     df_barcode_clones.to_csv(os.path.join(phylo_dir, "df_barcode_clones_from_phylo_tree.csv"), sep=',', index=False)
     
     logger.info("")
     
     
-    # ----------------------------------------------------------------------------
-    # Step 9.6: Save run summary to final_results
-    # ----------------------------------------------------------------------------
-    logger.info("STEP 9.6: Save run summary")
-    logger.info("-" * 80)
-    
-    run_summary_file = os.path.join(outputpath_04, "run_summary.txt")
-    
-    with open(run_summary_file, 'w') as f:
-        f.write("=" * 80 + "\n")
-        f.write("PhyloSOLID RUN SUMMARY\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Sample ID: {sampleid}\n")
-        f.write(f"Run date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Seed: {args.seed}\n")
-        f.write(f"Output path: {outputpath_04}\n\n")
-        
-        f.write("-" * 80 + "\n")
-        f.write("PARAMETERS\n")
-        f.write("-" * 80 + "\n")
-        f.write(f"  is_predict_germ: {is_predict_germ}\n")
-        f.write(f"  is_detect_passtree_by_dp: {is_detect_passtree_by_dp}\n")
-        f.write(f"  is_filter_quality: {is_filter_quality}\n")
-        f.write(f"  cv_rank_thresh: {cv_rank_thresh_str}\n")
-        if is_search_mode:
-            f.write(f"  cv_thresholds_searched: {cv_thresholds}\n")
-            f.write(f"  optimal_cv_threshold: {optimal_cv if 'optimal_cv' in locals() else 'N/A'}\n")
-        else:
-            f.write(f"  cv_threshold: {cv_value if 'cv_value' in locals() else 'N/A'}\n")
-        f.write(f"  remove_artifact_mutations: {remove_artifact_mutations}\n")
-        f.write(f"  fnfp_ratio: {params['fnfp_ratio']}\n")
-        f.write(f"  fp_ratio_cutoff_within_subclone: {params['fp_ratio_cutoff_within_subclone']}\n")
-        f.write(f"  fp_ratio_cutoff_across_tree: {params['fp_ratio_cutoff_across_tree']}\n")
-        f.write(f"  fn_ratio_cutoff_across_tree: {params['fn_ratio_cutoff_across_tree']}\n")
-        f.write(f"  fp_ratio_persite_cutoff: {params['fp_ratio_persite_cutoff']}\n\n")
-        
-        f.write("-" * 80 + "\n")
-        f.write("INPUT STATISTICS\n")
-        f.write("-" * 80 + "\n")
-        f.write(f"  Total mutations: {len(all_mutations)}\n")
-        f.write(f"  Germline removed: {len(predicted_germline_mutations)}\n")
-        f.write(f"  Somatic mutations: {len(somatic_mutations) if somatic_mutations else 'N/A'}\n")
-        f.write(f"  Scaffold mutations: {len(scaffold_mutations) if scaffold_mutations else 'N/A'}\n")
-        f.write(f"  Accessory mutations: {len(attached_mutations) if attached_mutations else 'N/A'}\n")
-        f.write(f"  No-group mutations: {len(no_group_mutations) if no_group_mutations else 'N/A'}\n")
-        f.write(f"  Cells: {M_current.shape[0] if M_current is not None else 'N/A'}\n\n")
-        
-        f.write("-" * 80 + "\n")
-        f.write("MUTATION CLASSIFICATION\n")
-        f.write("-" * 80 + "\n")
-        f.write(f"  M_scaffold: {len(scaffold_mutations) if scaffold_mutations else 'N/A'}\n")
-        f.write(f"  M_accessory (integrated): {len(attached_mutations) if attached_mutations else 'N/A'}\n")
-        f.write(f"  M_artifact (REMOVED): {len(to_be_removed_mutations_by_fp_mutations_cross_all_cells) if to_be_removed_mutations_by_fp_mutations_cross_all_cells else 'N/A'}\n")
-        f.write(f"  M_root (root-assigned): {len(root_mutations) if root_mutations else 'N/A'}\n")
-        f.write(f"  M_ambiguous (conflict): {len(all_conflict_mutations) if all_conflict_mutations else 'N/A'}\n\n")
-        
-        f.write("-" * 80 + "\n")
-        f.write("CELL CLASSIFICATION\n")
-        f.write("-" * 80 + "\n")
-        f.write(f"  C_resolved (final): {final_cleaned_M_full.shape[0]}\n")
-        f.write(f"  C_orphan (REMOVED): {len(to_be_removed_cells) if to_be_removed_cells else 'N/A'}\n")
-        f.write(f"  C_chimeric (REMOVED): {len(identified_doublet_cells) if identified_doublet_cells else 'N/A'}\n\n")
-        
-        f.write("-" * 80 + "\n")
-        f.write("DISCORDANCE METRICS\n")
-        f.write("-" * 80 + "\n")
-        f.write(f"  Ω (pre-QC): {omega_before_qc:.4f}\n")
-        f.write(f"  Ω (final): {omega_final:.4f}\n")
-        f.write(f"  Ω (reduction): {omega_before_qc - omega_final:.4f}\n")
-        f.write(f"  Ω (combined): {omega_before_qc + omega_final:.4f}\n\n")
-        
-        f.write("-" * 80 + "\n")
-        f.write("OUTPUT FILES\n")
-        f.write("-" * 80 + "\n")
-        f.write(f"  Main results: {phylo_dir}/\n")
-        f.write("  Files exported:\n")
-        f.write("    - I_full_withNA3.txt\n")
-        f.write("    - M_full_basedPivots.filtered_sites_inferred\n")
-        f.write("    - final_cleaned_M_full_basedPivots.filtered_sites_inferred\n")
-        f.write("    - final_cleaned_I_full_withNA3_for_circosPlot.txt\n")
-        f.write("    - df_flipping_spots.txt\n")
-        f.write("    - df_total_flipping_count.txt\n")
-        f.write("    - df_flipping_count_for_each_mut.txt\n")
-        f.write("    - final_cleaned_tree_node.json\n")
-        f.write("    - final_cleaned_tree_node.txt\n")
-        f.write("    - df_barcode_clones_from_phylo_tree.csv\n")
-        f.write("=" * 80 + "\n")
-
-    logger.info(f"  Run summary saved to: {run_summary_file}")
-    logger.info("")
-    
-    
-    # ----------------------------------------------------------------------------
-    # Step 9 Summary
-    # ----------------------------------------------------------------------------
-    logger.info("=" * 80)
-    logger.info("Step 9 COMPLETED: All results exported successfully")
-    logger.info("-" * 80)
-    logger.info(f"  Output directory: {phylo_dir}")
-    logger.info("  Files exported:")
-    logger.info("    - I_full_withNA3.txt")
-    logger.info("    - M_full_basedPivots.filtered_sites_inferred")
-    logger.info("    - final_cleaned_M_full_basedPivots.filtered_sites_inferred")
-    logger.info("    - final_cleaned_I_full_withNA3_for_circosPlot.txt")
-    logger.info("    - df_flipping_spots.txt")
-    logger.info("    - df_total_flipping_count.txt")
-    logger.info("    - df_flipping_count_for_each_mut.txt")
-    logger.info("    - final_cleaned_tree_node.json")
-    logger.info("    - final_cleaned_tree_node.txt")
-    logger.info("    - df_barcode_clones_from_phylo_tree.csv")
-    logger.info("=" * 80)
-    
-    
-    # ============================================================================
-    # FINAL SUMMARY
-    # ============================================================================
-    logger.info("")
+    # ---- Final summary ----
     logger.info("=" * 80)
     logger.info("PHYLOSOLID: PHYLOGENETIC RECONSTRUCTION COMPLETED")
     logger.info("=" * 80)
@@ -1535,23 +1523,19 @@ if __name__ == '__main__':
     logger.info("  ├─────────────────────────────────────────────────────────────────────┤")
     logger.info(f"  │  Omega (pre-QC)                 : {omega_before_qc:.4f}      │")
     logger.info(f"  │  Omega (final)                  : {omega_final:.4f}      │")
-    logger.info(f"  │  Omega (reduction)              : {omega_before_qc - omega_final:.4f}      │")
-    logger.info(f"  │  Omega (combined)               : {omega_before_qc + omega_final:.4f}      │")
-    logger.info("  │                                   (lower is better)               │")
+    logger.info(f"  │  Omega (reduced)                : {omega_before_qc - omega_final:.4f}      │")
+    logger.info(f"  │  Pruning ratio                  : {(omega_before_qc - omega_final) / omega_final if omega_final > 0 else float('inf'):.4f}      │")
+    logger.info(f"  │  Retention rate                 : {(final_cleaned_M_full.shape[0] + final_cleaned_M_full.shape[1]) / (I_somatic.shape[0] + I_somatic.shape[1]):.4f}      │")
+    logger.info("  │                                   (pruning ratio < 10.0 = confident)│")
     logger.info("  └─────────────────────────────────────────────────────────────────────┘")
     logger.info("")
     if is_search_mode:
         logger.info(f"  ✓ CV threshold search completed: {len(cv_thresholds)} values tested")
-        logger.info(f"  ✓ Optimal CV threshold: {optimal_cv} (selected by minimum Omega_final)")
-        logger.info(f"  ✓ All CV results saved to: {search_summary_dir}/")
+        logger.info(f"  ✓ Optimal CV threshold: {optimal_cv}")
     logger.info("")
     logger.info("=" * 80)
     logger.info("PhyloSOLID completed successfully!")
     logger.info("=" * 80)
     
-    
-    # ------------------------------
-    # End of Process
-    # ------------------------------
     finish_time = time.perf_counter()
     logger.info("Program finished in {:.4f} seconds".format(finish_time - start_time))
