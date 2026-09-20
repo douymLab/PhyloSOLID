@@ -1,0 +1,9 @@
+cv,selected,omega_pre_qc,omega_final,omega_sum,omega_reduced,pruning_ratio,confident,scaffold_count,retention_rate,N_deltaFP,N_deltaFN,N_NAto0,N_NAto1,final_cells,final_muts
+0.3,False,12,12,24,0,0.0,True,21,1.0,1,11,20,0,22,78
+0.4,False,11,11,22,0,0.0,True,28,1.0,2,9,20,0,22,78
+0.5,False,12,12,24,0,0.0,True,34,1.0,2,10,20,0,22,78
+0.6,False,9,9,18,0,0.0,True,41,1.0,2,7,20,0,22,78
+0.7,True,8,8,16,0,0.0,True,48,1.0,3,5,20,0,22,78
+0.8,False,8,8,16,0,0.0,True,55,1.0,3,5,20,0,22,78
+0.9,False,9,9,18,0,0.0,True,62,1.0,3,6,20,0,22,78
+1.0,False,9,9,18,0,0.0,True,67,1.0,3,6,20,0,22,78

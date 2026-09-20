@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import linkage, fcluster
@@ -5,18 +6,32 @@ from scipy.spatial.distance import pdist, squareform
 from collections import defaultdict
 import random
 
+_BULK_BARCODES = {"bulk", "pseudo_bulk", "ROOT"}
+
+
+def save_celltype_table(df_celltype: pd.DataFrame, path: str) -> str:
+    """Write cell-type annotation as TSV without a pandas row index."""
+    df = df_celltype.copy()
+    df.columns = df.columns.astype(str)
+    df = df.loc[:, ~df.columns.str.match(r"^Unnamed")]
+    if "barcode" in df.columns:
+        df = df[~df["barcode"].astype(str).isin(_BULK_BARCODES)].copy()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    df.to_csv(path, sep="\t", index=False)
+    return path
+
 class BootstrapSupportCalculator:
     """
-    计算系统发育树分支的 Bootstrap 支持度
+    Compute bootstrap support for phylogenetic-tree branches.
     """
     
     def __init__(self, mutation_matrix, mutation_names=None, n_bootstrap=1000, random_seed=42):
         """
-        参数:
-        - mutation_matrix: 突变矩阵，行=突变，列=样本/细胞，值=0/1 (1表示该突变存在)
-        - mutation_names: 突变名称列表，如 ['M1', 'M2', ...]
-        - n_bootstrap: Bootstrap 重复次数
-        - random_seed: 随机种子，确保结果可重复
+        Parameters:
+        - mutation_matrix: mutation matrix, rows=mutations, columns=samples/cells, values=0/1 (1 means the mutation is present)
+        - mutation_names: mutation name list, e.g. ['M1', 'M2', ...]
+        - n_bootstrap: number of bootstrap replicates
+        - random_seed: random seed for reproducibility
         """
         self.original_matrix = np.array(mutation_matrix)
         self.n_mutations = self.original_matrix.shape[0]
@@ -25,60 +40,60 @@ class BootstrapSupportCalculator:
         self.n_bootstrap = n_bootstrap
         self.random_seed = random_seed
         
-        # 构建原始树，识别第一层级分支
+        # Build the original tree and identify first-level branches
         self.original_tree = None
-        self.main_branches = None  # 存储第一层级分支的突变集合
+        self.main_branches = None  # mutation sets for first-level branches
         
     def build_tree_and_get_branches(self, distance_matrix=None, threshold=0.5):
         """
-        基于距离矩阵构建树，并识别第一层级分支
+        Build a tree from a distance matrix and identify first-level branches.
         
-        参数:
-        - distance_matrix: 突变间的距离矩阵 (如果为None，则基于共现模式计算)
-        - threshold: 聚类阈值，用于确定第一层级分支
+        Parameters:
+        - distance_matrix: pairwise mutation distance matrix (if None, compute from co-occurrence)
+        - threshold: clustering threshold used to define first-level branches
         """
         if distance_matrix is None:
-            # 基于Jaccard距离计算突变间距离
+            # Compute pairwise mutation distances with Jaccard distance
             distance_matrix = self._compute_jaccard_distance()
         
-        # 使用UPGMA进行层次聚类
+        # Hierarchical clustering with UPGMA
         condensed_dist = squareform(distance_matrix)
         linkage_matrix = linkage(condensed_dist, method='average')
         
-        # 根据阈值切割树，得到第一层级分支
-        # 这里我们取距离矩阵中位数的某个倍数作为阈值
+        # Cut the tree at the threshold to obtain first-level branches
+        # If unspecified, use a multiple of the median of positive distances
         if threshold is None:
             threshold = np.median(distance_matrix[distance_matrix > 0]) * 0.8
         
         cluster_labels = fcluster(linkage_matrix, t=threshold, criterion='distance')
         
-        # 提取每个分支包含的突变
+        # Extract mutations in each branch
         branches = defaultdict(list)
         for i, label in enumerate(cluster_labels):
             branches[label].append(i)
         
-        # 只保留包含至少2个突变的分支
+        # Keep only branches that contain at least two mutations
         self.main_branches = {f'Branch_{k}': sorted(indices) 
                              for k, indices in branches.items() if len(indices) >= 2}
         
         return self.main_branches
     
     def _compute_jaccard_distance(self):
-        """计算突变间的Jaccard距离"""
+        """Compute pairwise Jaccard distances among mutations."""
         n = self.n_mutations
         distance_matrix = np.zeros((n, n))
         
         for i in range(n):
             for j in range(i+1, n):
-                # 计算两个突变的共现情况
+                # Compute co-occurrence of the two mutations
                 intersection = np.sum(self.original_matrix[i] & self.original_matrix[j])
                 union = np.sum(self.original_matrix[i] | self.original_matrix[j])
                 
                 if union == 0:
-                    distance = 1.0  # 两个突变都不存在，距离最大
+                    distance = 1.0  # neither mutation is present; maximum distance
                 else:
                     jaccard_sim = intersection / union
-                    distance = 1 - jaccard_sim  # Jaccard距离
+                    distance = 1 - jaccard_sim  # Jaccard distance
                 
                 distance_matrix[i, j] = distance
                 distance_matrix[j, i] = distance
@@ -87,48 +102,48 @@ class BootstrapSupportCalculator:
     
     def bootstrap_resample(self):
         """
-        有放回地抽取突变，生成bootstrap样本
+        Sample mutations with replacement to generate a bootstrap replicate.
         """
-        # 有放回抽取，数量等于原始突变数
+        # Draw with replacement, matching the original number of mutations
         sampled_indices = random.choices(range(self.n_mutations), k=self.n_mutations)
         bootstrap_matrix = self.original_matrix[sampled_indices]
         return bootstrap_matrix, sampled_indices
     
     def compute_branch_support(self):
         """
-        计算每个第一层级分支的Bootstrap支持度
+        Compute bootstrap support for each first-level branch.
         """
-        # 首先构建原始树，识别第一层级分支
+        # First build the original tree and identify first-level branches
         if self.main_branches is None:
             self.build_tree_and_get_branches()
         
-        print(f"识别到 {len(self.main_branches)} 个第一层级分支:")
+        print(f"Identified {len(self.main_branches)} first-level branches:")
         for branch_name, mutations in self.main_branches.items():
             mutation_labels = [self.mutation_names[i] for i in mutations]
             print(f"  {branch_name}: {mutation_labels}")
         
-        # 存储每个分支的支持度计数
+        # Store support counts for each branch
         support_counts = {branch_name: 0 for branch_name in self.main_branches}
         
-        # 设置随机种子
+        # Set random seeds
         random.seed(self.random_seed)
         np.random.seed(self.random_seed)
         
-        print(f"\n开始 Bootstrap 分析 (重复 {self.n_bootstrap} 次)...")
+        print(f"\nStarting bootstrap analysis ({self.n_bootstrap} replicates)...")
         
         for bootstrap_iter in range(self.n_bootstrap):
             if (bootstrap_iter + 1) % 100 == 0:
-                print(f"  完成 {bootstrap_iter + 1}/{self.n_bootstrap} 次")
+                print(f"  Completed {bootstrap_iter + 1}/{self.n_bootstrap} replicates")
             
-            # 生成bootstrap样本
+            # Generate a bootstrap sample
             bootstrap_matrix, sampled_indices = self.bootstrap_resample()
             
-            # 检查每个主分支是否在bootstrap树中出现
+            # Check whether each main branch still appears in the bootstrap tree
             for branch_name, original_mutations in self.main_branches.items():
                 if self._check_branch_exists(bootstrap_matrix, original_mutations, sampled_indices):
                     support_counts[branch_name] += 1
         
-        # 计算支持度百分比
+        # Convert counts to support percentages
         support_values = {}
         for branch_name, count in support_counts.items():
             support_percent = (count / self.n_bootstrap) * 100
@@ -138,37 +153,37 @@ class BootstrapSupportCalculator:
     
     def _check_branch_exists(self, bootstrap_matrix, original_mutations, sampled_indices):
         """
-        检查原始分支的突变在bootstrap树中是否仍然聚在一起
+        Check whether mutations from an original branch still cluster together in the bootstrap tree.
         
-        参数:
-        - bootstrap_matrix: bootstrap重采样后的突变矩阵
-        - original_mutations: 原始分支中的突变索引列表
-        - sampled_indices: 重采样时抽取的原始索引
+        Parameters:
+        - bootstrap_matrix: mutation matrix after bootstrap resampling
+        - original_mutations: mutation indices in the original branch
+        - sampled_indices: original indices drawn during resampling
         """
-        # 获取bootstrap矩阵中对应原始突变的行
-        # 注意：bootstrap矩阵中的行对应于sampled_indices中的索引
+        # Get rows in the bootstrap matrix that correspond to the original mutations
+        # Note: rows in the bootstrap matrix correspond to indices in sampled_indices
         
-        # 首先找出哪些原始突变被抽到了bootstrap样本中
-        # 以及它们在bootstrap矩阵中的位置
+        # First find which original mutations were sampled in this bootstrap replicate
+        # and their positions in the bootstrap matrix
         mutation_positions = []
         for orig_idx in original_mutations:
-            # 在sampled_indices中找到所有等于orig_idx的位置
+            # Find all positions in sampled_indices that equal orig_idx
             positions = [i for i, idx in enumerate(sampled_indices) if idx == orig_idx]
             if positions:
                 mutation_positions.extend(positions)
         
-        # 如果分支中的突变在bootstrap样本中丢失太多，认为分支不存在
+        # If too many branch mutations were lost from the bootstrap sample, treat the branch as absent
         if len(mutation_positions) < len(original_mutations) * 0.5:
             return False
         
-        # 基于bootstrap矩阵计算这些突变之间的距离
+        # Compute distances among these mutations in the bootstrap matrix
         if len(mutation_positions) < 2:
             return False
         
-        # 提取这些突变的数据
+        # Extract data for these mutations
         sub_matrix = bootstrap_matrix[mutation_positions]
         
-        # 计算它们之间的平均距离（Jaccard距离）
+        # Compute the mean pairwise Jaccard distance among them
         distances = []
         for i in range(len(sub_matrix)):
             for j in range(i+1, len(sub_matrix)):
@@ -182,7 +197,7 @@ class BootstrapSupportCalculator:
         
         avg_distance = np.mean(distances) if distances else 1.0
         
-        # 计算这些突变与其他突变之间的平均距离
+        # Compute the mean distance between these mutations and all other mutations
         other_distances = []
         all_positions = list(range(len(bootstrap_matrix)))
         other_positions = [p for p in all_positions if p not in mutation_positions]
@@ -200,105 +215,103 @@ class BootstrapSupportCalculator:
             
             avg_other_distance = np.mean(other_distances) if other_distances else 1.0
             
-            # 如果分支内平均距离小于分支间平均距离，认为分支存在
+            # Treat the branch as present if within-branch distance is smaller than between-branch distance
             return avg_distance < avg_other_distance
         else:
-            # 如果没有其他突变可以比较，认为分支存在
+            # If there are no other mutations to compare against, treat the branch as present
             return True
     
     def print_results(self, support_values):
         """
-        打印Bootstrap支持度结果
+        Print bootstrap support results.
         """
         print("\n" + "="*60)
-        print("Bootstrap 分支支持度结果")
+        print("Bootstrap branch-support results")
         print("="*60)
         
         for branch_name, support in sorted(support_values.items(), key=lambda x: x[1], reverse=True):
             mutations = [self.mutation_names[i] for i in self.main_branches[branch_name]]
-            stars = '*' * int(support / 5)  # 每5%显示一个星号
+            stars = '*' * int(support / 5)  # one star per 5%
             print(f"{branch_name}: {support:.1f}%  {stars}")
-            print(f"  包含突变: {mutations}")
+            print(f"  Mutations: {mutations}")
             print()
         
-        # 显示支持度摘要
+        # Support summary
         high_support = sum(1 for v in support_values.values() if v >= 70)
         medium_support = sum(1 for v in support_values.values() if 50 <= v < 70)
         low_support = sum(1 for v in support_values.values() if v < 50)
         
         print("-"*60)
-        print(f"摘要:")
-        print(f"  高支持度 (>=70%): {high_support} 个分支")
-        print(f"  中等支持度 (50-69%): {medium_support} 个分支")
-        print(f"  低支持度 (<50%): {low_support} 个分支")
+        print(f"Summary:")
+        print(f"  High support (>=70%): {high_support} branches")
+        print(f"  Medium support (50-69%): {medium_support} branches")
+        print(f"  Low support (<50%): {low_support} branches")
         print("="*60)
 
 
 # ============================================================
-# 示例使用代码
+# Example usage
 # ============================================================
 
 def example_usage():
     """
-    示例：如何使用BootstrapSupportCalculator
+    Example: how to use BootstrapSupportCalculator.
     """
     
-    # 创建示例数据
-    # 假设我们有30个突变 (M1-M30)
-    # 3个主分支: Branch1 (M1-M15), Branch2 (M16-M22), Branch3 (M23-M30)
-    # 10个样本/细胞
+    # Create example data
+    # Assume 30 mutations (M1-M30)
+    # 3 main branches: Branch1 (M1-M15), Branch2 (M16-M22), Branch3 (M23-M30)
+    # 10 samples/cells
     
     np.random.seed(42)
     
     n_mutations = 30
     n_samples = 10
     
-    # 创建突变矩阵
+    # Create the mutation matrix
     mutation_matrix = np.zeros((n_mutations, n_samples), dtype=int)
     
-    # 为每个分支生成特征模式
-    # Branch1: M1-M15 在样本0-4中存在
+    # Generate characteristic patterns for each branch
+    # Branch1: M1-M15 present in samples 0-4
     for i in range(0, 15):
         mutation_matrix[i, :5] = np.random.binomial(1, 0.8, 5)
         mutation_matrix[i, 5:] = np.random.binomial(1, 0.1, 5)
     
-    # Branch2: M16-M22 在样本3-7中存在
+    # Branch2: M16-M22 present in samples 3-7
     for i in range(15, 22):
         mutation_matrix[i, 3:8] = np.random.binomial(1, 0.8, 5)
         mutation_matrix[i, :3] = np.random.binomial(1, 0.1, 3)
         mutation_matrix[i, 8:] = np.random.binomial(1, 0.1, 2)
     
-    # Branch3: M23-M30 在样本6-9中存在
+    # Branch3: M23-M30 present in samples 6-9
     for i in range(22, 30):
         mutation_matrix[i, 6:10] = np.random.binomial(1, 0.8, 4)
         mutation_matrix[i, :6] = np.random.binomial(1, 0.1, 6)
     
-    # 添加一些随机噪声
+    # Add some random noise
     noise_mask = np.random.random((n_mutations, n_samples)) < 0.05
     mutation_matrix[noise_mask] = 1 - mutation_matrix[noise_mask]
     
-    # 突变名称
+    # Mutation names
     mutation_names = [f'M{i+1}' for i in range(n_mutations)]
     
-    # 创建计算器实例
+    # Create the calculator
     calculator = BootstrapSupportCalculator(
         mutation_matrix=mutation_matrix,
         mutation_names=mutation_names,
-        n_bootstrap=1000,  # 可以改为100进行快速测试
+        n_bootstrap=1000,  # can be set to 100 for a quicker test
         random_seed=42
     )
     
-    # 计算Bootstrap支持度
+    # Compute bootstrap support
     support_values = calculator.compute_branch_support()
     
-    # 打印结果
+    # Print results
     calculator.print_results(support_values)
     
     return calculator, support_values
 
 
 if __name__ == "__main__":
-    # 运行示例
+    # Run the example
     calculator, support_values = example_usage()
-
-

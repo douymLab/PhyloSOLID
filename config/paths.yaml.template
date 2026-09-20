@@ -1,17 +1,18 @@
 # config/paths.yaml
-# External tool paths - users need to set these according to their installation
+# Copy this file to config/paths.yaml and set paths for your machine.
+# config/paths.yaml is gitignored and should not be committed.
 
 # Conda environment (required for Python scripts)
 conda:
-  python: "path/to/envs/bin/python"  # Path to conda Python interpreter
-  env_path: "path/to/envs"           # Path to conda environment
+  python: "/path/to/envs/bin/python"  # Path to conda Python interpreter
+  env_path: "/path/to/envs"           # Path to conda environment
 
 # ANNOVAR (required for variant annotation)
 # Please install ANNOVAR from http://www.openbioinformatics.org/annovar/
 annovar:
-  script_dir: "、path/to/software/annovar"       # Directory containing annotate_variation.pl
-  humandb: "、path/to/software/annovar/humandb"  # Directory containing downloaded databases
-  build: "hg38"                                                              # Genome build (hg38/hg19)
+  script_dir: "/path/to/software/annovar"       # Directory containing annotate_variation.pl
+  humandb: "/path/to/software/annovar/humandb"  # Directory containing downloaded databases
+  build: "hg38"                                 # Genome build (hg38/hg19)
 
 # Other reference files (paths need to be updated by user)
 reference:
@@ -21,3 +22,11 @@ reference:
   gnomad_file: "/path/to/resource/hg38/hg38_gnomad312_genome_only_af_all.txt"
   rna_editing_file: "/path/to/resource/hg38/COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed"
 
+# scDNA end-to-end mode (bulk BAM is not required)
+# The unphased genotyper lives in scMosaicCaller. Set the directory that contains
+# run_unphased_prod_whether_bulk.py, or export PHYLOSOLID_GENOTYPER_DIR.
+scdna:
+  genotyper_dir: "/path/to/scMosaicCaller/scMosaicCaller/genotyper"
+  # Optional: only needed if you want classifier BAM features (hg19 MDA examples)
+  # genome_fasta: "/path/to/hg19.fasta"
+  # mappability_file: "/path/to/k24.umap.wg.bw"

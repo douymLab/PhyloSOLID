@@ -1,0 +1,14 @@
+barcode	cell_type
+Imm8	default_type
+Imm7	default_type
+Imm6	default_type
+Imm1	default_type
+Imm4	default_type
+Imm3	default_type
+Imm2	default_type
+Epi2(T)	default_type
+Epi5(T)	default_type
+Epi4(T)	default_type
+Epi3(T)	default_type
+PTA-Epi13(T)	default_type
+PTA-Epi12(T)	default_type

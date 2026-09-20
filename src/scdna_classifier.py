@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ###################################################################################################
-######################### 构建分类器并进行实时预测（放松限制版本） #######################
+######################### Relaxed-threshold classifier for real-time prediction ###################
 ###################################################################################################
 
 import os
@@ -15,16 +15,18 @@ from sklearn.pipeline import make_pipeline
 from sklearn.impute import SimpleImputer
 import joblib
 from collections import Counter
+from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 from src.reproducibility import set_seed, deterministic_permutation
 
 
-# 设置路径
-# features_file_labeled = "phylosolid/models/data_labeling_for_classifier_and_ROC.txt"
-features_file_labeled = "classifier/scdna/data_labeling_for_classifier_and_ROC.txt"
+# Training labels live next to this module, independent of the process cwd.
+# src/classifier/scdna/data_labeling_for_classifier_and_ROC.txt
+_SCRIPT_DIR = Path(__file__).resolve().parent
+features_file_labeled = _SCRIPT_DIR / "classifier" / "scdna" / "data_labeling_for_classifier_and_ROC.txt"
 
-# 定义特征列
+# Feature columns used by the classifier
 SELECTED_FEATURES = [
     "VAF_all", 
     "mutant_cell_frac", 
@@ -40,160 +42,165 @@ SELECTED_FEATURES = [
 
 def load_training_data():
     """
-    加载训练数据
+    Load labeled training data for the scDNA classifier.
     """
-    print("=== 加载训练数据 ===")
+    print("=== Loading training data ===")
+    if not features_file_labeled.exists():
+        raise FileNotFoundError(
+            f"scDNA classifier training file not found: {features_file_labeled}"
+        )
+    print(f"Training data path: {features_file_labeled}")
     df_all_features = pd.read_csv(features_file_labeled, sep="\t", index_col=0)
-    print(f"数据形状: {df_all_features.shape}")
-    print(f"样本分布: {Counter(df_all_features['sampleid'])}")
-    print(f"类别分布: {Counter(df_all_features['label'])}")
+    print(f"Data shape: {df_all_features.shape}")
+    print(f"Sample distribution: {Counter(df_all_features['sampleid'])}")
+    print(f"Class distribution: {Counter(df_all_features['label'])}")
     
     return df_all_features
 
 def build_relaxed_classifier_excluding_sample(df_training, exclude_sample_id):
     """
-    构建放松限制的分类器（排除特定样本）
+    Train a relaxed-threshold classifier while excluding a target sample.
     
     Args:
-        df_training: 训练数据
-        exclude_sample_id: 要排除的样本ID
+        df_training: Training dataframe
+        exclude_sample_id: Sample ID to leave out of training
         
     Returns:
         tuple: (model, pipeline)
     """
-    print(f"\n=== 构建放松限制的分类器 (排除样本 {exclude_sample_id}) ===")
+    print(f"\n=== Building relaxed-threshold classifier (excluding sample {exclude_sample_id}) ===")
     
-    # 排除目标样本
+    # Exclude the target sample (leave-one-out)
     df_train = df_training[df_training['sampleid'] != exclude_sample_id].copy()
-    print(f"训练数据大小: {df_train.shape}")
-    print(f"训练数据类别分布: {Counter(df_train['label'])}")
+    print(f"Training data size: {df_train.shape}")
+    print(f"Training class distribution: {Counter(df_train['label'])}")
     
-    # 准备特征和标签
+    # Prepare features and labels
     X_train = df_train[SELECTED_FEATURES].copy()
     y_train = df_train['label'].copy()
     
-    # 创建预处理管道
+    # Build the preprocessing pipeline
     pipeline = make_pipeline(
         SimpleImputer(strategy='median'),
         StandardScaler()
     )
     
-    # 数据预处理和训练
-    print("数据预处理和模型训练...")
+    # Preprocess data and train the model
+    print("Preprocessing data and training the model...")
     X_train_processed = pipeline.fit_transform(X_train)
     
-    # 使用放松的参数设置
+    # Relaxed random-forest settings
     rf_model = RandomForestClassifier(
-        n_estimators=1000,  # 减少树的数量，降低过拟合
+        n_estimators=1000,  # fewer trees to reduce overfitting
         random_state=42,
-        class_weight={  # 手动设置类别权重，偏向mosaic
-            'mosaic': 1.0,     # 给mosaic更高的权重
-            'germline_het': 1.0,   # 降低germline的权重
-            'repeat': 1.0      # 保持repeat权重不变
+        class_weight={  # class weights
+            'mosaic': 1.0,
+            'germline_het': 1.0,
+            'repeat': 1.0
         },
-        max_depth=15,           # 增加树深度，捕捉更多模式
-        min_samples_split=2,    # 减少最小分割样本数
-        min_samples_leaf=1,     # 减少叶子节点最小样本数
-        max_features='sqrt',    # 使用更少的特征进行分割
-        bootstrap=True          # 使用bootstrap采样
+        max_depth=15,           # deeper trees to capture more patterns
+        min_samples_split=2,    # smaller split size
+        min_samples_leaf=1,     # smaller leaf size
+        max_features='sqrt',    # use a subset of features at each split
+        bootstrap=True          # bootstrap sampling
     )
     rf_model.fit(X_train_processed, y_train)
     
-    print(f"模型训练完成，类别: {rf_model.classes_}")
+    print(f"Model training completed. Classes: {rf_model.classes_}")
     
     return rf_model, pipeline
 
 def predict_with_relaxed_threshold(model, pipeline, df_new, sample_id, output_file=None):
     """
-    使用放松的阈值进行预测
+    Predict labels using relaxed probability thresholds.
     
     Args:
-        model: 训练好的模型
-        pipeline: 预处理管道
-        df_new: 新数据框
-        sample_id: 样本ID
-        output_file: 输出文件路径
+        model: Trained classifier
+        pipeline: Fitted preprocessing pipeline
+        df_new: New feature dataframe
+        sample_id: Sample ID
+        output_file: Optional path to write predictions
         
     Returns:
-        pd.DataFrame: 预测结果
+        pd.DataFrame: Prediction results
     """
-    print(f"\n=== 为样本 {sample_id} 预测新突变 (放松阈值) ===")
-    print(f"新数据形状: {df_new.shape}")
+    print(f"\n=== Predicting mutations for sample {sample_id} (relaxed thresholds) ===")
+    print(f"New data shape: {df_new.shape}")
     
-    # 检查必需的特征列
+    # Check required feature columns
     missing_features = [feat for feat in SELECTED_FEATURES if feat not in df_new.columns]
     if missing_features:
-        raise ValueError(f"缺少必需的特征列: {missing_features}")
+        raise ValueError(f"Missing required feature columns: {missing_features}")
     
-    # 检查mutation_id列
+    # Check mutation_id column
     if 'mutation_id' not in df_new.columns:
-        raise ValueError("输入数据必须包含 'mutation_id' 列")
+        raise ValueError("Input data must contain a 'mutation_id' column")
     
-    # 准备特征数据
+    # Prepare feature matrix
     X_new = df_new[SELECTED_FEATURES].copy()
     
-    # 使用相同的预处理管道
+    # Apply the same preprocessing pipeline
     X_new_processed = pipeline.transform(X_new)
     
-    # 进行预测 - 使用概率而不是硬分类
+    # Predict using class probabilities rather than hard labels
     probabilities = model.predict_proba(X_new_processed)
     class_labels = model.classes_
     
-    # 放松的预测逻辑：如果mosaic概率 > 0.5 就预测为mosaic
+    # Relaxed prediction rule: call mosaic if mosaic probability > 0.5
     predictions = []
     for i, prob_vector in enumerate(probabilities):
         mosaic_prob = prob_vector[list(class_labels).index('mosaic')] if 'mosaic' in class_labels else 0
         germline_prob = prob_vector[list(class_labels).index('germline')] if 'germline' in class_labels else 0
         repeat_prob = prob_vector[list(class_labels).index('repeat')] if 'repeat' in class_labels else 0
         
-        # 放松的决策规则
-        if mosaic_prob > 0.5:  # 降低mosaic的阈值
+        # Relaxed decision rule
+        if mosaic_prob > 0.5:  # lower mosaic threshold
             predictions.append('mosaic')
-        elif germline_prob > 0.6:  # 提高germline的阈值
+        elif germline_prob > 0.6:  # higher germline threshold
             predictions.append('germline')
-        elif repeat_prob > 0.6:   # 提高repeat的阈值
+        elif repeat_prob > 0.6:   # higher repeat threshold
             predictions.append('repeat')
         else:
-            # 如果都不满足，再放宽 mosaic 的条件
-            if mosaic_prob > 0.2:  # 降低mosaic的阈值
+            # If none of the above apply, further relax the mosaic cutoff
+            if mosaic_prob > 0.2:  # lower mosaic threshold again
                 predictions.append('mosaic')
             else:
-                # 如果 mosaic 最低都不满足就选择概率最高的
+                # Otherwise take the class with the highest probability
                 predictions.append(class_labels[np.argmax(prob_vector)])
     
-    # 创建结果DataFrame
+    # Build the results dataframe
     results_df = pd.DataFrame({
         'mutation_id': df_new['mutation_id'].values,
         'sample_id': sample_id,
         'predicted_label': predictions
     })
     
-    # 添加概率分数
+    # Add class probability scores
     for i, class_name in enumerate(class_labels):
         results_df[f'probability_{class_name}'] = probabilities[:, i]
     
-    # 添加决策信息
+    # Record the decision rule used
     results_df['decision_rule'] = 'relaxed_threshold'
     
-    # 打印预测统计
+    # Print prediction statistics
     prediction_counts = pd.Series(predictions).value_counts().to_dict()
-    print(f"\n放松阈值预测统计:")
+    print(f"\nRelaxed-threshold prediction summary:")
     for label, count in prediction_counts.items():
         percentage = count / len(predictions) * 100
-        print(f"  {label}: {count} 个位点 ({percentage:.1f}%)")
+        print(f"  {label}: {count} sites ({percentage:.1f}%)")
     
-    # 保存结果
+    # Save results
     if output_file:
         results_df.to_csv(output_file, index=False)
-        print(f"预测结果保存到: {output_file}")
+        print(f"Predictions saved to: {output_file}")
     
     return results_df
 
 def analyze_feature_importance(model, output_path):
     """
-    分析特征重要性
+    Rank and report feature importances from the trained model.
     """
-    print(f"\n=== 特征重要性分析 ===")
+    print(f"\n=== Feature importance analysis ===")
     
     importances = model.feature_importances_
     feature_imp_df = pd.DataFrame({
@@ -201,7 +208,7 @@ def analyze_feature_importance(model, output_path):
         'importance': importances
     }).sort_values('importance', ascending=False)
     
-    print("特征重要性排序:")
+    print("Feature importance ranking:")
     for _, row in feature_imp_df.iterrows():
         print(f"  {row['feature']}: {row['importance']:.4f}")
     
@@ -209,80 +216,80 @@ def analyze_feature_importance(model, output_path):
 
 def generate_relaxed_prediction_report(results_df, sample_id, output_path):
     """
-    生成放松预测的详细报告
+    Write a detailed report for relaxed-threshold predictions.
     """
     report_file = os.path.join(output_path, f"relaxed_prediction_report_{sample_id}.txt")
     
     with open(report_file, 'w') as f:
-        f.write(f"放松限制分类器预测报告 - 样本 {sample_id}\n")
+        f.write(f"Relaxed-threshold classifier prediction report - sample {sample_id}\n")
         f.write("=" * 50 + "\n")
-        f.write(f"总位点数: {len(results_df)}\n\n")
+        f.write(f"Total sites: {len(results_df)}\n\n")
         
-        # 预测统计
+        # Prediction statistics
         pred_counts = results_df['predicted_label'].value_counts()
-        f.write("预测结果统计:\n")
+        f.write("Prediction summary:\n")
         for label, count in pred_counts.items():
             percentage = count / len(results_df) * 100
             f.write(f"  {label}: {count} ({percentage:.1f}%)\n")
         
-        f.write("\n放松策略说明:\n")
-        f.write("1. mosaic概率 > 0.5 即预测为mosaic\n")
-        f.write("2. germline概率 > 0.5 才预测为germline\n") 
-        f.write("3. repeat概率 > 0.5 才预测为repeat\n")
-        f.write("4. 偏向于预测为mosaic，减少假阴性\n")
+        f.write("\nRelaxed decision rules:\n")
+        f.write("1. Predict mosaic if mosaic probability > 0.5\n")
+        f.write("2. Predict germline if germline probability > 0.6\n")
+        f.write("3. Predict repeat if repeat probability > 0.6\n")
+        f.write("4. Otherwise prefer mosaic (probability > 0.2) to reduce false negatives\n")
         
-        # 分析mosaic概率分布
+        # Mosaic probability distribution
         if 'probability_mosaic' in results_df.columns:
             mosaic_probs = results_df['probability_mosaic']
-            f.write(f"\nMosaic概率分布:\n")
-            f.write(f"  最小值: {mosaic_probs.min():.3f}\n")
-            f.write(f"  最大值: {mosaic_probs.max():.3f}\n")
-            f.write(f"  平均值: {mosaic_probs.mean():.3f}\n")
-            f.write(f"  中位数: {mosaic_probs.median():.3f}\n")
+            f.write(f"\nMosaic probability distribution:\n")
+            f.write(f"  Minimum: {mosaic_probs.min():.3f}\n")
+            f.write(f"  Maximum: {mosaic_probs.max():.3f}\n")
+            f.write(f"  Mean: {mosaic_probs.mean():.3f}\n")
+            f.write(f"  Median: {mosaic_probs.median():.3f}\n")
             
-            # 不同概率区间的统计
+            # Counts by probability bin
             bins = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
             for i in range(len(bins)-1):
                 count = ((mosaic_probs >= bins[i]) & (mosaic_probs < bins[i+1])).sum()
-                f.write(f"  [{bins[i]:.1f}-{bins[i+1]:.1f}): {count} 个位点\n")
+                f.write(f"  [{bins[i]:.1f}-{bins[i+1]:.1f}): {count} sites\n")
     
-    print(f"放松预测报告生成: {report_file}")
+    print(f"Relaxed-prediction report written to: {report_file}")
 
 def real_time_classifier_predict(df_for_classifier, sample_id, output_path):
     """
-    放松限制的实时分类器预测
+    Run relaxed-threshold real-time classifier prediction.
     
     Args:
-        df_for_classifier: 需要预测的数据框
-        sample_id: 样本ID
-        output_path: 输出路径
+        df_for_classifier: Feature dataframe to classify
+        sample_id: Sample ID
+        output_path: Output directory
         
     Returns:
-        pd.DataFrame: 预测结果
+        tuple: (results_df, model, pipeline)
     """
     print(f"\n{'='*60}")
-    print(f"开始放松限制的实时分类器预测 - 样本: {sample_id}")
+    print(f"Starting relaxed-threshold real-time classifier prediction - sample: {sample_id}")
     print(f"{'='*60}")
     
-    # 确保输出目录存在
+    # Ensure the output directory exists
     os.makedirs(output_path, exist_ok=True)
     
-    # 1. 加载训练数据
+    # 1. Load training data
     df_training = load_training_data()
     
-    # 2. 检查样本是否在训练数据中
+    # 2. Check whether the sample is present in the training set
     training_samples = set(df_training['sampleid'].unique())
     if sample_id not in training_samples:
-        print(f"警告: 样本 {sample_id} 不在训练数据中")
+        print(f"Warning: sample {sample_id} is not in the training data")
         exclude_sample_id = sample_id
     else:
         exclude_sample_id = sample_id
-        print(f"样本 {sample_id} 在训练数据中，使用leave-one-out策略")
+        print(f"Sample {sample_id} is in the training data; using a leave-one-out strategy")
     
-    # 3. 构建放松限制的分类器
+    # 3. Train the relaxed-threshold classifier
     model, pipeline = build_relaxed_classifier_excluding_sample(df_training, exclude_sample_id)
     
-    # 4. 保存模型到pkl文件
+    # 4. Save the model to a pickle file
     model_file = os.path.join(output_path, f"relaxed_classifier_{sample_id}.pkl")
     joblib.dump({
         'model': model,
@@ -292,83 +299,81 @@ def real_time_classifier_predict(df_for_classifier, sample_id, output_path):
         'feature_names': SELECTED_FEATURES,
         'training_date': pd.Timestamp.now()
     }, model_file)
-    print(f"模型保存到: {model_file}")
+    print(f"Model saved to: {model_file}")
     
-    # 5. 使用放松的阈值进行预测
+    # 5. Predict with relaxed thresholds
     output_file = os.path.join(output_path, f"relaxed_predictions_{sample_id}.csv")
     results = predict_with_relaxed_threshold(model, pipeline, df_for_classifier, sample_id, output_file)
     
-    # 6. 分析特征重要性
+    # 6. Analyze feature importance
     feature_imp_df = analyze_feature_importance(model, output_path)
     
-    # 7. 保存特征重要性
+    # 7. Save feature importance
     feature_imp_file = os.path.join(output_path, f"feature_importance_{sample_id}.csv")
     feature_imp_df.to_csv(feature_imp_file, index=False)
-    print(f"特征重要性保存到: {feature_imp_file}")
+    print(f"Feature importance saved to: {feature_imp_file}")
     
-    # 8. 生成详细报告
+    # 8. Write a detailed report
     generate_relaxed_prediction_report(results, sample_id, output_path)
     
     return results, model, pipeline
 
-# 添加模型加载函数
 def load_relaxed_classifier(model_path):
     """
-    加载保存的放松分类器
+    Load a previously saved relaxed-threshold classifier.
     
     Args:
-        model_path: 模型文件路径
+        model_path: Path to the saved model file
         
     Returns:
-        dict: 包含模型、管道等信息的字典
+        dict: Dictionary containing the model, pipeline, and metadata
     """
-    print(f"加载模型: {model_path}")
+    print(f"Loading model: {model_path}")
     classifier_data = joblib.load(model_path)
     
     model = classifier_data['model']
     pipeline = classifier_data['pipeline']
     sample_id = classifier_data['sample_id']
     
-    print(f"加载的模型信息:")
-    print(f"  样本ID: {sample_id}")
-    print(f"  排除的样本: {classifier_data['excluded_sample']}")
-    print(f"  特征数量: {len(classifier_data['feature_names'])}")
-    print(f"  训练日期: {classifier_data['training_date']}")
-    print(f"  模型类别: {model.classes_}")
+    print(f"Loaded model information:")
+    print(f"  Sample ID: {sample_id}")
+    print(f"  Excluded sample: {classifier_data['excluded_sample']}")
+    print(f"  Number of features: {len(classifier_data['feature_names'])}")
+    print(f"  Training date: {classifier_data['training_date']}")
+    print(f"  Model classes: {model.classes_}")
     
     return classifier_data
 
-# 添加使用已保存模型的预测函数
 def predict_with_saved_classifier(df_for_classifier, model_path, sample_id, output_file=None):
     """
-    使用已保存的模型进行预测
+    Predict using a previously saved classifier.
     
     Args:
-        df_for_classifier: 需要预测的数据框
-        model_path: 模型文件路径
-        sample_id: 样本ID
-        output_file: 输出文件路径
+        df_for_classifier: Feature dataframe to classify
+        model_path: Path to the saved model file
+        sample_id: Sample ID
+        output_file: Optional path to write predictions
         
     Returns:
-        pd.DataFrame: 预测结果
+        pd.DataFrame: Prediction results
     """
-    # 加载模型
+    # Load the saved model
     classifier_data = load_relaxed_classifier(model_path)
     model = classifier_data['model']
     pipeline = classifier_data['pipeline']
     
-    # 使用放松的阈值进行预测
+    # Predict with relaxed thresholds
     results = predict_with_relaxed_threshold(model, pipeline, df_for_classifier, sample_id, output_file)
     
     return results
 
 
-# # 修改使用示例
+# # Usage example
 # def main():
 #     """
-#     主函数 - 使用示例
+#     Main function - usage example
 #     """
-#     # 您的数据框
+#     # Example feature dataframe
 #     df_for_classifier = pd.DataFrame({
 #         'mutation_id': [
 #             'X_135442114_T_G', 'X_138790531_G_A', 'X_70632344_G_A',
@@ -390,15 +395,15 @@ def predict_with_saved_classifier(df_for_classifier, model_path, sample_id, outp
 #     sample_id = "UMB1465"
 #     output_path = "./relaxed_predictions"
     
-#     # 方法1: 实时构建分类器并进行预测
-#     print("=== 方法1: 实时构建分类器 ===")
+#     # Method 1: train a classifier in real time and predict
+#     print("=== Method 1: train a classifier in real time ===")
 #     results, model, pipeline = real_time_classifier_predict(df_for_classifier, sample_id, output_path)
     
-#     print(f"\n最终预测结果预览:")
+#     print(f"\nPreview of final predictions:")
 #     print(results[['mutation_id', 'predicted_label', 'probability_mosaic']].head())
     
-#     # 方法2: 使用已保存的模型进行预测
-#     print("\n=== 方法2: 使用已保存的模型 ===")
+#     # Method 2: predict with a saved model
+#     print("\n=== Method 2: use a saved model ===")
 #     model_path = os.path.join(output_path, f"relaxed_classifier_{sample_id}.pkl")
 #     if os.path.exists(model_path):
 #         results_saved = predict_with_saved_classifier(
@@ -407,11 +412,10 @@ def predict_with_saved_classifier(df_for_classifier, model_path, sample_id, outp
 #             sample_id,
 #             output_file=os.path.join(output_path, f"predictions_with_saved_model_{sample_id}.csv")
 #         )
-#         print(f"使用保存模型的预测结果预览:")
+#         print(f"Preview of predictions from the saved model:")
 #         print(results_saved[['mutation_id', 'predicted_label', 'probability_mosaic']].head())
 #     else:
-#         print(f"模型文件不存在: {model_path}")
+#         print(f"Model file not found: {model_path}")
 
 # if __name__ == "__main__":
 #     main()
-

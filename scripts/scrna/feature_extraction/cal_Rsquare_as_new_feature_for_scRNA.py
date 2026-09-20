@@ -38,55 +38,55 @@ output_file = args.output_file
 ##### Function
 def check_allele_dropout(df, thr_r2=0.8, alpha=0.05):
     """
-    判断一个位点是否可能由于 allele dropout 引起。
-    参数：
-        df (pd.DataFrame): 包含 'total_dp' 和 'alt_dp' 两列的数据
-        thr_r2 (float): R² 的阈值，小于此值表示拟合不好
-        alpha (float): Wilcoxon 配对检验的显著性水平
-    返回：
-        no_alleledrop (bool): True 表示无 allele dropout，False 表示可能存在
-        r_squared (float): 标准化后的 R² 值
-        wilcoxon_pval (float): Wilcoxon 检验的 p 值
+    Assess whether a site may be caused by allele dropout.
+    Parameters:
+        df (pd.DataFrame): data with 'total_dp' and 'alt_dp' columns
+        thr_r2 (float): R-squared threshold; values below this indicate a poor fit
+        alpha (float): significance level for the paired Wilcoxon test
+    Returns:
+        no_alleledrop (bool): True means no allele dropout, False means dropout is possible
+        r_squared (float): standardized R-squared
+        wilcoxon_pval (float): Wilcoxon test p-value
     """
     depth_data = pd.DataFrame({
         'total_dp': df['total_dp'],
         'alt_dp': df['alt_dp']
     })
     
-    # 空数据判断
+    # Empty-data check
     if depth_data.empty:
         return "undefined", np.nan, np.nan
     
-    # 标准化
+    # Standardization
     standard_scaler = StandardScaler()
     depth_std = standard_scaler.fit_transform(depth_data)
     depth_std = pd.DataFrame(depth_std, columns=['total_dp', 'alt_dp'])
     
-    # 差值计算
+    # Difference
     diff = depth_std['total_dp'] - depth_std['alt_dp']
     
-    # R² 计算
+    # R-squared
     if len(depth_std['total_dp'].unique()) > 1:
         _, _, r_value, _, _ = stats.linregress(depth_std['total_dp'], depth_std['alt_dp'])
         r_squared = r_value**2
     else:
         r_squared = 1.0
     
-    # Wilcoxon 配对检验
+    # Paired Wilcoxon test
     if len(diff.unique()) > 1:
         try:
             wilcoxon_stat, wilcoxon_pval = wilcoxon(depth_std['total_dp'], depth_std['alt_dp'])
         except ValueError:
-            # Wilcoxon 检验异常时 fallback
+            # Fallback when the Wilcoxon test fails
             wilcoxon_stat = 0
             wilcoxon_pval = 1.0
     else:
         wilcoxon_stat = 0
         wilcoxon_pval = 1.0
     
-    # 判断是否为 allele dropout（False 表示疑似有 dropout）
+    # Decide allele dropout (False means dropout is suspected)
     no_alleledrop = (r_squared < thr_r2) or (wilcoxon_pval < alpha)
-    # # 将布尔值转换为字符串标签
+    # # Convert the boolean to a string label
     # dropout_qc_result = "pass" if no_alleledrop else "fail"
     
     return no_alleledrop, r_squared, wilcoxon_pval
@@ -113,7 +113,7 @@ wilcoxon_pval_list = []
 def process_identifier(identifier):
     reads_file = reads_filepath + "/" + identifier + ".mut.spots.txt"
     
-    # 文件路径存在性检查
+    # Check that the file exists
     if not os.path.exists(reads_file):
         print(f"Warning: File {reads_file} does not exist!")
         return None, None, None
@@ -123,11 +123,11 @@ def process_identifier(identifier):
     
     return is_no_alleledrop_persite, r_squared_persite, wilcoxon_pval_persite
 
-# 并行处理
+# Parallel processing
 with mp.Pool(processes=args.thread) as pool:
     results = pool.map(process_identifier, identifier_list)
 
-# 结果处理
+# Collect results
 for result in results:
     if result != (None, None, None):
         is_no_alleledrop_list.append(result[0])
@@ -139,7 +139,7 @@ for result in results:
         wilcoxon_pval_list.append(None)
 
 
-# 将新生成的特征列添加到 df_features 中
+# Add the newly computed feature columns to df_features
 out_features = df_features.copy()
 
 out_features['is_no_alleledrop_based_on_expression'] = is_no_alleledrop_list

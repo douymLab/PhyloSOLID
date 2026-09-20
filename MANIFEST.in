@@ -1,4 +1,4 @@
 include README.md
 include requirements.txt
 include LICENSE
-recursive-include scripts *.sh *.R
+recursive-include scripts *.sh *.R *.py

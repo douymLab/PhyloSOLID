@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ###################################################################################################
-######################### scRNA放松限制分类器核心函数 #######################
+######################### Core functions for the relaxed scRNA classifier #########################
 ###################################################################################################
 
 import os
@@ -17,7 +17,7 @@ from pathlib import Path
 from src.reproducibility import set_seed, deterministic_permutation
 
 
-# 定义特征列
+# Feature columns used by the classifier
 SELECTED_FEATURES = [
     'falt', 
     'mutant_cell_fraction', 
@@ -37,29 +37,29 @@ SELECTED_FEATURES = [
 
 def build_relaxed_classifier_excluding_sample(df_training, exclude_sample_id):
     """
-    构建放松限制的分类器（排除特定样本）
+    Train a relaxed-threshold classifier while excluding a target sample.
     """
-    print(f"\n=== 构建放松限制的分类器 (排除样本 {exclude_sample_id}) ===")
+    print(f"\n=== Building relaxed-threshold classifier (excluding sample {exclude_sample_id}) ===")
     
-    # 排除目标样本
+    # Exclude the target sample (leave-one-out)
     df_train = df_training[df_training['sampleid'] != exclude_sample_id].copy()
-    print(f"训练数据大小: {df_train.shape}")
-    print(f"训练数据类别分布: {Counter(df_train['label2'])}")
+    print(f"Training data size: {df_train.shape}")
+    print(f"Training class distribution: {Counter(df_train['label2'])}")
     
-    # 准备特征和标签
+    # Prepare features and labels
     X_train = df_train[SELECTED_FEATURES].copy()
     y_train = df_train['label2'].copy()
     
-    # 创建预处理管道
+    # Build the preprocessing pipeline
     pipeline = make_pipeline(
         SimpleImputer(strategy='median'),
         StandardScaler()
     )
     
-    # 数据预处理和训练
+    # Preprocess data and train the model
     X_train_processed = pipeline.fit_transform(X_train)
     
-    # 使用放松的参数设置
+    # Relaxed random-forest settings
     rf_model = RandomForestClassifier(
         n_estimators=1000,
         random_state=42,
@@ -72,55 +72,55 @@ def build_relaxed_classifier_excluding_sample(df_training, exclude_sample_id):
     )
     rf_model.fit(X_train_processed, y_train)
     
-    print(f"模型训练完成，类别: {rf_model.classes_}")
+    print(f"Model training completed. Classes: {rf_model.classes_}")
     return rf_model, pipeline
 
 def predict_with_relaxed_threshold(model, pipeline, df_new, sample_id, mutation_ids=None):
     """
-    使用放松的阈值进行预测
+    Predict labels using relaxed probability thresholds.
     """
-    print(f"\n=== 为样本 {sample_id} 预测新突变 (放松阈值) ===")
-    print(f"新数据形状: {df_new.shape}")
+    print(f"\n=== Predicting mutations for sample {sample_id} (relaxed thresholds) ===")
+    print(f"New data shape: {df_new.shape}")
     
-    # 检查必需的特征列
+    # Check required feature columns
     missing_features = [feat for feat in SELECTED_FEATURES if feat not in df_new.columns]
     if missing_features:
-        raise ValueError(f"缺少必需的特征列: {missing_features}")
+        raise ValueError(f"Missing required feature columns: {missing_features}")
     
-    # 准备特征数据
+    # Prepare feature matrix
     X_new = df_new[SELECTED_FEATURES].copy()
     
-    # 使用相同的预处理管道
+    # Apply the same preprocessing pipeline
     X_new_processed = pipeline.transform(X_new)
     
-    # 进行预测 - 使用概率而不是硬分类
+    # Predict using class probabilities rather than hard labels
     probabilities = model.predict_proba(X_new_processed)
     class_labels = model.classes_
     
-    # 放松的预测逻辑
+    # Relaxed prediction logic
     predictions = []
     for i, prob_vector in enumerate(probabilities):
         mosaic_prob = prob_vector[list(class_labels).index('mosaic')] if 'mosaic' in class_labels else 0
         artifact_prob = prob_vector[list(class_labels).index('artifact')] if 'artifact' in class_labels else 0
         
-        # 放松的决策规则
-        if mosaic_prob > 0.4:  # 降低mosaic的阈值
+        # Relaxed decision rule
+        if mosaic_prob > 0.4:  # lower mosaic threshold
             predictions.append('mosaic')
-        elif artifact_prob > 0.6:  # 提高artifact的阈值
+        elif artifact_prob > 0.6:  # higher artifact threshold
             predictions.append('artifact')
         else:
-            if mosaic_prob > 0.2:  # 进一步降低mosaic的阈值
+            if mosaic_prob > 0.2:  # further lower the mosaic threshold
                 predictions.append('mosaic')
             else:
                 predictions.append(class_labels[np.argmax(prob_vector)])
     
-    # 创建结果DataFrame
+    # Build the results dataframe
     results_df = pd.DataFrame({
         'sample_id': sample_id,
         'predicted_label': predictions
     })
     
-    # 添加mutation_id列
+    # Add mutation_id
     if mutation_ids is not None:
         results_df['mutation_id'] = mutation_ids
     elif 'mutation_id' in df_new.columns:
@@ -128,65 +128,65 @@ def predict_with_relaxed_threshold(model, pipeline, df_new, sample_id, mutation_
     elif 'identifier' in df_new.columns:
         results_df['mutation_id'] = df_new['identifier'].values
     else:
-        # 如果没有mutation_id列，创建索引作为标识
+        # If no mutation_id column exists, use a positional identifier
         results_df['mutation_id'] = [f'mutation_{i+1}' for i in range(len(results_df))]
     
-    # 添加概率分数
+    # Add class probability scores
     for i, class_name in enumerate(class_labels):
         results_df[f'probability_{class_name}'] = probabilities[:, i]
     
-    # 重新排列列的顺序，让mutation_id在前面
+    # Put mutation_id first
     cols = ['mutation_id', 'sample_id', 'predicted_label'] + [f'probability_{cls}' for cls in class_labels]
     results_df = results_df[cols]
     
-    # 打印预测统计
+    # Print prediction statistics
     prediction_counts = pd.Series(predictions).value_counts().to_dict()
-    print(f"放松阈值预测统计:")
+    print(f"Relaxed-threshold prediction summary:")
     for label, count in prediction_counts.items():
         percentage = count / len(predictions) * 100
-        print(f"  {label}: {count} 个位点 ({percentage:.1f}%)")
+        print(f"  {label}: {count} sites ({percentage:.1f}%)")
     
     return results_df
 
 def real_time_classifier_predict(df_for_classifier_all, sampleid, outputpath):
     """
-    scRNA放松限制分类器核心预测函数
+    Core prediction function for the relaxed-threshold scRNA classifier.
     
     Args:
-        df_for_classifier_all: 需要预测的数据框（包含所有特征）
-        sampleid: 样本ID
-        outputpath: 输出路径
+        df_for_classifier_all: Feature dataframe to classify
+        sampleid: Sample ID
+        outputpath: Output directory
         
     Returns:
-        pd.DataFrame: 预测结果
+        pd.DataFrame: Prediction results
     """
     print(f"\n{'='*60}")
-    print(f"开始scRNA放松限制分类器预测 - 样本: {sampleid}")
+    print(f"Starting relaxed-threshold scRNA classifier prediction - sample: {sampleid}")
     print(f"{'='*60}")
     
-    # 确保输出目录存在
+    # Ensure the output directory exists
     os.makedirs(outputpath, exist_ok=True)
     
-    # 1. 加载训练数据
-    print("=== 加载训练数据 ===")
+    # 1. Load training data
+    print("=== Loading training data ===")
     script_dir = Path(__file__).parent
-    features_file_labeled = script_dir / 'classifer' / 'scrna' / 'data_labeling_sampling.ratio_155_space.csv'
+    features_file_labeled = script_dir / 'classifier' / 'scrna' / 'data_labeling_sampling.ratio_155_space.csv'
     df_training = pd.read_csv(features_file_labeled, sep="\t")
-    print(f"训练数据形状: {df_training.shape}")
-    print(f"训练数据类别分布: {Counter(df_training['label2'])}")
+    print(f"Training data shape: {df_training.shape}")
+    print(f"Training class distribution: {Counter(df_training['label2'])}")
     
-    # 2. 数据预处理
-    print("=== 数据预处理 ===")
+    # 2. Preprocess features
+    print("=== Preprocessing data ===")
     df_features = df_for_classifier_all.copy()
     
-    # 提取mutation_id（如果存在相关列）
+    # Extract mutation_id if a relevant column exists
     mutation_ids = None
     if 'mutation_id' in df_features.columns:
         mutation_ids = df_features['mutation_id'].values
     elif 'identifier' in df_features.columns:
         mutation_ids = df_features['identifier'].values
     
-    # 数据清洗
+    # Clean feature values
     df_features_selected = df_features[SELECTED_FEATURES].copy()
     df_features_selected.replace('no', np.nan, inplace=True)
     
@@ -197,67 +197,67 @@ def real_time_classifier_predict(df_for_classifier_all, sampleid, outputpath):
         finite_max = df_features_selected[col][np.isfinite(df_features_selected[col])].max()
         df_features_selected[col] = df_features_selected[col].replace([np.inf, -np.inf], finite_max)
     
-    print(f"预处理后数据形状: {df_features_selected.shape}")
+    print(f"Preprocessed data shape: {df_features_selected.shape}")
     
-    # 3. 构建放松限制的分类器
+    # 3. Train the relaxed-threshold classifier
     model, pipeline = build_relaxed_classifier_excluding_sample(df_training, sampleid)
     
-    # 4. 使用放松的阈值进行预测
+    # 4. Predict with relaxed thresholds
     results = predict_with_relaxed_threshold(model, pipeline, df_features_selected, sampleid, mutation_ids)
     
-    # 5. 保存预测结果
-    print("\n=== 保存预测结果 ===")
+    # 5. Save prediction results
+    print("\n=== Saving prediction results ===")
     
-    # 保存所有位点的预测结果
+    # Save predictions for all sites
     all_sites_file = os.path.join(outputpath, f"{sampleid}.feature_and_prediction.allsites.txt")
     results.to_csv(all_sites_file, index=False, sep="\t")
-    print(f"所有位点预测结果保存到: {all_sites_file}")
+    print(f"All-site predictions saved to: {all_sites_file}")
     
-    # 保存mosaic位点列表
+    # Save mosaic site list
     df_mosaic = results[results["predicted_label"] == "mosaic"]
     mosaic_list_file = os.path.join(outputpath, f"{sampleid}_mosaic_prediction.list.txt")
     df_mosaic['mutation_id'].to_csv(mosaic_list_file, index=False, header=False)
-    print(f"mosaic位点列表保存到: {mosaic_list_file}")
+    print(f"Mosaic site list saved to: {mosaic_list_file}")
     
-    # 保存mosaic详细结果
+    # Save detailed mosaic results
     mosaic_detailed_file = os.path.join(outputpath, f"{sampleid}_mosaic_detailed_results.txt")
     df_mosaic.to_csv(mosaic_detailed_file, index=False, sep="\t")
-    print(f"mosaic详细结果保存到: {mosaic_detailed_file}")
+    print(f"Detailed mosaic results saved to: {mosaic_detailed_file}")
     
-    # 保存统计信息
+    # Save summary statistics
     mosaic_count_file = os.path.join(outputpath, f"{sampleid}_prediction_summary.txt")
     with open(mosaic_count_file, 'w') as f:
-        f.write(f"样本 {sampleid} 预测结果汇总\n")
+        f.write(f"Prediction summary for sample {sampleid}\n")
         f.write("=" * 40 + "\n")
-        f.write(f"总位点数量: {len(results)}\n")
-        f.write(f"mosaic位点数量: {len(df_mosaic)}\n")
-        f.write(f"artifact位点数量: {len(results) - len(df_mosaic)}\n")
-        f.write(f"mosaic比例: {len(df_mosaic)/len(results)*100:.1f}%\n")
+        f.write(f"Total sites: {len(results)}\n")
+        f.write(f"Mosaic sites: {len(df_mosaic)}\n")
+        f.write(f"Artifact sites: {len(results) - len(df_mosaic)}\n")
+        f.write(f"Mosaic fraction: {len(df_mosaic)/len(results)*100:.1f}%\n")
         
-        # 添加概率统计
+        # Add probability statistics
         if 'probability_mosaic' in results.columns:
-            f.write(f"\nMosaic概率统计:\n")
-            f.write(f"  平均值: {results['probability_mosaic'].mean():.3f}\n")
-            f.write(f"  中位数: {results['probability_mosaic'].median():.3f}\n")
-            f.write(f"  最大值: {results['probability_mosaic'].max():.3f}\n")
-            f.write(f"  最小值: {results['probability_mosaic'].min():.3f}\n")
+            f.write(f"\nMosaic probability statistics:\n")
+            f.write(f"  Mean: {results['probability_mosaic'].mean():.3f}\n")
+            f.write(f"  Median: {results['probability_mosaic'].median():.3f}\n")
+            f.write(f"  Maximum: {results['probability_mosaic'].max():.3f}\n")
+            f.write(f"  Minimum: {results['probability_mosaic'].min():.3f}\n")
     
-    print(f"预测汇总保存到: {mosaic_count_file}")
+    print(f"Prediction summary saved to: {mosaic_count_file}")
     
-    # 打印最终统计
+    # Print final statistics
     mosaic_count = len(df_mosaic)
     total_count = len(results)
-    print(f"\n最终预测统计: {mosaic_count}/{total_count} 个位点被预测为mosaic ({mosaic_count/total_count*100:.1f}%)")
+    print(f"\nFinal prediction summary: {mosaic_count}/{total_count} sites predicted as mosaic ({mosaic_count/total_count*100:.1f}%)")
     
     print(f"\n{'='*60}")
-    print(f"scRNA放松限制分类器预测完成 - 样本: {sampleid}")
+    print(f"Relaxed-threshold scRNA classifier prediction completed - sample: {sampleid}")
     print(f"{'='*60}")
     
     return results
 
-# # 使用示例
+# # Usage example
 # if __name__ == "__main__":
-#     # 您的数据框（包含mutation_id）
+#     # Example feature dataframe (including mutation_id)
 #     df_for_classifier_all = pd.DataFrame({
 #         'mutation_id': [
 #             'chr20_14326432_C_A', 'chr21_9001082_G_C', 'chr6_137868589_G_A',
@@ -282,9 +282,8 @@ def real_time_classifier_predict(df_for_classifier_all, sampleid, outputpath):
 #     sampleid = "10k"
 #     outputpath = "./scRNA_relaxed_predictions"
     
-#     # 执行预测
+#     # Run prediction
 #     results = real_time_classifier_predict(df_for_classifier_all, sampleid, outputpath)
     
-#     print(f"\n预测结果预览:")
+#     print(f"\nPreview of predictions:")
 #     print(results.head())
-

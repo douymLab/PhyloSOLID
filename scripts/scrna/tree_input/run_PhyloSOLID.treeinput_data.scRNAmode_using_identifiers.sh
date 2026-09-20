@@ -36,7 +36,7 @@ echo "===== Start running: ====="
 echo "### Step1: Generate tree input raw files ###"
 mkdir -p ${workpath}/02_treeinput/
 
-# 使用绝对路径直接运行脚本，而不是用 -m
+# Run the script with an absolute path instead of python -m
 python ${SCRIPT_DIR}/prepare_phylo_input_from_scRNA.py \
     --barcode_files ${barcode1} \
     --bams ${bam_file1} \

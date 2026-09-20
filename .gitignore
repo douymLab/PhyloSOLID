@@ -87,33 +87,32 @@ environment.yaml  # but keep environment.yml
 *.7z
 
 # ============================================
-# Output directories (pipeline results)
+# Output directories (pipeline results written at repo root)
 # ============================================
 /output/
 /work/
 /temp/
+/tmp_scdna_smoke/
+/01_features/
+/02_treeinput/
+/03_tree_building/
 logs/
 *.log
 *.log.*
-*_features/
-*_treeinput/
-*_tree_building/
-*_results/
-01_features/
-02_treeinput/
-03_tree_building/
 
 # ============================================
-# Demo data (only keep small test files, exclude BAMs)
+# Demo data
+# Live runs stay local. Tracked snapshots live in demo/*/expected_output/
 # ============================================
 demo/input/*/01_rawdata/*.bam
 demo/input/*/01_rawdata/*.bam.bai
-demo/expected_output/*/01_features/
-demo/expected_output/*/02_treeinput/
-demo/expected_output/*/03_tree_building/
-!demo/expected_output/*/*.txt
-!demo/expected_output/*/*.csv
-!demo/expected_output/*/*.pdf
+demo/*/output/
+
+# Keep scDNA target-site mini BAMs (indexes are built by run_demo.sh)
+!demo/scdna/input/bam/
+!demo/scdna/input/bam/*.bam
+!demo/scdna/input/*.bed
+!demo/scdna/input/target_sites.bed
 
 # ============================================
 # Configuration files (keep templates, ignore local paths)

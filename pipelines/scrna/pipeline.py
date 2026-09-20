@@ -94,7 +94,7 @@ class SCRNAPipeline(Pipeline):
         """
         self.logger.info(f"Starting scRNA pipeline for sample {sample_id}")
         
-        # 确定 celltype 的来源
+        # Determine the source of cell-type annotations
         if celltype_file:
             self.logger.info(f"Using provided celltype file: {celltype_file}")
         elif metadata_file and barcode_file:
@@ -125,8 +125,8 @@ class SCRNAPipeline(Pipeline):
             'tree_building': {
                 'sample_id': sample_id,
                 'cellnum': cellnum,
-                'celltype_file': celltype_file,       # 直接传递，可能为 None
-                'metadata_file': metadata_file,       # 用于生成
+                'celltype_file': celltype_file,       # pass through; may be None
+                'metadata_file': metadata_file,       # used to generate cell types if needed
                 'barcode_file': barcode_file,
                 'features_file': self.workdir / '01_features' / f"{sample_id}.{running_type}_patched.feature.txt"
             }

@@ -317,15 +317,15 @@ def main():
             balance_count = directions.count("balance")
 
             if ref_count > 0 and alt_count > 0:
-                result = "unclear"  # 同时有 "ref" 和 "alt"
+                result = "unclear"  # both "ref" and "alt" are present
             elif ref_count > 0  and alt_count == 0:
-                result = "ref"  # 只有 "ref" 和 "balance"
+                result = "ref"  # only "ref" and "balance"
             elif alt_count > 0  and ref_count == 0:
-                result = "alt"  # 只有 "alt" 和 "balance"
+                result = "alt"  # only "alt" and "balance"
             elif balance_count == len(directions):
-                result = "balance"  # 全部为 "balance"
+                result = "balance"  # all values are "balance"
             else:
-                result = "unclear"  # 默认情况下为 unclear（如果符合其他情况）
+                result = "unclear"  # default to unclear for remaining cases
             
             if result in ["unclear"]:
                 ase="Unclear"

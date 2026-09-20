@@ -271,22 +271,22 @@ if(is_remove_cells == "yes") {
   for(sc in scid_data$scid_basedTree) {
     sc_values <- all_merged_data[, sc]
     
-    # 如果所有值都小于 cutoff 或者全是 NA，则移除
+    # Remove the site if all values are below the cutoff or all are NA
     if(all(sc_values < cutoff, na.rm = TRUE) || all(is.na(sc_values))) {
       removed_scid <- c(removed_scid, sc)
     } else {
-      # 找出大于 cutoff 的位点
+      # Sites above the cutoff
       site_pass <- which(!is.na(sc_values) & sc_values > cutoff)
       
       if(length(site_pass) == 0) {
         removed_scid <- c(removed_scid, sc)
       } else {
-        # 提取 mutant allele count
+        # Extract mutant allele counts
         reads_list <- all_merged_data[site_pass, paste0(sc, "_AlleleStat")]
         mutant_dp <- sapply(reads_list, function(x) as.numeric(strsplit(x, "/")[[1]][1]))
         names(mutant_dp) <- rownames(all_merged_data)[site_pass]
         
-        # 如果有 mutant allele count >=1，则保留
+        # Keep the cell if any mutant allele count is >= 1
         if(any(mutant_dp >= 1, na.rm = TRUE)) {
           remained_scid <- c(remained_scid, sc)
         } else {
@@ -297,7 +297,7 @@ if(is_remove_cells == "yes") {
   }
   
   # ===========================
-  # 更新 merged_data，只保留存在的列
+  # Update merged_data, keeping only existing columns
   # ===========================
   base_cols <- c("mutid", "indid", "chr", "pos", "ref", "mut", "somatic_posterior_persite")
   scid_cols <- remained_scid
@@ -308,12 +308,12 @@ if(is_remove_cells == "yes") {
   
   all_cols <- c(base_cols, scid_cols, scid_unmut_cols, scid_BB_cols, scid_prod_cols, scid_AlleleStat_cols)
   
-  # 只保留实际存在的列
+  # Keep only columns that actually exist
   cols_to_keep <- intersect(all_cols, colnames(all_merged_data))
   
   merged_data <- all_merged_data[, cols_to_keep]
   
-  # 输出信息
+  # Print summary
   print(str_c(
     "Raw cell number is: ", length(scid_data$scid_basedTree), 
     "; After filtering cells that do not contain significant mutations, current cell number is: ", 
@@ -329,7 +329,7 @@ if(is_remove_cells == "yes") {
   ))
 }
 
-# 输出 merged_data 形状
+# Print merged_data dimensions
 print(str_c(
   "The shape of merged_data is : ", 
   dim(merged_data)[1], " rows X ", 
@@ -351,7 +351,7 @@ max_mutAF_percell <- apply(merged_data, 1, function(row) {max(as.numeric(sapply(
 cov_in_maxmutAFcell <- apply(merged_data, 1, function(row) {
     alleles <- na.omit(unlist(row[paste0(remained_scid, "_AlleleStat")]))
     if (length(alleles) == 0) {
-        return(NA)  # 如果所有 AlleleStat 都是 NA，则返回 NA
+        return(NA)  # return NA if all AlleleStat values are NA
     }
     max_ratio <- max(sapply(strsplit(alleles, "/"), function(x) as.numeric(x[1])/as.numeric(x[2])))
     max_value_index <- which(sapply(strsplit(alleles, "/"), function(x) as.numeric(x[1])/as.numeric(x[2]) == max_ratio), arr.ind = TRUE)[1]

@@ -75,8 +75,28 @@ def load_config(config_file: Optional[Path]) -> Dict:
     """
     if config_file and config_file.exists():
         with open(config_file, 'r') as f:
-            return yaml.safe_load(f)
+            return yaml.safe_load(f) or {}
     return {}
+
+
+def _deep_update(base: Dict, extra: Dict) -> Dict:
+    for key, value in (extra or {}).items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def load_runtime_config(config_file: Optional[Path] = None) -> Dict:
+    """Load config/paths.yaml if present, then overlay an explicit --config file."""
+    config: Dict = {}
+    default_paths = Path(__file__).resolve().parent.parent / "config" / "paths.yaml"
+    if default_paths.exists():
+        config = load_config(default_paths)
+    if config_file:
+        config = _deep_update(config, load_config(config_file))
+    return config
 
 def load_paths_config(config_file: Optional[Path] = None) -> dict:
     """Load paths configuration from YAML file"""
@@ -96,6 +116,9 @@ def load_paths_config(config_file: Optional[Path] = None) -> dict:
             'mappability_file': None,
             'gnomad_file': None,
             'rna_editing_file': None
+        },
+        'scdna': {
+            'genotyper_dir': None
         }
     }
     
@@ -145,7 +168,8 @@ def main():
     parser.add_argument('--script-dir', type=Path, help='Directory containing external scripts')
     parser.add_argument('--workdir', '-w', type=Path, default='./phylosolid_work',
                        help='Working directory (default: ./phylosolid_work)')
-    parser.add_argument('--config', '-c', type=Path, help='Configuration file (YAML)')
+    parser.add_argument('--config', '-c', type=Path,
+                       help='Configuration YAML (default: config/paths.yaml if present)')
     parser.add_argument('--seed', type=int, default=42, 
                        help='Random seed for reproducibility (default: 42)')    
     
@@ -218,18 +242,42 @@ def main():
     scrna_parser.add_argument('--parallel', action='store_true',
                              help='Run feature extraction and tree input in parallel')
     
-    # scDNA subcommand
-    scdna_parser = subparsers.add_parser('scdna', help='scDNA-seq mode')
+    # scDNA subcommand: single-cell BAMs + mutation list; bulk BAM is optional
+    scdna_parser = subparsers.add_parser(
+        'scdna',
+        help='scDNA-seq mode: BAM pileup to tree (bulk BAM optional)',
+        description=(
+            'End-to-end scDNA pipeline: pileup mutation sites from single-cell BAMs, '
+            'unphased genotyping, tree-input matrices, then tree building. '
+            'Bulk BAM is optional. Requires scdna.genotyper_dir in config/paths.yaml '
+            'or PHYLOSOLID_GENOTYPER_DIR.'
+        )
+    )
     scdna_parser.add_argument('--sample', '-s', required=True, help='Sample ID')
-    scdna_parser.add_argument('--mutation-list', '-m', required=True, type=Path, 
-                             help='Mutation list file')
-    scdna_parser.add_argument('--bam', '-b', required=True, type=Path, help='BAM file')
-    scdna_parser.add_argument('--barcode', '-bc', required=True, type=Path, 
-                             help='Barcode file')
+    scdna_parser.add_argument('--mutation-list', '-m', required=True, type=Path,
+                             help='Mutation list (chr_pos_ref_alt, one per line)')
+    bam_group = scdna_parser.add_mutually_exclusive_group(required=True)
+    bam_group.add_argument('--bam-dir', type=Path,
+                           help='Directory of single-cell BAM files named {cell}.bam')
+    bam_group.add_argument('--bam-list', type=Path,
+                           help='Text file with one single-cell BAM path per line')
+    scdna_parser.add_argument('--sample-list', type=Path,
+                             help='Optional cell IDs (one per line). If omitted, BAM file stems are used')
+    scdna_parser.add_argument('--bulk-bam', type=Path,
+                             help='Optional bulk BAM. Not required; omitted by default')
+    scdna_parser.add_argument('--keep-bulk', action='store_true',
+                             help='Keep a BAM named bulk.bam if it appears in --bam-dir/--bam-list')
+    scdna_parser.add_argument('--reference', type=Path,
+                             help='Reference FASTA for optional classifier BAM features (or scdna.genome_fasta in config)')
+    scdna_parser.add_argument('--mappability', type=Path,
+                             help='Mappability bigWig for optional classifier BAM features (or scdna.mappability_file in config)')
+    scdna_parser.add_argument('--celltype-file', type=Path, help='Optional cell-type annotation file')
+    scdna_parser.add_argument('--threshold', type=float, default=0.9,
+                             help='Somatic posterior threshold for tree-input filtering (default: 0.9)')
     scdna_parser.add_argument('--threads', '-t', type=int, default=4, help='Number of threads')
     scdna_parser.add_argument('--steps', nargs='+',
                              choices=['feature_extraction', 'tree_input', 'tree_building'],
-                             help='Steps to run (default: all)')
+                             help='Steps to run (default: all). Use feature_extraction tree_input to stop at tree-input files')
     
     args = parser.parse_args()
     
@@ -244,9 +292,12 @@ def main():
                '-s', args.sampleid, 
                '-i', args.inputfile, 
                '-o', args.outputpath]
+        env = os.environ.copy()
+        project_root = Path(__file__).parent.parent
+        env['PYTHONPATH'] = str(project_root) + os.pathsep + env.get('PYTHONPATH', '')
         
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, cwd=str(project_root), env=env)
         except subprocess.CalledProcessError as e:
             sys.exit(e.returncode)
         return
@@ -266,8 +317,8 @@ def main():
     else:
         logger.warning("Script directory not found - external scripts may not be accessible")
     
-    # Load configuration
-    config = load_config(args.config)
+    # Load configuration (config/paths.yaml by default, overlay --config if given)
+    config = load_runtime_config(args.config)
     
     # Safely update configuration based on available attributes
     if hasattr(args, 'threads'):
@@ -285,12 +336,20 @@ def main():
     
     # Check input files only for pipeline modes
     if args.mode not in ['check-annovar']:
-        for file_arg in ['mutation_list', 'bam', 'barcode']:
+        file_args = ['mutation_list']
+        if args.mode == 'scdna':
+            file_args.extend(['bam_dir', 'bam_list', 'sample_list', 'bulk_bam', 'reference', 'mappability', 'celltype_file'])
+        else:
+            file_args.extend(['bam', 'barcode'])
+        for file_arg in file_args:
             if hasattr(args, file_arg):
                 file_path = getattr(args, file_arg)
-                if file_path and not file_path.exists():
+                if file_path and not Path(file_path).exists():
                     logger.error(f"Input file not found: {file_path}")
                     sys.exit(1)
+        if args.mode == 'scdna' and not getattr(args, 'bam_dir', None) and not getattr(args, 'bam_list', None):
+            logger.error("scDNA mode requires --bam-dir or --bam-list")
+            sys.exit(1)
     
     try:
         # Handle check-annovar mode
@@ -470,15 +529,32 @@ def main():
             results = pipeline.run(
                 sample_id=args.sample,
                 mutation_list=args.mutation_list,
-                bam_file=args.bam,
-                barcode_file=args.barcode,
+                bam_dir=getattr(args, 'bam_dir', None),
+                bam_list=getattr(args, 'bam_list', None),
+                sample_list=getattr(args, 'sample_list', None),
+                bulk_bam=getattr(args, 'bulk_bam', None),
+                keep_bulk=getattr(args, 'keep_bulk', False),
+                reference=getattr(args, 'reference', None),
+                mappability=getattr(args, 'mappability', None),
+                celltype_file=getattr(args, 'celltype_file', None),
                 threads=args.threads,
+                threshold=getattr(args, 'threshold', 0.9),
                 steps=getattr(args, 'steps', None)
             )
             
             logger.info("=" * 50)
             logger.info("scDNA pipeline completed")
             logger.info(f"Steps completed: {', '.join(results.keys())}")
+            data_dir = results.get('summary', {}).get('data_dir')
+            if data_dir:
+                logger.info(f"Tree-input matrices: {data_dir}")
+            tree_file = pipeline.get_tree_file()
+            if tree_file:
+                logger.info(f"Tree file: {tree_file}")
+            summary_file = workdir / 'pipeline_summary.yaml'
+            with open(summary_file, 'w') as f:
+                yaml.dump(results, f, default_flow_style=False)
+            logger.info(f"Summary saved to: {summary_file}")
         
         else:
             logger.error(f"Mode '{args.mode}' not implemented")

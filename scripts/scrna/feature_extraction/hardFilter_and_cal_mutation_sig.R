@@ -83,71 +83,71 @@ dim(df_sigProfile)
 
 
 ##### test paired mutation type
-# 定义碱基配对规则
+# Define base pairing rules
 complement_pairs <- c("A" = "T", "T" = "A", "C" = "G", "G" = "C")
 
-# 修正后的 get_pair 函数
+# Corrected get_pair function
 get_pair <- function(mutation) {
-  # 提取完整的 MutationType
-  # 提取前缀、后缀和中间部分
-  prefix <- substr(mutation, 1, 1) # 第一个碱基
-  suffix <- substr(mutation, nchar(mutation), nchar(mutation)) # 最后一个碱基
-  middle <- gsub(".*\\[|\\].*", "", mutation) # 中间部分（如 C>A）
+  # Extract the complete MutationType
+  # Extract prefix, suffix, and middle parts
+  prefix <- substr(mutation, 1, 1) # first base
+  suffix <- substr(mutation, nchar(mutation), nchar(mutation)) # last base
+  middle <- gsub(".*\\[|\\].*", "", mutation) # middle part (e.g. C>A)
 
-  # 分解前缀、后缀和中间部分
-  prefix_comp <- complement_pairs[prefix] # 配对前缀
-  suffix_comp <- complement_pairs[suffix] # 配对后缀
-  X <- substr(middle, 1, 1) # 中间部分的第一个碱基
-  Y <- substr(middle, nchar(middle), nchar(middle)) # 中间部分的第二个碱基
-  X_comp <- complement_pairs[X] # 配对中间的第一个碱基
-  Y_comp <- complement_pairs[Y] # 配对中间的第二个碱基
+  # Decompose prefix, suffix, and middle parts
+  prefix_comp <- complement_pairs[prefix] # complementary prefix
+  suffix_comp <- complement_pairs[suffix] # complementary suffix
+  X <- substr(middle, 1, 1) # first base of the middle part
+  Y <- substr(middle, nchar(middle), nchar(middle)) # second base of the middle part
+  X_comp <- complement_pairs[X] # complementary first base of the middle
+  Y_comp <- complement_pairs[Y] # complementary second base of the middle
 
-  # 检查是否所有配对都存在
+  # Check whether all complementary bases exist
   if (!is.na(prefix_comp) && !is.na(suffix_comp) &&
       !is.na(X_comp) && !is.na(Y_comp)) {
-    # 生成配对的 MutationType
+    # Generate the paired MutationType
     pair_mutation <- paste0(prefix_comp, "[", X_comp, ">", Y_comp, "]", suffix_comp)
     return(pair_mutation)
   } else {
-    return(NA) # 如果任意配对失败，返回 NA
+    return(NA) # If any pairing fails, return NA
   }
 }
 
-# 对所有 MutationType 生成配对
+# Generate pairs for all MutationType values
 df_sigProfile$Pair <- sapply(df_sigProfile$MutationType, get_pair)
 
-# 创建统一的 pair 名字（两两配对无顺序差别）
+# Create a unified pair name (order-independent pairing)
 get_unique_pair <- function(mutation, pair) {
-  # 确保 MutationType 和 Pair 的顺序一致，取字典序最小的作为 key
+  # Ensure consistent order of MutationType and Pair; use the lexicographically smaller as the key
   sorted_pair <- sort(c(mutation, pair))
   return(paste(sorted_pair, collapse = " + "))
 }
 
-# 计算唯一的配对
+# Compute unique pairs
 UniquePair <- mapply(get_unique_pair, df_sigProfile$MutationType, df_sigProfile$Pair)
 
-# 为每个唯一配对分配一个 sig_pair 名字
-unique_pairs <- unique(UniquePair) # 找到所有唯一配对
-sig_pair_names <- paste0("pair", seq_along(unique_pairs)) # 为每个唯一配对命名
-pair_map <- setNames(sig_pair_names, unique_pairs) # 创建配对映射
+# Assign a sig_pair name to each unique pair
+unique_pairs <- unique(UniquePair) # find all unique pairs
+sig_pair_names <- paste0("pair", seq_along(unique_pairs)) # name each unique pair
+pair_map <- setNames(sig_pair_names, unique_pairs) # create pair mapping
 
 df_sigProfile$sig_pair <- pair_map[UniquePair]
 
-# 使用 sapply 计算 binomial_test 相关的结果返回两列值
+# Use sapply to compute binomial_test results and return two columns
 results <- t(sapply(seq_len(nrow(df_sigProfile)), function(i) {
   # print(i)
-  # 当前行的 Count 和配对行的 Count
+  # Count of the current row and the paired row
   a <- df_sigProfile$Count[i]
   pair_idx <- which(df_sigProfile$MutationType == df_sigProfile$Pair[i])
   
-  # 如果没有配对数据，返回 NA 和 "no_pair"
+  # If no pair data exists, return NA and "no_pair"
   if (length(pair_idx) == 0) {
     return(c(greater_sig = "no_pair", p_value = NA))
   }
   
   b <- df_sigProfile$Count[pair_idx]
   
-  # 确定 greater_sig 和较大较小值
+  # Determine greater_sig and the larger/smaller values
   if (a > b) {
     greater_sig <- df_sigProfile$MutationType[i]
     larger <- a
@@ -162,7 +162,7 @@ results <- t(sapply(seq_len(nrow(df_sigProfile)), function(i) {
     smaller <- b
   }
   
-  # 计算 p 值
+  # Calculate p-value
   if (a == 0 & b == 0) {
     return(c(greater_sig = greater_sig, p_value = 1))
   } else {
@@ -171,7 +171,7 @@ results <- t(sapply(seq_len(nrow(df_sigProfile)), function(i) {
   }
 }))
 
-# 将结果保存到 df_sigProfile
+# Save results to df_sigProfile
 df_sigProfile$greater_sig <- results[, "greater_sig"]
 df_sigProfile$sig_pvalue <- as.numeric(results[, "p_value"])
 # write.table(df_sigProfile, str_c(outputpath, "/muts_SigProfile.txt"), row.names=FALSE, col.names=TRUE,quote=FALSE, sep="\t")
@@ -180,18 +180,18 @@ df_sigProfile$sig_pvalue <- as.numeric(results[, "p_value"])
 ##### Add information into site features dataframe
 dim(df_candidate)
 # [1] 176 182
-# 1. 重命名 df_sigProfile 中的 MutationType 列为 RNAMutationType 以便匹配
+# 1. Rename MutationType column in df_sigProfile to RNAMutationType for matching
 colnames(df_sigProfile)[colnames(df_sigProfile) == "MutationType"] <- "RNAMutationType"
 dim(df_sigProfile)
 # [1] 192   7
-# 2. 将 sig_pvalue 列加入 df_features，匹配 RNAMutationType 和 df_sigProfile 的 RNAMutationType
+# 2. Add sig_pvalue column to df_features, matching RNAMutationType with df_sigProfile
 df_features <- merge(df_candidate, 
                      df_sigProfile[, c("RNAMutationType", "sig_pvalue")], 
                      by = "RNAMutationType", 
                      all.x = TRUE)
 dim(df_features)
 # [1] 176 183
-# 3. 添加 signature_filter 列，根据 RNAMutationType 是否与 greater_sig 相同判断
+# 3. Add signature_filter column based on whether RNAMutationType matches greater_sig
 df_removed <- df_sigProfile[
   df_sigProfile$RNAMutationType == df_sigProfile$greater_sig & df_sigProfile$sig_pvalue < 0.01, 
 ]
@@ -210,22 +210,22 @@ dim(df_features)
 
 
 ##### geneate bed format columns
-# 加载 tidyr 包
+# Load tidyr package
 library(tidyr)
 library(dplyr)
 
-# 分割 identifier 列并保留原列
+# Split identifier column and keep the original column
 df_features <- df_features %>%
-  mutate(original_identifier = identifier) %>%  # 复制一份 identifier 列
+  mutate(original_identifier = identifier) %>%  # copy identifier column
   separate(
     col = identifier, 
     into = c("chrom", "position", "ref", "alt"), 
     sep = "_", 
-    remove = FALSE  # 保留原始 identifier 列
+    remove = FALSE  # keep original identifier column
   ) %>%
   mutate(
-    start = as.numeric(position) - 1,  # 第二个元素减 1 作为 start
-    end = as.numeric(position)         # 第二个元素作为 end
+    start = as.numeric(position) - 1,  # second element minus 1 as start
+    end = as.numeric(position)         # second element as end
   )
 
 dim(df_features)

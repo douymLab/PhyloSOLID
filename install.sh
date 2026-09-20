@@ -40,20 +40,25 @@ fi
 
 echo "[INFO] Environment created: $ENV_PREFIX"
 
-# Step 2: Install converTree R package
+# Step 2: Install converTree (needed for Newick conversion)
 echo ""
 echo "[Step 2/2] Installing converTree R package..."
 $ENV_PREFIX/bin/R -e "
-if (!require('converTree', quietly=TRUE)) {
+options(repos = c(CRAN = 'https://cloud.r-project.org'))
+if (!requireNamespace('devtools', quietly=TRUE)) {
+    install.packages('devtools')
+}
+if (!requireNamespace('remotes', quietly=TRUE)) {
+    install.packages('remotes')
+}
+if (!requireNamespace('converTree', quietly=TRUE)) {
     message('Installing converTree...')
-    if (!require('devtools', quietly=TRUE)) {
-        install.packages('devtools', repos='https://cloud.r-project.org')
-    }
-    devtools::install_github('xiayh17/converTree', upgrade='never', quiet=FALSE)
-    message('[INFO] converTree installed')
+    remotes::install_github('xiayh17/converTree', upgrade='never', quiet=FALSE)
 } else {
     message('[INFO] converTree already installed')
 }
+library(converTree)
+message('[INFO] converTree loaded successfully')
 "
 
 echo ""
@@ -66,4 +71,5 @@ echo "  1. Activate environment: conda activate $ENV_NAME"
 echo "  2. Configure config/paths.yaml with your paths"
 echo "  3. Install PhyloSOLID: pip install -e ."
 echo "  4. Verify installation: phylosolid check-annovar --config config/paths.yaml"
+echo "  5. Optional circos env (separate from this one): bash install_vis.sh"
 echo "========================================="

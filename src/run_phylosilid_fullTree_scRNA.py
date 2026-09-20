@@ -81,6 +81,8 @@ from src.scaffold_builder import build_scaffold_tree
 from src.scaffold_builder import *
 from src.mutation_integrator import *
 from src.full_tree_builder import build_fully_resolved_tree
+from src.utils import save_celltype_table
+from src.phylo_export import export_final_phylo_results
 
 
 # ------------------------------
@@ -563,7 +565,7 @@ if celltype_file is None or celltype_file == "None":
 else:
     df_celltype = pd.read_csv(celltype_file, sep="\t")
 
-df_celltype.to_csv(os.path.join(outputpath_03, "df_celltype.txt"), sep="\t")
+save_celltype_table(df_celltype, os.path.join(outputpath_03, "df_celltype.txt"))
 logger.info(f"Celltype data loaded: {df_celltype.shape[0]} cells")
 
 logging.info("Running scaffold building ...")
@@ -1462,90 +1464,18 @@ if __name__ == '__main__':
     logger.info(f"  Final tree cells: {M_full.shape[0]}")
     logger.info(f"  Final tree mutations: {M_full.shape[1]}")
     logger.info("")
-    
-    # ---- Step 9.2: Output results ----
-    logger.info("STEP 9.2: Output result files")
-    logger.info("-" * 80)
-    
-    phylo_dir = os.path.join(outputpath_05, "phylo")
-    os.makedirs(phylo_dir, exist_ok=True)
-    
-    I_full_withNA3 = I_attached.replace({np.nan: 3}).astype(int)
-    I_full_withNA3.to_csv(os.path.join(phylo_dir, "I_full_withNA3.txt"), sep="\t")
-    
-    WriteTfile(os.path.join(phylo_dir, "M_full_basedPivots.filtered_sites_inferred"), 
-               M_full, M_full.index.tolist(), M_full.columns.tolist(), judge="yes")
-    
-    final_cleaned_M_full = M_full.loc[:, (M_full != 0).any(axis=0)]
-    final_cleaned_M_full = final_cleaned_M_full.loc[(final_cleaned_M_full != 0).any(axis=1)]
-    
-    kept_rows = final_cleaned_M_full.index
-    kept_cols = final_cleaned_M_full.columns
-    
-    final_cleaned_I_full_withNA3 = I_full_withNA3.loc[kept_rows, kept_cols]
-    
-    WriteTfile(os.path.join(phylo_dir, "final_cleaned_M_full_basedPivots.filtered_sites_inferred"), 
-               final_cleaned_M_full, final_cleaned_M_full.index.tolist(), 
-               final_cleaned_M_full.columns.tolist(), judge="yes")
-    final_cleaned_I_full_withNA3.to_csv(
-        os.path.join(phylo_dir, "final_cleaned_I_full_withNA3_for_circosPlot.txt"), sep="\t"
+
+    phylo_export = export_final_phylo_results(
+        outputpath_05, T_full, M_full, I_attached, params['fnfp_ratio'], logger_obj=logger,
     )
-    
-    logger.info(f"  Output directory: {phylo_dir}")
-    logger.info("")
-    
-    # ---- Step 9.3: Identify flipping spots ----
-    logger.info("STEP 9.3: Identify flipping spots")
-    logger.info("-" * 80)
-    
-    df_bin_withNA3_for_flipping = final_cleaned_I_full_withNA3.copy()
-    df_phylogeny = final_cleaned_M_full.copy()
-    
-    false_negative_flipping_spots = df_bin_withNA3_for_flipping.apply(
-        lambda col: find_flipping_spots(col, df_phylogeny[col.name], condition_in_bin=0, condition_phylogeny=1)
-    )
-    false_positive_flipping_spots = df_bin_withNA3_for_flipping.apply(
-        lambda col: find_flipping_spots(col, df_phylogeny[col.name], condition_in_bin=1, condition_phylogeny=0)
-    )
-    NAto1_flipping_spots = df_bin_withNA3_for_flipping.apply(
-        lambda col: find_flipping_spots(col, df_phylogeny[col.name], condition_in_bin=3, condition_phylogeny=1)
-    )
-    NAto0_flipping_spots = df_bin_withNA3_for_flipping.apply(
-        lambda col: find_flipping_spots(col, df_phylogeny[col.name], condition_in_bin=3, condition_phylogeny=0)
-    )
-    
-    # Handle empty results
-    if false_negative_flipping_spots.empty:
-        false_negative_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    if false_positive_flipping_spots.empty:
-        false_positive_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    if NAto1_flipping_spots.empty:
-        NAto1_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    if NAto0_flipping_spots.empty:
-        NAto0_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-    
-    df_flipping_spots = pd.DataFrame({
-        'Mutation': df_bin_withNA3_for_flipping.columns,
-        'delta_FN_spots': [', '.join(false_negative_flipping_spots.get(col, [])) for col in df_bin_withNA3_for_flipping.columns],
-        'delta_FP_spots': [', '.join(false_positive_flipping_spots.get(col, [])) for col in df_bin_withNA3_for_flipping.columns],
-        'NA_to_1_spots': [', '.join(NAto1_flipping_spots.get(col, [])) for col in df_bin_withNA3_for_flipping.columns],
-        'NA_to_0_spots': [', '.join(NAto0_flipping_spots.get(col, [])) for col in df_bin_withNA3_for_flipping.columns]
-    })
-    df_flipping_spots.to_csv(os.path.join(phylo_dir, "df_flipping_spots.txt"), sep="\t", index=False)
-    
-    logger.info("")
-    
-    # ---- Step 9.4: Calculate total flipping counts ----
-    logger.info("STEP 9.4: Calculate total flipping counts")
-    logger.info("-" * 80)
-    
-    total_FN_flipping = ((df_bin_withNA3_for_flipping == 0) & (df_phylogeny == 1)).sum().sum()
-    total_FP_flipping = ((df_bin_withNA3_for_flipping == 1) & (df_phylogeny == 0)).sum().sum()
-    total_NAto0 = ((df_bin_withNA3_for_flipping == 3) & (df_phylogeny == 0)).sum().sum()
-    total_NAto1 = ((df_bin_withNA3_for_flipping == 3) & (df_phylogeny == 1)).sum().sum()
-    
-    omega_final = total_FP_flipping + params['fnfp_ratio'] * total_FN_flipping
-    
+    phylo_dir = phylo_export["phylo_dir"]
+    final_cleaned_M_full = phylo_export["M_cleaned"]
+    omega_final = phylo_export["omega"]
+    total_FP_flipping = phylo_export["total_delta_FP"]
+    total_FN_flipping = phylo_export["total_delta_FN"]
+    total_NAto0 = phylo_export["total_NA_to_0"]
+    total_NAto1 = phylo_export["total_NA_to_1"]
+
     logger.info("")
     logger.info("  ┌─────────────────────────────────────────────────────────────────────┐")
     logger.info("  │              WEIGHTED DISCORDANCE INDEX (FINAL)                    │")
@@ -1557,36 +1487,7 @@ if __name__ == '__main__':
     logger.info(f"  │    - NA->1 imputations                     : {total_NAto1:>10}       │")
     logger.info(f"  │    - FN/FP weight (lambda)                 : {params['fnfp_ratio']:>10.1f}      │")
     logger.info("  └─────────────────────────────────────────────────────────────────────┘")
-    
-    df_total_flipping_count = pd.DataFrame({
-        'total_delta_FP': [total_FP_flipping],
-        'total_delta_FN': [total_FN_flipping],
-        'total_NA_to_0': [total_NAto0],
-        'total_NA_to_1': [total_NAto1],
-        'weighted_discordance_index_Omega': [omega_final]
-    })
-    df_total_flipping_count.to_csv(os.path.join(phylo_dir, "df_total_flipping_count.txt"), sep="\t", index=False)
-    
-    df_flip_counts_tree = calculate_flip_counts_per_site(df_bin_withNA3_for_flipping, df_phylogeny)
-    df_flip_counts_tree.to_csv(os.path.join(phylo_dir, "df_flipping_count_for_each_mut.txt"), sep="\t", index=True)
-    
     logger.info(f"The shape of final_cleaned_M_full.shape: {final_cleaned_M_full.shape}")
-    logger.info("")
-    
-    # ---- Step 9.5: Tree format and clone information ----
-    logger.info("STEP 9.5: Tree format and clone information")
-    logger.info("-" * 80)
-    
-    tree_dict = tree_to_dict(T_full)
-    with open(os.path.join(phylo_dir, 'final_cleaned_tree_node.json'), 'w') as f:
-        json.dump(tree_dict, f, indent=4)
-    
-    T_full.save_to_file(os.path.join(phylo_dir, 'final_cleaned_tree_node.txt'))
-    
-    mutation_clones = get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(T_full, I_attached)
-    df_barcode_clones = assign_clone_labels(M_full, mutation_clones)
-    df_barcode_clones.to_csv(os.path.join(phylo_dir, "df_barcode_clones_from_phylo_tree.csv"), sep=',', index=False)
-    
     logger.info("")
     
     

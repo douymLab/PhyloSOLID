@@ -49,18 +49,18 @@ library(ggplot2)
 df_features <- read.table(feature_file, header = TRUE, sep = "\t")
 df_stat <- read.table(ase_editing, header = TRUE, sep = "\t")
 
-# 创建 ASE_filter 和 RNAediting_filter 列
+# Create ASE_filter and RNAediting_filter columns
 df_stat$ASE_filter <- ifelse(df_stat$ase %in% c("Unknown", "False"), "pass", "fail")
 df_stat$RNAediting_filter <- ifelse(df_stat$editing == "False", "pass", "fail")
 
-# ASE/RNAediting: 合并两个数据框
+# ASE/RNAediting: merge the two data frames
 df_out <- merge(df_features, df_stat[, c("identifier", "ASE_filter", "RNAediting_filter")], by = "identifier", all.x = TRUE)
 
 # UMI_consistence_prop
 df_out$UMI_consistence_filter <- ifelse(df_out$alt_UMI_consistence_prop >= 0.85, "pass", "fail")
 
 
-# 保存结果
+# Save results
 write.table(df_out, outputfile, sep = "\t", row.names = FALSE, quote = FALSE)
 
 

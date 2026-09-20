@@ -30,6 +30,7 @@ from typing import Tuple, Dict, Any, Optional, List
 
 from src.mutation_integrator import *
 from src.scaffold_builder import *
+from src.phylo_export import export_cv_phylo_results
 
 
 logger = logging.getLogger(__name__)
@@ -1791,143 +1792,18 @@ def export_phylo_results_for_cv(
         
         T_full = copy.deepcopy(T_current)
         M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
-        
-        # ---- Step 2: Export I matrix with NA=3 ----
-        I_full_withNA3 = I_attached.replace({np.nan: 3}).astype(int)
-        I_full_withNA3.to_csv(
-            os.path.join(phylo_dir, f"I_full_withNA3_CV{cv_label}.txt"),
-            sep="\t"
-        )
-        
-        # ---- Step 3: Export M matrix ----
-        WriteTfile(
-            os.path.join(phylo_dir, f"M_full_basedPivots.filtered_sites_inferred_CV{cv_label}"),
-            M_full,
-            M_full.index.tolist(),
-            M_full.columns.tolist(),
-            judge="yes"
-        )
-        
-        # ---- Step 4: Clean and export final matrices ----
-        final_cleaned_M_full = M_full.loc[:, (M_full != 0).any(axis=0)]
-        final_cleaned_M_full = final_cleaned_M_full.loc[(final_cleaned_M_full != 0).any(axis=1)]
-        
-        kept_rows = final_cleaned_M_full.index
-        kept_cols = final_cleaned_M_full.columns
-        
-        final_cleaned_I_full_withNA3 = I_full_withNA3.loc[kept_rows, kept_cols]
-        
-        WriteTfile(
-            os.path.join(phylo_dir, f"final_cleaned_M_full_basedPivots.filtered_sites_inferred_CV{cv_label}"),
-            final_cleaned_M_full,
-            final_cleaned_M_full.index.tolist(),
-            final_cleaned_M_full.columns.tolist(),
-            judge="yes"
-        )
-        final_cleaned_I_full_withNA3.to_csv(
-            os.path.join(phylo_dir, f"final_cleaned_I_full_withNA3_for_circosPlot_CV{cv_label}.txt"),
-            sep="\t"
-        )
-        
-        # ---- Step 5: Identify flipping spots ----
-        df_bin_withNA3_for_flipping = final_cleaned_I_full_withNA3.copy()
-        df_phylogeny = final_cleaned_M_full.copy()
-        
-        # Compute flipping spots
-        false_negative_flipping_spots = df_bin_withNA3_for_flipping.apply(
-            lambda col: find_flipping_spots(col, df_phylogeny[col.name], 
-                                          condition_in_bin=0, condition_phylogeny=1)
-        )
-        false_positive_flipping_spots = df_bin_withNA3_for_flipping.apply(
-            lambda col: find_flipping_spots(col, df_phylogeny[col.name], 
-                                          condition_in_bin=1, condition_phylogeny=0)
-        )
-        NAto1_flipping_spots = df_bin_withNA3_for_flipping.apply(
-            lambda col: find_flipping_spots(col, df_phylogeny[col.name], 
-                                          condition_in_bin=3, condition_phylogeny=1)
-        )
-        NAto0_flipping_spots = df_bin_withNA3_for_flipping.apply(
-            lambda col: find_flipping_spots(col, df_phylogeny[col.name], 
-                                          condition_in_bin=3, condition_phylogeny=0)
-        )
-        
-        # Handle empty results
-        if false_negative_flipping_spots.empty:
-            false_negative_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-        if false_positive_flipping_spots.empty:
-            false_positive_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-        if NAto1_flipping_spots.empty:
-            NAto1_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-        if NAto0_flipping_spots.empty:
-            NAto0_flipping_spots = {col: [] for col in df_bin_withNA3_for_flipping.columns}
-        
-        # Build flipping spots dataframe
-        df_flipping_spots = pd.DataFrame({
-            'Mutation': df_bin_withNA3_for_flipping.columns,
-            'delta_FN_spots': [', '.join(false_negative_flipping_spots.get(col, [])) 
-                             for col in df_bin_withNA3_for_flipping.columns],
-            'delta_FP_spots': [', '.join(false_positive_flipping_spots.get(col, [])) 
-                             for col in df_bin_withNA3_for_flipping.columns],
-            'NA_to_1_spots': [', '.join(NAto1_flipping_spots.get(col, [])) 
-                            for col in df_bin_withNA3_for_flipping.columns],
-            'NA_to_0_spots': [', '.join(NAto0_flipping_spots.get(col, [])) 
-                            for col in df_bin_withNA3_for_flipping.columns]
-        })
-        df_flipping_spots.to_csv(
-            os.path.join(phylo_dir, f"df_flipping_spots_CV{cv_label}.txt"),
-            sep="\t", index=False
-        )
-        
-        # ---- Step 6: Calculate total flipping counts ----
-        total_FN_flipping = ((df_bin_withNA3_for_flipping == 0) & (df_phylogeny == 1)).sum().sum()
-        total_FP_flipping = ((df_bin_withNA3_for_flipping == 1) & (df_phylogeny == 0)).sum().sum()
-        total_NAto0 = ((df_bin_withNA3_for_flipping == 3) & (df_phylogeny == 0)).sum().sum()
-        total_NAto1 = ((df_bin_withNA3_for_flipping == 3) & (df_phylogeny == 1)).sum().sum()
-        
+
         fnfp_ratio = params.get('fnfp_ratio', 0.1)
-        omega_final = total_FP_flipping + fnfp_ratio * total_FN_flipping
-        
-        df_total_flipping_count = pd.DataFrame({
-            'total_delta_FP': [total_FP_flipping],
-            'total_delta_FN': [total_FN_flipping],
-            'total_NA_to_0': [total_NAto0],
-            'total_NA_to_1': [total_NAto1],
-            'weighted_discordance_index_Omega': [omega_final]
-        })
-        df_total_flipping_count.to_csv(
-            os.path.join(phylo_dir, f"df_total_flipping_count_CV{cv_label}.txt"),
-            sep="\t", index=False
+        cleaned = export_cv_phylo_results(
+            phylo_dir, T_full, M_full, I_attached, fnfp_ratio,
+            suffix=f"_CV{cv_label}", logger_obj=logger_obj,
         )
-        
-        # Save per-site flipping counts
-        df_flip_counts_tree = calculate_flip_counts_per_site(df_bin_withNA3_for_flipping, df_phylogeny)
-        df_flip_counts_tree.to_csv(
-            os.path.join(phylo_dir, f"df_flipping_count_for_each_mut_CV{cv_label}.txt"),
-            sep="\t", index=True
-        )
-        
-        # ---- Step 7: Tree format and clone information ----
-        # Export tree as JSON
-        tree_dict = tree_to_dict(T_full)
-        with open(os.path.join(phylo_dir, f'final_cleaned_tree_node_CV{cv_label}.json'), 'w') as f:
-            json.dump(tree_dict, f, indent=4)
-        
-        # Export tree as text
-        T_full.save_to_file(
-            os.path.join(phylo_dir, f'final_cleaned_tree_node_CV{cv_label}.txt')
-        )
-        
-        # Assign clone labels to cells
-        mutation_clones = get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(
-            T_full, I_attached
-        )
-        df_barcode_clones = assign_clone_labels(M_full, mutation_clones)
-        df_barcode_clones.to_csv(
-            os.path.join(phylo_dir, f"df_barcode_clones_from_phylo_tree_CV{cv_label}.csv"),
-            sep=',', index=False
-        )
-        
-        # ---- Step 8: Create summary file ----
+        omega_final = cleaned["omega"]
+        final_cleaned_M_full_ncells = cleaned["cells"]
+        final_cleaned_M_full_nmuts = cleaned["muts"]
+        total_FP_flipping = cleaned["total_delta_FP"]
+        total_FN_flipping = cleaned["total_delta_FN"]
+
         with open(os.path.join(phylo_dir, f"summary_CV{cv_label}.txt"), 'w') as f:
             f.write("=" * 80 + "\n")
             f.write(f"PhyloSOLID Results Summary - CV={cv_value}\n")
@@ -1935,8 +1811,8 @@ def export_phylo_results_for_cv(
             f.write(f"Sample ID: {sampleid}\n")
             f.write(f"CV threshold: {cv_value}\n")
             f.write(f"Omega (final): {omega_final:.4f}\n")
-            f.write(f"Total cells: {final_cleaned_M_full.shape[0]}\n")
-            f.write(f"Total mutations: {final_cleaned_M_full.shape[1]}\n")
+            f.write(f"Total cells: {final_cleaned_M_full_ncells}\n")
+            f.write(f"Total mutations: {final_cleaned_M_full_nmuts}\n")
             f.write(f"Total FP flipping: {total_FP_flipping}\n")
             f.write(f"Total FN flipping: {total_FN_flipping}\n")
             f.write(f"FN/FP weight (lambda): {fnfp_ratio}\n")

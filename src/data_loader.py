@@ -233,15 +233,15 @@ def derive_MCA_from_reads(
     num_workers: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    输入: df_reads (cells x muts)，每个元素可能是:
-      - "alt:total", "alt/total", "alt,total" 等 (alt/total格式)
-      - 单个 coverage (整数)
-      - 单个 maf (0~1 之间浮点数)
-      - NA, "." -> 覆盖度=0
-    返回:
-      - V: MAF(VAF, mutant/variant allele frequency) 矩阵 (float, NaN 表示无法计算)
-      - C: coverage 矩阵 (int) = total
-      - A: alt count 矩阵 (int) = alt
+    Input: df_reads (cells x muts). Each entry may be:
+      - "alt:total", "alt/total", "alt,total", etc. (alt/total format)
+      - a single coverage value (integer)
+      - a single MAF (float between 0 and 1)
+      - NA or "." -> coverage = 0
+    Returns:
+      - V: MAF (VAF, mutant/variant allele frequency) matrix (float; NaN if not computable)
+      - C: coverage matrix (int) = total
+      - A: alt-count matrix (int) = alt
     """
     cells = df_reads.index
     muts = df_reads.columns

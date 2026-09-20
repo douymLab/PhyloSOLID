@@ -1959,7 +1959,7 @@ def handle_perline(sample,
                    readLen,
                    barcode_dir,
                    prior,
-                   bedtools_available,  # 新增参数
+                   bedtools_available,  # additional argument
                    line):
     """
     This function is used to get the features for per site
@@ -2287,7 +2287,7 @@ def main():
                             readLen,
                             barcode_dir,
                             prior,
-                            bedtools_available  # 新增参数
+                            bedtools_available  # additional argument
                             )
     
     elif mode=="test":
@@ -2317,7 +2317,7 @@ def main():
                             readLen,
                             "", # barcode_dir
                             "", # prior
-                            bedtools_available  # 新增参数
+                            bedtools_available  # additional argument
                             )
 
     # print(lines)

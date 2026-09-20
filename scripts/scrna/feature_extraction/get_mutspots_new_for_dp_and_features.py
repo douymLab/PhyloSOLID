@@ -7,7 +7,7 @@ import os
 import pandas as pd
 import numpy as np
 from scipy import stats
-from scipy.stats import ttest_ind  # 用于差异分析的 T 检验
+from scipy.stats import ttest_ind  # T-test for differential analysis
 import multiprocessing
 from UMI_combine import calculate_UMI_combine_phred, get_most_candidate_allele
 from myutils import check_dir
@@ -229,9 +229,9 @@ def handle_barcode(barcode_file,pos=0,in_tissue_choose=0):
     return barcode_dict
 
 
-# 计算 whole genmoe 平均深度的函数
+# Function to calculate whole-genome average depth
 def process_chunk(args):
-    """处理BAM文件的一个染色体区域"""
+    """Process one chromosome region of a BAM file"""
     bam_file, barcodes, chrom = args
     coverage_sums = defaultdict(int)
     base_counts = defaultdict(int)
@@ -251,23 +251,23 @@ def process_chunk(args):
     return dict(coverage_sums), dict(base_counts)
 
 def calculate_coverage_by_barcode(bam_file, barcode_file, threads=None):
-    """并行计算每个barcode的平均覆盖度，基于染色体进行分块"""
+    """Calculate average coverage for each barcode in parallel, chunked by chromosome"""
     if not threads:
         threads = multiprocessing.cpu_count()
         
-    # 读取barcodes
+    # Read barcodes
     with open(barcode_file) as f:
         barcodes = set(line.strip() for line in f)
     
-    # 获取所有染色体名称
+    # Get all chromosome names
     bam = pysam.AlignmentFile(bam_file, "rb")
     chromosomes = bam.references
     bam.close()
     
-    # 分配染色体到不同的线程
+    # Assign chromosomes to different threads
     args = [(bam_file, barcodes, chrom) for chrom in chromosomes]
     
-    # 并行处理
+    # Parallel processing
     coverage_sums = defaultdict(int)
     base_counts = defaultdict(int)
     
@@ -280,7 +280,7 @@ def calculate_coverage_by_barcode(bam_file, barcode_file, threads=None):
             for barcode, count in chunk_counts.items():
                 base_counts[barcode] += count
     
-    # 计算平均覆盖度
+    # Calculate average coverage
     avg_coverage = {}
     for barcode in barcodes:
         if base_counts[barcode] > 0:
@@ -291,54 +291,54 @@ def calculate_coverage_by_barcode(bam_file, barcode_file, threads=None):
     return avg_coverage
 
 
-# 更新 features 文件的函数，直接覆盖原文件
+# Function to update the features file, overwriting the original file
 def update_features_file_inplace(features_file, stats_df):
     """
-    将新计算的 features 直接更新到已有的 features 文件上，添加新的列。
+    Update newly computed features onto the existing features file by adding new columns.
     """
-    # 加载 features 文件和 stats 文件
-    features_df = pd.read_csv(features_file, sep="\t", header=0)  # 加载 features_file
+    # Load features file and stats file
+    features_df = pd.read_csv(features_file, sep="\t", header=0)  # Load features_file
     stats_df
     
-    # 打印列名以调试
+    # Print column names for debugging
     print("Features file columns:", features_df.columns)
     print("Stats file columns:", stats_df.columns)
     
-    # 确保列名一致：`#identifier` -> `barcode`
+    # Ensure column names are consistent: `#identifier` -> `barcode`
     features_df.rename(columns={"#identifier": "identifier"}, inplace=True)
     stats_df.rename(columns={"identifier": "identifier"}, inplace=True)
     
-    # 去除列名中的空格
+    # Strip whitespace from column names
     features_df.columns = features_df.columns.str.strip()
     stats_df.columns = stats_df.columns.str.strip()
     
-    # 检查是否包含 identifier 列
+    # Check whether the identifier column is present
     if "identifier" not in features_df.columns or "identifier" not in stats_df.columns:
         raise KeyError("Both files must contain a 'identifier' column for merging.")
     
-    # 合并数据
+    # Merge data
     updated_features_df = pd.merge(features_df, stats_df, how="left", on="identifier")
     
-    # 重命名回去，以保持一致性 （不要加 "#"）
+    # Rename back for consistency (do not add "#")
     # updated_features_df.rename(columns={"identifier": "#identifier"}, inplace=True)
     
-    # 直接覆盖原始文件
+    # Overwrite the original file
     feature_out = features_file.replace('.feature.txt', '.feature_depth.txt')
     updated_features_df.to_csv(feature_out, sep="\t", index=False)
     print(f"Features file updated in place: {feature_out}")
 
 
-# 添加计算差异分析的函数（计算）
+# Function for differential analysis (computation)
 def process_identifier(identifier, output_folder, wg_data):
     """
-    处理单个 identifier 的计算过程
+    Process computation for a single identifier
     """
     file_name = identifier + ".mut.spots.txt"
     file_path = os.path.join(output_folder, file_name)
     # generate data frame
     data = pd.read_csv(file_path, sep="\t", header=None, names=["barcode", "total_dp", "alt_dp"])
     
-    # 检查文件是否为空或不存在
+    # Check whether the file is empty or missing
     if data.empty:
         print(f"Warning: {identifier} has no reads. Skipping calculate for this identifier.")
         columns = [
@@ -372,53 +372,53 @@ def process_identifier(identifier, output_folder, wg_data):
             'norm_ref_dp_in_pseudobulk', 'norm_alt_dp_in_pseudobulk',
             'norm_total_dp_in_pseudobulk'
         ]
-        # 按列名分类填充列
+        # Fill columns grouped by column-name suffix
         zero_fill_suffixes = ('_avg', '_max', '_min', '_number', '_fraction', '_in_pseudobulk')
         nan_fill_suffixes = ('_mean_diff', '_t_value', '_p_value')
         zero_fill_columns = [col for col in columns if col.endswith(zero_fill_suffixes)]
         nan_fill_columns = [col for col in columns if col.endswith(nan_fill_suffixes)]
-        # 创建无 reads 的 identifier 的 DataFrame 并且填充
+        # Create and fill a DataFrame for identifiers with no reads
         flattened_results = pd.DataFrame(columns=columns)
-        # 添加一行空数据
-        flattened_results.loc[0, :] = np.nan  # 先填充 NaN 避免 dtype 变更
-        # 赋值 identifier
+        # Add one empty row
+        flattened_results.loc[0, :] = np.nan  # Fill with NaN first to avoid dtype changes
+        # Assign identifier
         flattened_results.loc[0, 'identifier'] = identifier
-        # 填充 0 和 NaN
+        # Fill with 0 and NaN
         flattened_results[zero_fill_columns] = flattened_results[zero_fill_columns].fillna(0)
         flattened_results[nan_fill_columns] = flattened_results[nan_fill_columns].fillna(np.nan)
     else:
-        # 转换数据类型为数值类型
+        # Convert data types to numeric
         data["total_dp"] = pd.to_numeric(data["total_dp"], errors='coerce')
         data["alt_dp"] = pd.to_numeric(data["alt_dp"], errors='coerce')
         
-        # 检查是否存在无法转换的值
+        # Check for values that cannot be converted
         if data["total_dp"].isnull().any() or data["alt_dp"].isnull().any():
             print(f"Warning: NaN values found in {file_path}. These rows will be ignored.")
             data = data.dropna(subset=["total_dp", "alt_dp"])
         
-        # 计算 ref_dp
+        # Calculate ref_dp
         data["ref_dp"] = data["total_dp"] - data["alt_dp"]
-        # 计算 vaf
+        # Calculate vaf
         data["vaf"] = data["alt_dp"] / data["total_dp"]
         
-        # 1. 合并 data 和 wg_data
+        # 1. Merge data and wg_data
         merged_data = pd.merge(data, wg_data, on='barcode', how='left')
         
-        # 检查是否有缺失的 average_coverage
+        # Check for missing average_coverage
         missing_coverage = merged_data['average_coverage'].isnull().sum()
         if missing_coverage > 0:
-            print(f"警告: 有 {missing_coverage} 个 barcode 在 wg_data 中未找到对应的 average_coverage。")
+            print(f"Warning: {missing_coverage} barcodes have no matching average_coverage in wg_data.")
         
-        # 2. 归一化 dp 列
+        # 2. Normalize dp columns
         dp_columns = ['ref_dp', 'alt_dp', 'total_dp']
         for col in dp_columns:
             merged_data[f'norm_{col}'] = merged_data[col] / merged_data['average_coverage']
         
-        # 根据 alt_dp 将数据分为 unmutant 和 mutant 两组
+        # Split data into unmutant and mutant groups by alt_dp
         unmutant = merged_data[merged_data['alt_dp'] == 0]
         mutant = merged_data[merged_data['alt_dp'] > 0]
         
-        # 4. 计算 unmutant 和 mutant 组的统计量
+        # 4. Compute statistics for unmutant and mutant groups
         statistics_list = ['ref_dp', 'alt_dp', 'total_dp', 'vaf', 'norm_ref_dp', 'norm_alt_dp', 'norm_total_dp']
         unmutant_avg = unmutant[statistics_list].mean()
         mutant_avg = mutant[statistics_list].mean()
@@ -427,34 +427,34 @@ def process_identifier(identifier, output_folder, wg_data):
         unmutant_min = unmutant[statistics_list].min()
         mutant_min = mutant[statistics_list].min()
         
-        # 5. 初始化结果字典
+        # 5. Initialize results dictionary
         results = {}
         
-        # 6. 遍历每个指标，计算均值差异、t 值和 p 值
+        # 6. For each metric, compute mean difference, t-value, and p-value
         for column in statistics_list:
-            # 获取两个组的数据
+            # Get data for both groups
             unmutant_data = unmutant[column]
             mutant_data = mutant[column]
             
-            # 执行独立样本 t 检验（Welch's t-test）-> Mann-Whitney U test
+            # Perform independent t-test (Welch's t-test) -> Mann-Whitney U test
             # t_stat, p_val = stats.ttest_ind(mutant_data, unmutant_data, equal_var=False)
             # t_stat, p_val = stats.mannwhitneyu(mutant_data, unmutant_data, alternative='greater')
-            # 检查数据是否为空或全为零
+            # Check whether data is empty or all zeros
             if len(unmutant_data) == 0 or len(mutant_data) == 0:
                 print(f"Warning: No data available for {column}. Skipping Mann-Whitney U test.")
-                t_stat, p_val = np.nan, np.nan  # 如果没有数据，设置 t 值和 p 值为 NaN
+                t_stat, p_val = np.nan, np.nan  # If no data, set t-value and p-value to NaN
             elif unmutant_data.sum() == 0 or mutant_data.sum() == 0:
-                # 如果其中一个组的总和为0，跳过检验
+                # If one group sums to 0, skip the test
                 print(f"Warning: One group has all zero values for {column}. Skipping Mann-Whitney U test.")
                 t_stat, p_val = np.nan, np.nan
             else:
-                # 执行 Mann-Whitney U 检验
+                # Perform Mann-Whitney U test
                 t_stat, p_val = stats.mannwhitneyu(mutant_data, unmutant_data, alternative='greater')
             
-            # 计算均值差异
+            # Calculate mean difference
             mean_diff = mutant_avg[column] - unmutant_avg[column]
             
-            # 将所有统计量存储到结果字典中
+            # Store all statistics in the results dictionary
             results[column] = {
                 'unmutant_avg': unmutant_avg[column],
                 'mutant_avg': mutant_avg[column],
@@ -467,23 +467,23 @@ def process_identifier(identifier, output_folder, wg_data):
                 'p_value': p_val
             }
         
-        # 将结果字典转换为 DataFrame，并转置以便更好地展示
+        # Convert results dictionary to DataFrame and transpose for display
         results_df = pd.DataFrame(results).T
         results_df['p_value'] = np.log10(results_df['p_value'] + 1e-300)
         
-        # 7. 扁平化 results_df，创建新的列名 'columnname_rowname'
+        # 7. Flatten results_df and create new column names 'columnname_rowname'
         flattened_results = results_df.unstack()
         flattened_results.index = [f"{col}_{row}" for row, col in flattened_results.index]
-        flattened_results = flattened_results.to_frame().T  # 转置，使 identifier 为一行
+        flattened_results = flattened_results.to_frame().T  # Transpose so identifier is one row
         
-        # 8. 添加 identifier 列
+        # 8. Add identifier column
         flattened_results['identifier'] = identifier
         
-        # 9. 重新排列列，使 identifier 在最前面
+        # 9. Reorder columns so identifier comes first
         cols = ['identifier'] + [col for col in flattened_results.columns if col != 'identifier']
         flattened_results = flattened_results[cols]
         
-        # 10. cellnum 计数
+        # 10. Count cell numbers
         flattened_results['mutant_cell_number'] = len(mutant)
         flattened_results['mutant_cell_fraction'] = len(mutant)/len(merged_data)
         flattened_results['mutant_and_unmutant_cell_number'] = len(data)
@@ -499,15 +499,15 @@ def process_identifier(identifier, output_folder, wg_data):
     
     return flattened_results
 
-# 添加计算差异分析的函数（并行）
+# Function for differential analysis (parallel)
 def calculate_spot_statistics_parallel(output_folder, stats_file, identifier_list):
     """
-    使用并行计算处理所有 identifier 的统计分析
+    Process statistical analysis for all identifiers in parallel
     """
-    # 读取 whole_genome_average_depth 文件
+    # Read whole_genome_average_depth file
     wg_data = pd.read_csv(output_folder+"/whole_genome_average_depth.mut.spots.txt", sep="\t", header=0)
     
-    # 使用 ProcessPoolExecutor 并行处理所有 identifier
+    # Process all identifiers in parallel with ProcessPoolExecutor
     with ProcessPoolExecutor() as executor:
         futures = [executor.submit(process_identifier, identifier, output_folder, wg_data) for identifier in identifier_list]
         
@@ -515,7 +515,7 @@ def calculate_spot_statistics_parallel(output_folder, stats_file, identifier_lis
         for future in as_completed(futures):
             all_results.append(future.result())
     
-    # 合并所有结果
+    # Merge all results
     final_results_df = pd.concat(all_results, ignore_index=True)
     final_results_df.to_csv(stats_file, sep="\t", index=False)
     print(f"Spot statistics written to: {stats_file}")
@@ -530,7 +530,7 @@ def main():
     outpath = args.outdir
     check_dir(outpath)
     
-    # 加载 barcode 列表
+    # Load barcode list
     if args.barcode_file != "" and os.path.exists(args.barcode_file):
         barcode_list = pd.read_csv(args.barcode_file, sep="\t", header=None, names=["barcode"])["barcode"].tolist()
     else:
@@ -538,7 +538,7 @@ def main():
     
     bam_file = args.bam
     
-    # Step 1: 计算 whole genome 的 average depth
+    # Step 1: Calculate whole-genome average depth
     average_depth_file = os.path.join(outpath, "whole_genome_average_depth.mut.spots.txt")
     coverage = calculate_coverage_by_barcode(bam_file, args.barcode_file, args.threads)
     
@@ -547,7 +547,7 @@ def main():
         for barcode, avg_cov in coverage.items():
             f.write(f"{barcode}\t{avg_cov:.2f}\n")
     
-    # Step 2: 循环处理每个 identifier
+    # Step 2: Loop over each identifier
     for identifier in identifier_list:
         out_file = outpath + "/" + identifier + ".mut.spots.txt"
         with open(out_file, "w") as f:
@@ -558,16 +558,16 @@ def main():
                 countsum = sum(out_info[onekey])
                 f.write(f'{onekey}\t{countsum}\t{out_info[onekey]["ATCG".index(alt)]}\n')
     
-    # Step 3: 统计输出文件夹的 mutant/unmutant 指标
+    # Step 3: Compute mutant/unmutant metrics for the output folder
     stats_file = outpath + "/spot_statistics_summary.txt"
     stats_df_all_identifiers = calculate_spot_statistics_parallel(outpath, stats_file, identifier_list)
     
-    # Step 4: 更新 features 文件（如果提供了 features 文件参数）
+    # Step 4: Update the features file (if a features file argument is provided)
     if args.features:
         update_features_file_inplace(args.features, stats_df_all_identifiers)
 
 
-## 参数解析器
+## Argument parser
 parser = argparse.ArgumentParser()
 parser.add_argument("--bam", required=True, help="bam_file")
 parser.add_argument("--CBtag", required=False, default="CB", help="CB tag")
@@ -583,9 +583,3 @@ args = parser.parse_args()
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
-

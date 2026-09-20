@@ -1,0 +1,58 @@
+feature_extraction:
+  cell_num: 22
+  classifier_features: null
+  outputs:
+    depth_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.average_depth.txt
+    posterior_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.unphased_posterior.txt
+    reads_bed: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.unphased_reads.bed
+    sample_name_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/sample_name.txt
+    scid_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/treeinput_scid_barcode.txt
+    staged_bam_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/bam_links
+    tree_input_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.tree_input.txt
+  posterior_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.unphased_posterior.txt
+  reads_bed: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.unphased_reads.bed
+  sample_id: demo_scdna
+  scid_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/treeinput_scid_barcode.txt
+  status: completed
+  step_name: 01_features
+  tree_input_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features/demo_scdna.tree_input.txt
+  with_bulk: 'no'
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/01_features
+summary:
+  data_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data
+  sample_id: demo_scdna
+  steps_completed:
+  - feature_extraction
+  - tree_input
+  - tree_building
+  tree_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building/PhyloSOLID/celltree.newick
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna
+tree_building:
+  cellnum: 22
+  outputs:
+    cfmatrix: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building/05_final_results/phylo/final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix
+    phylo_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building/05_final_results/phylo
+    results_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building
+    tree_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building/PhyloSOLID/celltree.newick
+  results_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building
+  sample_id: demo_scdna
+  status: completed
+  step_name: 03_tree_building
+  tree_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building/PhyloSOLID/celltree.newick
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/03_tree_building
+tree_input:
+  cellnum: 22
+  data_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data
+  outputs:
+    data.allele_count.txt: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data/data.allele_count.txt
+    data.likelihood_mut_matrix.txt: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data/data.likelihood_mut_matrix.txt
+    data.likelihood_unmut_matrix.txt: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data/data.likelihood_unmut_matrix.txt
+    data.posterior_matrix.txt: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data/data.posterior_matrix.txt
+    data_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data
+    features.preprocess_items.txt: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/data/features.preprocess_items.txt
+    tree_input_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/demo_scdna.tree_input.txt
+  sample_id: demo_scdna
+  status: completed
+  step_name: 02_treeinput
+  tree_input_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput/demo_scdna.tree_input.txt
+  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scdna/output/demo_scdna/02_treeinput

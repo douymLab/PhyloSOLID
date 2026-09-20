@@ -20,7 +20,7 @@ import statsmodels.stats.multitest as smm
 import sys
 import os
 
-# 添加你的项目根目录路径到 sys.path
+# Add the project root to sys.path
 sys.path.insert(0, "/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/pre-classifier/scRNA/scripts/spatial-lineager")
 
 from utils import calculate_rbc_for_paired_wilcoxon, check_dir, combine_info_from_cigar, get_chr_size, get_indel_info, handle_p_value_log10, handle_posname, judge_pos_in_indel, do_wilicox_sum_test, round_to_nearest_bin, wilcoxon_with_rbc, calculate_UMI_combine_phred, get_most_candidate_allele, handle_pos, handle_quality_matrix, handle_seq
@@ -75,7 +75,7 @@ def check_UMIconsistence_for_each_geno(count_dict,threshold=1):
 
 
 def robust_standardization(data):
-    """使用中位数和IQR对数据进行标准化"""
+    """Standardize data using the median and IQR."""
     median = np.median(data)
     q1 = np.percentile(data, 25)
     q3 = np.percentile(data, 75)
@@ -84,28 +84,28 @@ def robust_standardization(data):
     return standardized_data
 
 def permutation_test(list1, list2, num_permutations=1000):
-    """Permutation Test 用于评估两组数据的差异"""
-    # 计算原始的均值差异
+    """Permutation test for assessing differences between two groups."""
+    # Observed mean difference
     observed_diff = np.mean(list1) - np.mean(list2)
     
-    # 合并两组数据进行置换
+    # Pool the two groups for permutation
     combined_data = np.concatenate([list1, list2])
     count = 0
     
     for _ in range(num_permutations):
-        # 打乱数据并重新分成两组
+        # Shuffle and re-split into two groups
         np.random.shuffle(combined_data)
         new_list1 = combined_data[:len(list1)]
         new_list2 = combined_data[len(list1):]
         
-        # 计算新的均值差异
+        # Permuted mean difference
         permuted_diff = np.mean(new_list1) - np.mean(new_list2)
         
-        # 计算置换差异大于等于原始差异的次数
+        # Count permutations with an absolute difference at least as large as the observed difference
         if np.abs(permuted_diff) >= np.abs(observed_diff):
             count += 1
     
-    # 计算 p 值
+    # Compute the p-value
     p_value = count / num_permutations
     return observed_diff, p_value
 
@@ -532,16 +532,16 @@ def handel_identifier(bam_file,run_type,readLen,outdir,bins,prior,unique_identif
     current_directory = os.path.dirname(os.path.abspath(__file__))
     compare_pl_path=os.path.join(os.path.dirname(current_directory),"others/compare_files.pl")
     
-    # 从 unique_identifier 中提取原始 identifier（去掉 _行号 后缀）
-    # 例如: "chr5_32600000_G_C_123" -> "chr5_32600000_G_C"
+    # Extract the original identifier from unique_identifier (drop the _rowindex suffix)
+    # Example: "chr5_32600000_G_C_123" -> "chr5_32600000_G_C"
     parts = unique_identifier.split('_')
-    # 最后一部分是行号，去掉它
+    # The last part is the row index; drop it
     original_identifier = '_'.join(parts[:-1])
     chrom,pos,ref,alt = original_identifier.split("_")
     only_pos_identifier="\t".join([chrom,str(pos),chrom,str(pos)])
 
     features = _global_features[unique_identifier]
-    # 将 features 中的 identifier 替换回原始值，用于输出
+    # Restore the original identifier in features for output
     features['identifier'] = original_identifier
 
     baseq_s,baseq_p,baseq_rbc, ref_baseq1b_s,ref_baseq1b_p,ref_baseq1b_rbc, alt_baseq1b_s,alt_baseq1b_p,alt_baseq1b_rbc, \
@@ -683,7 +683,7 @@ def handel_identifier(bam_file,run_type,readLen,outdir,bins,prior,unique_identif
         base_data['fref']=fref
         base_data['falt']=falt
     
-    # 使用原始 identifier 作为输出
+    # Use the original identifier in the output
     merged_data = {**{'identifier': original_identifier}, **features, **base_data}
     # print(merged_data['multi_mapper_odds'])
     return result_dict, merged_data
@@ -691,18 +691,18 @@ def handel_identifier(bam_file,run_type,readLen,outdir,bins,prior,unique_identif
 
 def main():
     # identifier_list=
-    _global_features = None  # 占位符
+    _global_features = None  # placeholder
     features=pd.read_csv(args.features,sep="\t")
     
-    # 保存所有原始行（包括重复），按行号作为唯一标识
+    # Keep all original rows (including duplicates), using the row index as a unique key
     features['_original_idx'] = range(len(features))
     features['_unique_id'] = features['identifier'] + '_' + features['_original_idx'].astype(str)
     features.index = features['_unique_id']
     
-    # 创建 features_dict，key 是 unique_id，value 是原始数据
+    # Build features_dict: key is unique_id, value is the original row
     features_dict = features.to_dict(orient='index')
     
-    # identifier_list 使用 unique_id
+    # identifier_list uses unique_id
     identifier_list = features['_unique_id'].tolist()
     
     def init_worker(features_data):

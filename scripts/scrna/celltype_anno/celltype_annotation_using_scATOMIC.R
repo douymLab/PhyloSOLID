@@ -38,7 +38,7 @@ parseobj = OptionParser(option_list=option_list,
 opt = parse_args(parseobj)
 
 # library(SingleR)
-# 使用HumanPrimaryCellAtlasData()函数加载参考数据集
+# Load the reference dataset using HumanPrimaryCellAtlasData()
 #hpca.se <- HumanPrimaryCellAtlasData()
 library(Seurat)
 # library(anndata)
@@ -78,7 +78,7 @@ mat_sample <- mat_sample[, names(which(pct_mt < 25))]
 mat_sample <- mat_sample[, intersect(names(which(nFeatureRNA > 500)), colnames(mat_sample))]
 # a <- mat_sample
 
-### 查看数据结构
+### Inspect the data structure
 str(mat_sample)
 # Formal class 'dgCMatrix' [package "Matrix"] with 6 slots
 #   ..@ i       : int [1:15041955] 23 36 60 62 70 73 80 83 86 97 ...
@@ -99,7 +99,7 @@ head(mat_sample@Dimnames[[1]])
 
 
 ##### convert Ensembl ID (such as ENSG00000243485) into Gene Symbol (such as FAM138A)
-# ### 获取 merged mapping ids
+# ### Get merged mapping ids
 # # load manual data
 # mapping_manual <- read.table("/storage/douyanmeiLab/wuxing/data/0_refGenome/gene_id2name_grh38.txt", sep="\t", header=TRUE)
 # colnames(mapping_manual) <- c("ENSEMBL", "SYMBOL")
@@ -113,58 +113,58 @@ head(mat_sample@Dimnames[[1]])
 #                                       columns = "SYMBOL")
 # dim(mapping_hsdb)
 # # [1] 36825     2
-# # 合并两个数据框
+# # Merge the two data frames
 # merged_mapping <- full_join(mapping_manual, mapping_hsdb, by = "ENSEMBL", suffix = c("_manual", "_hsdb"))
-# # 填充 SYMBOL，按照条件选择
+# # Fill SYMBOL based on conditions
 # merged_mapping$SYMBOL <- ifelse(
-#   # 如果两个 SYMBOL 都是 NA 或空字符串，结果为 NA
+#   # If both SYMBOLs are NA or empty strings, the result is NA
 #   is.na(merged_mapping$SYMBOL_manual) & is.na(merged_mapping$SYMBOL_hsdb) | 
 #     merged_mapping$SYMBOL_manual == "" & merged_mapping$SYMBOL_hsdb == "", 
 #   NA, 
   
-#   # 如果 SYMBOL_manual 是 NA 或空字符串，保留 SYMBOL_hsdb
+#   # If SYMBOL_manual is NA or empty string, keep SYMBOL_hsdb
 #   ifelse(
 #     is.na(merged_mapping$SYMBOL_manual) | merged_mapping$SYMBOL_manual == "", 
 #     merged_mapping$SYMBOL_hsdb, 
     
-#     # 如果 SYMBOL_hsdb 是 NA 或空字符串，保留 SYMBOL_manual
+#     # If SYMBOL_hsdb is NA or empty string, keep SYMBOL_manual
 #     ifelse(
 #       is.na(merged_mapping$SYMBOL_hsdb) | merged_mapping$SYMBOL_hsdb == "", 
 #       merged_mapping$SYMBOL_manual, 
       
-#       # 如果两个都不是 NA 或空字符串，优先保留 SYMBOL_hsdb
+#       # If neither is NA or empty string, prefer SYMBOL_hsdb
 #       merged_mapping$SYMBOL_hsdb
 #     )
 #   )
 # )
-# # 只保留有 ENSEMBL 和 SYMBOL 两列
+# # Keep only the ENSEMBL and SYMBOL columns
 # merged_mapping <- merged_mapping %>%
 #   select(ENSEMBL, SYMBOL)
 # dim(merged_mapping)
 # # [1] 71159     2
 # write.table(merged_mapping, str_c(outputpath, "/merged_mapping_geneNames_for_human.txt"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
 merged_mapping <- read.table("/storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/Benchmark/data_10xCI792/cellanno/results_interact/merged_mapping_geneNames_for_human.txt", sep="\t", header=TRUE)
-# 计算 ENSEMBL 列中 NA 或空字符串的个数
+# Count NA or empty strings in the ENSEMBL column
 ensembl_na_empty_count <- sum(is.na(merged_mapping$ENSEMBL) | merged_mapping$ENSEMBL == "")
-# 计算 SYMBOL 列中 NA 或空字符串的个数
+# Count NA or empty strings in the SYMBOL column
 symbol_na_empty_count <- sum(is.na(merged_mapping$SYMBOL) | merged_mapping$SYMBOL == "")
-# 输出结果
-cat("ENSEMBL 列中 NA 或空字符串的个数: ", ensembl_na_empty_count, "\n")
-# ENSEMBL 列中 NA 或空字符串的个数:  0 
-cat("SYMBOL 列中 NA 或空字符串的个数: ", symbol_na_empty_count, "\n")
-# SYMBOL 列中 NA 或空字符串的个数:  21757 
-# 计算 SYMBOL 列中非 NA 且非空字符串的个数
+# Print results
+cat("Number of NA or empty strings in the ENSEMBL column: ", ensembl_na_empty_count, "\n")
+# Number of NA or empty strings in the ENSEMBL column:  0 
+cat("Number of NA or empty strings in the SYMBOL column: ", symbol_na_empty_count, "\n")
+# Number of NA or empty strings in the SYMBOL column:  21757 
+# Count non-NA and non-empty strings in the SYMBOL column
 symbol_non_na_empty_count <- sum(!is.na(merged_mapping$SYMBOL) & merged_mapping$SYMBOL != "")
-# 输出结果
-cat("SYMBOL 列中非 NA 且非空字符串的个数: ", symbol_non_na_empty_count, "\n")
-# SYMBOL 列中非 NA 且非空字符串的个数:  49402 
+# Print results
+cat("Number of non-NA and non-empty strings in the SYMBOL column: ", symbol_non_na_empty_count, "\n")
+# Number of non-NA and non-empty strings in the SYMBOL column:  49402 
 
-### 把gene Ensembl_ID(ENSG...)转换成gene_symbol, 需要转换的Ensembl_ID 保留前15位
-# 1. 创建映射关系
+### Convert gene Ensembl_ID (ENSG...) to gene_symbol; keep the first 15 characters of Ensembl_IDs to convert
+# 1. Create the mapping
 gene_map <- setNames(merged_mapping$SYMBOL, merged_mapping$ENSEMBL)
-# 2. 将 'mat_sample' 的行名替换为对应的基因符号
+# 2. Replace rownames of 'mat_sample' with the corresponding gene symbols
 rownames(mat_sample) <- gene_map[rownames(mat_sample)]
-# 3. 查看更新后的行名
+# 3. Inspect the updated rownames
 length(rownames(mat_sample))
 # [1] 36601
 sum(rownames(mat_sample) != "" & !is.na(rownames(mat_sample)))
@@ -172,40 +172,40 @@ sum(rownames(mat_sample) != "" & !is.na(rownames(mat_sample)))
 sum(is.na(rownames(mat_sample)) | rownames(mat_sample) == "")
 # [1] 10146
 
-# 过滤掉基因名为 NA 或空字符串的行
+# Filter out rows whose gene names are NA or empty strings
 mat_sample <- mat_sample[!is.na(rownames(mat_sample)) & rownames(mat_sample) != "", ]
 sum(rownames(mat_sample) != "" & !is.na(rownames(mat_sample)))
 # [1] 26455
 sum(is.na(rownames(mat_sample)) | rownames(mat_sample) == "")
 # [1] 0
 
-### 为 gene name 去重
-# 读取原始行名
+### Deduplicate gene names
+# Read original rownames
 original_rownames <- rownames(mat_sample)
-# 创建一个副本用于存储唯一化的行名
+# Create a copy to store uniquified rownames
 unique_rownames <- original_rownames
-# 记录已经遇到的行名及其出现次数
+# Record rownames already seen and their occurrence counts
 name_counts <- list()
-# 遍历所有行名
+# Iterate over all rownames
 for (i in seq_along(unique_rownames)) {
   name <- unique_rownames[i]
-  # 仅对非 NA 且非空字符串的行名进行处理
+  # Process only rownames that are non-NA and non-empty
   if (!is.na(name) && name != "") {
     if (name %in% names(name_counts)) {
-      # 计数加 1，并修改名称
+      # Increment the count and modify the name
       name_counts[[name]] <- name_counts[[name]] + 1
       unique_rownames[i] <- paste0(name, ".", name_counts[[name]])
     } else {
-      # 第一次遇到该名称，初始化计数
+      # First time seeing this name; initialize the count
       name_counts[[name]] <- 0
     }
   }
 }
-# 重新赋值给矩阵
+# Reassign rownames to the matrix
 rownames(mat_sample) <- unique_rownames
-sum(duplicated(rownames(mat_sample)))  # 结果应为 0
+sum(duplicated(rownames(mat_sample)))  # Result should be 0
 
-### 查看数据结构
+### Inspect the data structure
 str(mat_sample)  
 # Formal class 'dgCMatrix' [package "Matrix"] with 6 slots
 #   ..@ i       : int [1:14672689] 11 20 40 42 50 53 57 59 62 71 ...
@@ -322,7 +322,7 @@ dim(df_metadata)
 ## raw cell type
 df_metadata <- df_metadata %>%
   mutate(celltype = str_replace_all(scATOMIC_pred, " ", "_"))
-df_metadata$celltype <- gsub("/", "_", df_metadata$celltype)  # 替换 "/" 为 "_"
+df_metadata$celltype <- gsub("/", "_", df_metadata$celltype)  # Replace "/" with "_"
 ## output for SComatic
 df_anno_for_scomatic <- df_metadata[, c("cell_names", "celltype")]
 dim(df_anno_for_scomatic)

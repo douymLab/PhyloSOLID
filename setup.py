@@ -27,13 +27,13 @@ setup(
     long_description_content_type='text/markdown',
     url='https://github.com/douymLab/PhyloSOLID',
     
-    packages=find_packages(),  # 注意：这里改回 find_packages() 包含 cli 和 src
-    package_dir={'': '.'},      # 项目根目录
+    packages=find_packages(),  # include cli and src
+    package_dir={'': '.'},      # project root
     
     include_package_data=True,
     package_data={
         '': ['scripts/**/*.sh', 'scripts/**/*.R', 'scripts/**/*.py', 'config/*.yaml', 'config/*.template'],
-        'src': ['**/*.py'],     # 确保包含 run_phylosilid_fullTree_binput.py
+        'src': ['**/*.py'],     # include run_phylosilid_fullTree_binput.py
     },
     
     python_requires='>=3.7',

@@ -1,0 +1,38 @@
+name: phylosolid_vis
+channels:
+  - conda-forge
+  - bioconda
+  - r
+  - defaults
+dependencies:
+  - r-base=4.3
+  - r-essentials
+  - r-devtools
+  - r-remotes
+  - r-ggplot2
+  - r-ape
+  - r-circlize
+  - r-cowplot
+  - r-dplyr
+  - r-ggforce
+  - r-ggnewscale
+  - r-ggridges
+  - r-ggtext
+  - r-gridextra
+  - r-gsubfn
+  - r-paletteer
+  - r-pals
+  - r-patchwork
+  - r-pheatmap
+  - r-phylogram
+  - r-rcolorbrewer
+  - r-scales
+  - r-stringr
+  - r-svglite
+  - r-tibble
+  - r-tidyr
+  - r-uuid
+  - bioconductor-complexheatmap
+  - bioconductor-ggtree
+  - bioconductor-ggtreeextra
+  - bioconductor-treeio

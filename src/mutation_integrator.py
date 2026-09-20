@@ -84,9 +84,9 @@ DEFAULT_PARAMS = {
 # -------------------------
 
 def count_list(mutation_series):
-    # 替换 NaN 为 'NA'
+    # Replace NaN with 'NA'
     mutation_series = mutation_series.fillna('NA')
-    # 计数
+    # Count values
     return dict(Counter(mutation_series))
 
 def log_sum_exp(log_probs):
@@ -373,7 +373,7 @@ def exp_normalize(log_prob):
     return y / y.sum()
 
 def normalize_columns(llmut_col, llunmut_col):
-    # 转换为 log 格式
+    # Convert to log format
     log_llmut_col = llmut_col
     log_llunmut_col = llunmut_col
     paired_likelihoods_prod = np.vstack([log_llmut_col, log_llunmut_col]).T
@@ -418,7 +418,7 @@ def intersect_is_self(v1, v0):
         return False
 
 def get_allBranchSet_as_dict(df_phylogeny):
-    # 强制每一列的元素转为字符串并拼接
+    # Force each column to strings and concatenate
     df = df_phylogeny.apply(lambda col: ''.join(map(str, col.astype(int))), axis=0)
     content_dict = defaultdict(list)
     for index, content in df.items():
@@ -2377,7 +2377,7 @@ def compute_intersection_based_penalty(new_mut, position, intersection_nodes, M_
 def compute_hierarchy_penalty(new_mut, position, M_current, I_selected, parent_dict, 
                             na_ratio, mut_ratio, actual_na_flip_ratio):
     """
-    Compute hierarchy合理性 penalty, considering actual NA flips
+    Compute hierarchy-consistency penalty, considering actual NA flips
     """
     hierarchy_penalty = 0
     placement_type = position['placement_type']
@@ -2401,7 +2401,7 @@ def compute_hierarchy_penalty(new_mut, position, M_current, I_selected, parent_d
                     break
             
             if children_intersection:
-                # Adjust hierarchy不合理 penalty based on actual flip ratio
+                # Adjust hierarchy-inconsistency penalty based on actual flip ratio
                 flip_multiplier = 1.0 + actual_na_flip_ratio
                 hierarchy_penalty += np.log(len(anchor_children) + 1) * 0.4 * flip_multiplier
     
@@ -3055,6 +3055,34 @@ def find_ordered_branch_groups_for_rehanged_mutations_with_keys_as_earlist_relax
     return result_dict
 
 
+
+
+def prune_mutations_from_tree(root: TreeNode, mutations_to_remove) -> TreeNode:
+    """
+    Remove mutations from a TreeNode tree, collapsing empty nodes.
+
+    Compound node names (mutA|mutB) keep any mutation not in mutations_to_remove.
+    If a node loses all mutations, its children are promoted to the parent.
+    """
+    to_remove = set(mutations_to_remove or [])
+    T_pruned = root.copy()
+    if not to_remove:
+        return T_pruned
+
+    for node in T_pruned.all_nodes():
+        if node.name == "ROOT":
+            continue
+        remaining_muts = [m for m in node.name.split("|") if m not in to_remove]
+        if len(remaining_muts) == 0:
+            parent = node.parent
+            if parent is None:
+                raise ValueError("Can not remove ROOT")
+            for child in list(node.children):
+                parent.add_child(child)
+            parent.remove_child(node)
+        elif node.name != "|".join(remaining_muts):
+            node.name = "|".join(remaining_muts)
+    return T_pruned
 
 
 ##### Reasonably remove some mutations from TreeNode and Matrix format tree for re-attachment

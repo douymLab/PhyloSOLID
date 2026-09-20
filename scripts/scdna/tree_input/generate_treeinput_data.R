@@ -69,26 +69,26 @@ get.mut_allele <- function(mut_type){
 }
 
 get_alleles <- function(mut_type_str) {
-  # 移除多余的空格和括号，并将字符串拆分成向量
-  mut_type <- gsub("[()]", "", mut_type_str)  # 去掉括号
-  mut_type <- gsub("'", "", mut_type)          # 去掉单引号
-  mut_type <- strsplit(mut_type, ",")[[1]]     # 拆分字符串
-  # 将元素转换为字符型
-  mut_type <- trimws(mut_type)  # 去除空格
+  # Remove extra spaces and parentheses, then split the string into a vector
+  mut_type <- gsub("[()]", "", mut_type_str)  # Remove parentheses
+  mut_type <- gsub("'", "", mut_type)          # Remove single quotes
+  mut_type <- strsplit(mut_type, ",")[[1]]     # Split the string
+  # Convert elements to character type
+  mut_type <- trimws(mut_type)  # Trim whitespace
   if (length(mut_type) != 4) {
     return(c(NA, "Invalid input: must be a tuple with 4 elements."))
   }
-  # 进行判断
-  if (mut_type[1] != mut_type[3]) {  # 判断第1和第3个元素
+  # Perform comparison
+  if (mut_type[1] != mut_type[3]) {  # Compare the 1st and 3rd elements
     raw_allele <- mut_type[1]
     mut_allele <- mut_type[3]
-  } else if (mut_type[2] != mut_type[4]) {  # 判断第2和第4个元素
+  } else if (mut_type[2] != mut_type[4]) {  # Compare the 2nd and 4th elements
     raw_allele <- mut_type[2]
     mut_allele <- mut_type[4]
   } else {
-    return(c(NA, "No mutation found."))  # 如果没有不同，则返回提示
+    return(c(NA, "No mutation found."))  # If no difference is found, return a message
   }
-  # 返回突变等位基因
+  # Return the mutant allele
   return(c(raw_allele, mut_allele))
 }
 
@@ -128,36 +128,36 @@ likelihood_split <- function(str_posterior){
 
 extract_read_level_features <- function(basicdata, infodata, output_path) {
   rows_per_output=1000
-  ### 从 basicdata 中获取前几个数据列
+  ### Get the first few data columns from basicdata
   outputdata <- as.data.frame(cbind(basicdata[, c(1:7)], somatic_posterior_persite=as.data.frame(infodata$somatic_posterior_persite))); dim(outputdata)
   colnames(outputdata) <- c('chr', 'start', 'end', 'ref', 'allele_pool', 'popAF', 'genotype', 'somatic_posterior_persite')
-  ### 最后的 mut state 列
+  ### The last mut state column
   patied_extract_posterior_data <- infodata[, remained_scid]
   patied_extract_allelestat_data <- infodata[, paste0(remained_scid, "_AlleleStat")]
-  # 创建一个空数据框存储结果
+  # Create an empty data frame to store results
   result_data <- data.frame(matrix(nrow = nrow(patied_extract_posterior_data), ncol = ncol(patied_extract_posterior_data)))
   colnames(result_data) <- remained_scid
-  # 遍历每一个 cell 进行判断
+  # Iterate over each cell to apply the rules
   for (i in seq_along(remained_scid)) {
     mut_allele_count <- patied_extract_allelestat_data[, i]
     posterior <- patied_extract_posterior_data[, i]
-    # 处理 NA 的情况，给 NA 赋默认值
-    mut_allele_count[is.na(mut_allele_count)] <- 0  # 将 NA 视为 0
-    posterior[is.na(posterior)] <- 0               # 将 NA 视为 0
-    # 应用规则进行判断
+    # Handle NA values by assigning default values
+    mut_allele_count[is.na(mut_allele_count)] <- 0  # Treat NA as 0
+    posterior[is.na(posterior)] <- 0               # Treat NA as 0
+    # Apply the rules for classification
     result_data[, i] <- ifelse(
-      mut_allele_count == 0, 0,  # 如果 mut_allele_count 为 0，则结果为 0
-      ifelse(mut_allele_count > 0 & posterior < 0.5, 1, 2) # 否则根据 posterior 判断
+      mut_allele_count == 0, 0,  # If mut_allele_count is 0, the result is 0
+      ifelse(mut_allele_count > 0 & posterior < 0.5, 1, 2) # Otherwise classify based on posterior
     )
   }
   result_data <- cbind(bulk=rep(1, nrow(result_data)), result_data)
-  # 生成 mut_percell 列
+  # Generate the mut_percell column
   mut_percell <- apply(result_data, 1, function(row) {
-    paste0("[", paste(row, collapse = ", "), "]") # 用逗号连接每一行的元素，并加上方括号
+    paste0("[", paste(row, collapse = ", "), "]") # Join each row's elements with commas and wrap in square brackets
   })
-  # 将新列添加到 basicdata 数据框
+  # Add the new column to the basicdata data frame
   outputdata$mut_percell <- mut_percell; dim(outputdata)
-  ### 将结果分批写入文件
+  ### Write results to files in batches
   total_rows <- nrow(outputdata)
   batch_start <- 1
   batch_count <- 0
@@ -165,12 +165,12 @@ extract_read_level_features <- function(basicdata, infodata, output_path) {
     batch_count <- batch_count + 1
     batch_end <- min(batch_start + rows_per_output - 1, total_rows)
     batch_data <- outputdata[batch_start:batch_end, ]
-    # 将当前批次数据写入文件
+    # Write the current batch to a file
     write.table(batch_data, file=str_c(output_path, "/read_level_features_input.batch_", as.character(batch_count), ".txt"), row.names=FALSE, col.names=FALSE, sep="\t", quote=FALSE)
-    # 更新起始行数
+    # Update the starting row index
     batch_start <- batch_end + 1
   }
-  # 返回完整的 outputdata 数据框
+  # Return the complete outputdata data frame
   return(outputdata)
 }
 
@@ -191,15 +191,15 @@ alleles_list <- sapply(inputdata[,7], get_alleles, simplify = FALSE)
 raw_allele_vector <- sapply(alleles_list, `[`, 1)
 mut_allele_vector <- sapply(alleles_list, `[`, 2)
 
-# # 使用 mutate 和 rowwise 来应用函数并添加新列
+# # Use mutate and rowwise to apply the function and add new columns
 # inputdata <- inputdata %>%
 #   rowwise() %>%
 #   mutate(
-#     alleles = list(get_alleles(mutation)),  # 调用函数
-#     raw_allele = alleles[[1]],               # 提取 raw_allele
-#     mut_allele = alleles[[2]]                # 提取 mut_allele
+#     alleles = list(get_alleles(mutation)),  # Call the function
+#     raw_allele = alleles[[1]],               # Extract raw_allele
+#     mut_allele = alleles[[2]]                # Extract mut_allele
 #   ) %>%
-#   select(-alleles)  # 删除临时列
+#   select(-alleles)  # Remove the temporary column
 
 
 ##### ID reference (sc).
@@ -479,22 +479,22 @@ if(is_remove_cells == "yes") {
   for(sc in scid_data$scid_basedTree) {
     sc_values <- all_merged_data[, sc]
     
-    # 如果所有值都小于 cutoff 或者全是 NA，则移除
+    # Remove if all values are below cutoff or all are NA
     if(all(sc_values < cutoff, na.rm = TRUE) || all(is.na(sc_values))) {
       removed_scid <- c(removed_scid, sc)
     } else {
-      # 找出大于 cutoff 的位点
+      # Find sites greater than cutoff
       site_pass <- which(!is.na(sc_values) & sc_values > cutoff)
       
       if(length(site_pass) == 0) {
         removed_scid <- c(removed_scid, sc)
       } else {
-        # 提取 mutant allele count
+        # Extract mutant allele count
         reads_list <- all_merged_data[site_pass, paste0(sc, "_AlleleStat")]
         mutant_dp <- sapply(reads_list, function(x) as.numeric(strsplit(x, "/")[[1]][1]))
         names(mutant_dp) <- rownames(all_merged_data)[site_pass]
         
-        # 如果有 mutant allele count >=1，则保留
+        # Keep if any mutant allele count >= 1
         if(any(mutant_dp >= 1, na.rm = TRUE)) {
           remained_scid <- c(remained_scid, sc)
         } else {
@@ -505,7 +505,7 @@ if(is_remove_cells == "yes") {
   }
   
   # ===========================
-  # 更新 merged_data，只保留存在的列
+  # Update merged_data, keeping only existing columns
   # ===========================
   base_cols <- c("mutid", "indid", "chr", "pos", "ref", "mut", "somatic_posterior_persite")
   scid_cols <- remained_scid
@@ -516,12 +516,12 @@ if(is_remove_cells == "yes") {
   
   all_cols <- c(base_cols, scid_cols, scid_unmut_cols, scid_BB_cols, scid_prod_cols, scid_AlleleStat_cols)
   
-  # 只保留实际存在的列
+  # Keep only columns that actually exist
   cols_to_keep <- intersect(all_cols, colnames(all_merged_data))
   
   merged_data <- all_merged_data[, cols_to_keep]
   
-  # 输出信息
+  # Print information
   print(str_c(
     "Raw cell number is: ", length(scid_data$scid_basedTree), 
     "; After filtering cells that do not contain significant mutations, current cell number is: ", 
@@ -537,7 +537,7 @@ if(is_remove_cells == "yes") {
   ))
 }
 
-# 输出 merged_data 形状
+# Print the shape of merged_data
 print(str_c(
   "The shape of merged_data is : ", 
   dim(merged_data)[1], " rows X ", 
@@ -559,7 +559,7 @@ max_mutAF_percell <- apply(merged_data, 1, function(row) {max(as.numeric(sapply(
 cov_in_maxmutAFcell <- apply(merged_data, 1, function(row) {
     alleles <- na.omit(unlist(row[paste0(remained_scid, "_AlleleStat")]))
     if (length(alleles) == 0) {
-        return(NA)  # 如果所有 AlleleStat 都是 NA，则返回 NA
+        return(NA)  # Return NA if all AlleleStat values are NA
     }
     max_ratio <- max(sapply(strsplit(alleles, "/"), function(x) as.numeric(x[1])/as.numeric(x[2])))
     max_value_index <- which(sapply(strsplit(alleles, "/"), function(x) as.numeric(x[1])/as.numeric(x[2]) == max_ratio), arr.ind = TRUE)[1]
