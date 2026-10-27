@@ -50,9 +50,10 @@ from src.reproducibility import set_seed
 from src.scaffold_builder import *
 from src.mutation_integrator import *
 from src.full_tree_builder import build_fully_resolved_tree
+from src.pruning_policy import pruning_ratio as compute_pruning_ratio
 from src.germline_filter import update_features_matrix, add_mutation_proportions_to_features
 from src.utils import save_celltype_table
-from src.phylo_export import export_final_phylo_results
+from src.phylo_export import export_final_phylo_results, prepare_phylo_matrix
 
 
 logging.basicConfig(
@@ -153,7 +154,22 @@ def parse_args():
     parser.add_argument("-c", "--celltype_file", default=None, type=str,
                         help="Optional cell-type file. If omitted, all cells use default_type.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility")
-    return parser.parse_args()
+    backoff_options = parser.add_mutually_exclusive_group()
+    backoff_options.add_argument(
+        '--resolution_backoff_threshold', type=float, default=0.10,
+        help='Candidate auto-resolution backoff budget (default: 0.10). Fraction of '
+             'informative cells with grouping-conflict proxy >=0.5; not an estimated doublet rate.',
+    )
+    backoff_options.add_argument(
+        '--disable_resolution_backoff', dest='resolution_backoff_threshold',
+        action='store_const', const=None, default=argparse.SUPPRESS,
+        help='Disable backoff and retain the original sparsity-based auto resolution.',
+    )
+    args = parser.parse_args()
+    if args.resolution_backoff_threshold is not None and not 0 <= args.resolution_backoff_threshold <= 1:
+        parser.error('--resolution_backoff_threshold must be finite and in [0, 1]')
+
+    return args
 
 
 def main():
@@ -165,6 +181,7 @@ def main():
     celltype_file = args.celltype_file
     outputpath = os.path.join(args.outputpath, sampleid)
     params = copy.deepcopy(SETTING_PARAMS)
+    params['resolution_backoff_threshold'] = args.resolution_backoff_threshold
     remove_artifact_mutations = "yes"
     is_filter_quality = "no"
 
@@ -356,14 +373,8 @@ def main():
     logger.info("Step 9: Post-processing & output")
     logger.info("=" * 80)
 
-    M_current_filtered = M_current.drop(columns=['ROOT'], errors='ignore')
-    for mut_on_root in root_mutations:
-        M_current_filtered.insert(0, mut_on_root, 1)
-    mutations_on_T_current = (
-        M_current_filtered.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    )
     T_full = copy.deepcopy(T_current)
-    M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
+    M_full = prepare_phylo_matrix(M_current, root_mutations)
 
     logger.info("Final full-resolved tree:")
     print_tree_logger(T_full, logger_obj=logger)
@@ -373,6 +384,8 @@ def main():
     phylo_parent = os.path.join(outputpath, "03_final_results")
     phylo_export = export_final_phylo_results(
         phylo_parent, T_full, M_full, I_attached, params['fnfp_ratio'], logger_obj=logger,
+        pre_qc_snapshot=params['_pre_qc_snapshot'],
+        output_stage=params.get('_output_stage', 'final'),
     )
     phylo_dir = phylo_export["phylo_dir"]
     final_cleaned_M_full = phylo_export["M_cleaned"]
@@ -400,7 +413,7 @@ def main():
         if (I_somatic.shape[0] + I_somatic.shape[1]) else 0.0
     )
     omega_reduced = omega_before_qc - omega_final
-    pruning_ratio = omega_reduced / omega_final if omega_final else float('inf')
+    pruning_ratio = compute_pruning_ratio(omega_before_qc, omega_final)
 
     logger.info("=" * 80)
     logger.info("PHYLOSOLID: PHYLOGENETIC RECONSTRUCTION COMPLETED")
@@ -423,12 +436,13 @@ def main():
     logger.info("  ├─────────────────────────────────────────────────────────────────────┤")
     logger.info("  │  DISCORDANCE METRICS                                               │")
     logger.info("  ├─────────────────────────────────────────────────────────────────────┤")
+    logger.info(f"  Output stage: {params.get('_output_stage', 'final')}")
     logger.info(f"  │  Omega (pre-QC)                 : {omega_before_qc:.4f}      │")
     logger.info(f"  │  Omega (final)                  : {omega_final:.4f}      │")
     logger.info(f"  │  Omega (reduced)                : {omega_reduced:.4f}      │")
     logger.info(f"  │  Pruning ratio                  : {pruning_ratio:.4f}      │")
     logger.info(f"  │  Retention rate                 : {retention_rate:.4f}      │")
-    logger.info("  │                                   (pruning ratio < 2.0 = confident)│")
+    logger.info(f"  │                                   (pruning ratio < {PRUNING_CONFIDENCE_THRESHOLD} = guard passed)│")
     logger.info("  └─────────────────────────────────────────────────────────────────────┘")
     logger.info("")
     logger.info("=" * 80)

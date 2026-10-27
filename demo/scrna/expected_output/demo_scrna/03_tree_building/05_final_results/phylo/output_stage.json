@@ -1,0 +1,9 @@
+{
+  "output_stage": "final",
+  "source_step": "step8",
+  "all_zero_rows_columns_removed": true,
+  "ghost_mutations": [],
+  "cells": 352,
+  "mutations": 17,
+  "omega": 25.900000000000002
+}

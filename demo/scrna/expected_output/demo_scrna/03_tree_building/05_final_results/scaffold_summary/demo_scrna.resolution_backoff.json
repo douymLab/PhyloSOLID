@@ -1,0 +1,25 @@
+{
+  "resolution": 1.2,
+  "initial_resolution": 1.2,
+  "threshold": 0.1,
+  "threshold_met": true,
+  "stop_reason": "initial_budget_met",
+  "trace": [
+    {
+      "iteration": 0,
+      "resolution": 1.2,
+      "n_input_cells": 433,
+      "n_grouped_mutations": 14,
+      "n_groups": 3,
+      "n_informative_cells": 379,
+      "n_multi_group_cells": 20,
+      "multi_group_fraction": 0.052770448548812667,
+      "n_high_conflict_cells": 11,
+      "high_conflict_fraction": 0.029023746701846966,
+      "fp_cutoff": 0.5,
+      "total_positive_calls": 550,
+      "minimum_out_of_group_fp": 20
+    }
+  ],
+  "scope": "initial_main_groups_only; downstream uses selected resolution"
+}

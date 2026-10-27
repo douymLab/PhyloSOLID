@@ -20,6 +20,8 @@ Date: 2026/07/22
 Update: 2026/08/14 - Added export_phylo_results_for_cv function for parallel CV search
 """
 
+from src.pruning_policy import has_observed_tree_content
+
 import os
 import copy
 import json
@@ -30,7 +32,7 @@ from typing import Tuple, Dict, Any, Optional, List
 
 from src.mutation_integrator import *
 from src.scaffold_builder import *
-from src.phylo_export import export_cv_phylo_results
+from src.phylo_export import export_cv_phylo_results, prepare_phylo_matrix
 
 
 logger = logging.getLogger(__name__)
@@ -1157,9 +1159,7 @@ def build_refined_tree(
     logger_obj.info("  - lambda: empirical FN/FP discordance weight")
     logger_obj.info("-" * 80)
     
-    M_for_omega = M_current.drop(columns=['ROOT'], errors='ignore')
-    mutations_on_tree_for_omega = M_for_omega.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    M_for_omega = split_merged_columns(M_for_omega, mutations_on_tree_for_omega)
+    M_for_omega = prepare_phylo_matrix(M_current, root_mutations)
     
     M_for_omega_clean = M_for_omega.loc[:, (M_for_omega != 0).any(axis=0)]
     M_for_omega_clean = M_for_omega_clean.loc[(M_for_omega_clean != 0).any(axis=1)]
@@ -1778,20 +1778,8 @@ def export_phylo_results_for_cv(
         logger_obj.info(f"  Exporting phylo results for CV={cv_value} to: {phylo_dir}")
         
         # ---- Step 1: Prepare final data ----
-        M_current_filtered = M_current.drop(columns=['ROOT'], errors='ignore')
-        
-        # Add root mutations back
-        for mut_on_root in root_mutations:
-            if mut_on_root not in M_current_filtered.columns:
-                M_current_filtered.insert(0, mut_on_root, 1)
-        
-        # Expand merged columns
-        mutations_on_T_current = M_current_filtered.columns.to_series().apply(
-            lambda x: x.split("|")
-        ).explode().unique().tolist()
-        
         T_full = copy.deepcopy(T_current)
-        M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
+        M_full = prepare_phylo_matrix(M_current, root_mutations)
 
         fnfp_ratio = params.get('fnfp_ratio', 0.1)
         cleaned = export_cv_phylo_results(
@@ -1980,6 +1968,10 @@ def build_fully_resolved_tree(
     logger_obj.info("BUILD FULLY RESOLVED TREE: Starting Step 8")
     logger_obj.info("=" * 80)
     
+    pre_qc_snapshot = copy.deepcopy((T_current, M_current, root_mutations, all_conflict_mutations))
+    params['_pre_qc_snapshot'] = pre_qc_snapshot
+    params['_output_stage'] = 'final'
+
     T_current, M_current, to_be_removed_cells, identified_doublet_cells, \
     to_be_removed_mutations_by_fp_mutations_cross_all_cells, \
     final_remained_mutations, final_conflict_mutations, all_conflict_mutations = tree_QC_and_filter(
@@ -1998,6 +1990,19 @@ def build_fully_resolved_tree(
         logger_obj=logger_obj,
     )
     
+    if not has_observed_tree_content(M_current):
+        T_current, M_current, root_mutations, all_conflict_mutations = pre_qc_snapshot
+        if not has_observed_tree_content(M_current):
+            raise ValueError("No usable final or pre-QC tree matrix")
+        params['_output_stage'] = 'pre_fallback'
+        to_be_removed_cells, identified_doublet_cells = [], []
+        to_be_removed_mutations_by_fp_mutations_cross_all_cells = []
+        final_remained_mutations, final_conflict_mutations = [], []
+        logger_obj.warning("Empty final matrix: exporting pre-QC tree (pre_fallback)")
+    with open(os.path.join(outputpath_full, 'output_stage.json'), 'w') as handle:
+        json.dump({'output_stage': params['_output_stage'],
+                   'omega_pre_qc': float(omega_before_qc)}, handle, indent=2)
+
     # ============================================================
     # Final summary
     # ============================================================

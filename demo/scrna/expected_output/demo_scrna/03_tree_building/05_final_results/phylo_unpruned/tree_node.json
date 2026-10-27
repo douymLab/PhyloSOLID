@@ -1,0 +1,74 @@
+{
+    "name": "ROOT",
+    "children": [
+        {
+            "name": "chr17_49861923_C_T",
+            "children": [
+                {
+                    "name": "chr7_35905215_C_T"
+                }
+            ]
+        },
+        {
+            "name": "chr1_39034563_T_A",
+            "children": [
+                {
+                    "name": "chr10_78040695_T_C",
+                    "children": [
+                        {
+                            "name": "chr19_39433213_A_G",
+                            "children": [
+                                {
+                                    "name": "chr19_35487721_G_A",
+                                    "children": [
+                                        {
+                                            "name": "chr13_20222055_G_A",
+                                            "children": [
+                                                {
+                                                    "name": "chr11_65426524_T_C",
+                                                    "children": [
+                                                        {
+                                                            "name": "chrM_14523_T_C"
+                                                        },
+                                                        {
+                                                            "name": "chr1_86862957_G_A"
+                                                        }
+                                                    ]
+                                                },
+                                                {
+                                                    "name": "chr3_48444164_C_T"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "chr13_94437452_G_A"
+                }
+            ]
+        },
+        {
+            "name": "chr22_22901226_C_G",
+            "children": [
+                {
+                    "name": "chr14_106276537_C_G"
+                },
+                {
+                    "name": "chr22_22906554_C_T",
+                    "children": [
+                        {
+                            "name": "chr22_22901149_T_G"
+                        }
+                    ]
+                },
+                {
+                    "name": "chr22_22895504_C_A"
+                }
+            ]
+        }
+    ]
+}

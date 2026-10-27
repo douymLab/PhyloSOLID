@@ -192,3 +192,9 @@ docker-compose.override.yaml
 .cache/
 .conda/
 .local/
+
+# Local agent state and development caches
+/.codex/
+/.agents/
+.ruff_cache/
+.hypothesis/

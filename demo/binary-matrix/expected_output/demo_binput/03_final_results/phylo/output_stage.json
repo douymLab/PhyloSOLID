@@ -1,0 +1,12 @@
+{
+  "output_stage": "final",
+  "source_step": "step8",
+  "all_zero_rows_columns_removed": true,
+  "ghost_mutations": [
+    "chr6_135647703_AT>A",
+    "chr8_25976670_A>T"
+  ],
+  "cells": 8,
+  "mutations": 19,
+  "omega": 0.1
+}

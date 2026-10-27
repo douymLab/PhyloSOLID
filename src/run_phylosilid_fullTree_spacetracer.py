@@ -78,8 +78,9 @@ from src.scaffold_builder import build_scaffold_tree
 from src.scaffold_builder import *
 from src.mutation_integrator import *
 from src.full_tree_builder import build_fully_resolved_tree
+from src.pruning_policy import pruning_ratio as compute_pruning_ratio
 from src.utils import save_celltype_table
-from src.phylo_export import export_final_phylo_results
+from src.phylo_export import export_final_phylo_results, prepare_phylo_matrix
 
 
 # ------------------------------
@@ -160,10 +161,23 @@ parser.add_argument("--max_workers", default=None, type=int, help="Maximum numbe
 
 # Pruning confidence threshold (fixed)
 # pruning_ratio = omega_reduced / omega_final
-# Confident if pruning_ratio < 10.0 (the "1/3 rule")
+# Operational pruning guard; not a confidence probability.
 PRUNING_CONFIDENCE_THRESHOLD = 10.0
 
+backoff_options = parser.add_mutually_exclusive_group()
+backoff_options.add_argument(
+    '--resolution_backoff_threshold', type=float, default=0.10,
+    help='Candidate auto-resolution backoff budget (default: 0.10). Fraction of '
+         'informative cells with grouping-conflict proxy >=0.5; not an estimated doublet rate.',
+)
+backoff_options.add_argument(
+    '--disable_resolution_backoff', dest='resolution_backoff_threshold',
+    action='store_const', const=None, default=argparse.SUPPRESS,
+    help='Disable backoff and retain the original sparsity-based auto resolution.',
+)
 args = parser.parse_args()
+if args.resolution_backoff_threshold is not None and not 0 <= args.resolution_backoff_threshold <= 1:
+    parser.error('--resolution_backoff_threshold must be finite and in [0, 1]')
 
 # Set all random seeds
 from src.reproducibility import set_seed, deterministic_choice
@@ -343,6 +357,7 @@ SETTING_PARAMS = {
 }
 
 params = SETTING_PARAMS
+params['resolution_backoff_threshold'] = args.resolution_backoff_threshold
 
 
 # ------------------------------
@@ -678,9 +693,7 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         cv_logger.info("Computing final metrics...")
         cv_logger.info("-" * 40)
         
-        M_for_omega = M_current.drop(columns=['ROOT'], errors='ignore')
-        mutations_on_tree_for_omega = M_for_omega.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-        M_for_omega = split_merged_columns(M_for_omega, mutations_on_tree_for_omega)
+        M_for_omega = prepare_phylo_matrix(M_current, root_mutations)
         
         M_for_omega_clean = M_for_omega.loc[:, (M_for_omega != 0).any(axis=0)]
         M_for_omega_clean = M_for_omega_clean.loc[(M_for_omega_clean != 0).any(axis=1)]
@@ -701,8 +714,9 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         final_total = final_cells + final_muts
         
         omega_reduced = omega_before_qc - omega_final
-        pruning_ratio = omega_reduced / omega_final if omega_final > 0 else float('inf')
-        is_confident = pruning_ratio < PRUNING_CONFIDENCE_THRESHOLD
+        pruning_ratio = compute_pruning_ratio(omega_before_qc, omega_final)
+        is_confident = (params_local.get('_output_stage', 'final') == 'final'
+                        and pruning_ratio < PRUNING_CONFIDENCE_THRESHOLD)
         retention_rate = final_total / initial_total if initial_total > 0 else 0.0
         
         # ---- Summary for this CV ----
@@ -730,6 +744,9 @@ def run_pipeline_for_cv_threshold(cv_value, output_dir):
         
         return {
             'cv_value': cv_value,
+            'output_stage': params_local.get('_output_stage', 'final'),
+            'pre_qc_snapshot': params_local['_pre_qc_snapshot'],
+            'zero_final_omega': omega_final == 0,
             'success': True,
             'error': None,
             'scaffold_dir': run_outputpath_scaffold,
@@ -920,13 +937,24 @@ def select_best_cv(df_valid):
     
     df_valid = df_valid.copy()
     
+    # Prefer usable post-QC outputs; pre-QC fallback is a last resort.
+    pre_only = False
+    if 'output_stage' in df_valid.columns:
+        final_candidates = df_valid[df_valid['output_stage'] == 'final']
+        if not final_candidates.empty:
+            df_valid = final_candidates.copy()
+        else:
+            pre_only = True
+
     # Calculate pruning metrics
     df_valid['omega_sum'] = df_valid['omega_pre_qc'] + df_valid['omega_final']
     df_valid['omega_reduced'] = df_valid['omega_pre_qc'] - df_valid['omega_final']
-    df_valid['pruning_ratio'] = df_valid['omega_reduced'] / df_valid['omega_final']
+    df_valid['pruning_ratio'] = [compute_pruning_ratio(pre, final) for pre, final in zip(df_valid['omega_pre_qc'], df_valid['omega_final'])]
     df_valid['is_confident'] = df_valid['pruning_ratio'] < PRUNING_CONFIDENCE_THRESHOLD
     
     # Separate confident and over-pruned
+    if pre_only:
+        df_valid['is_confident'] = False  # A pre fallback is not post-QC confidence.
     df_confident = df_valid[df_valid['is_confident'] == True]
     df_overpruned = df_valid[df_valid['is_confident'] == False]
     
@@ -963,8 +991,8 @@ def select_best_cv(df_valid):
     # -------- Step 1: If there are confident trees, select by LOWEST omega_final --------
     if not df_confident.empty:
         df_sorted = df_confident.sort_values(
-            by=['omega_final', 'omega_sum'], 
-            ascending=[True, True]
+            by=['omega_final', 'omega_pre_qc', 'cv_value'],
+            ascending=[True, True, True], kind='mergesort'
         )
         best_idx = df_sorted.index[0]
         best_cv = df_sorted.loc[best_idx, 'cv_value']
@@ -997,15 +1025,18 @@ def select_best_cv(df_valid):
     # -------- Step 2: If NO confident trees, select by LOWEST omega_pre_qc --------
     else:
         df_sorted = df_valid.sort_values(
-            by=['omega_pre_qc', 'omega_final'], 
-            ascending=[True, True]
+            by=['omega_pre_qc', 'cv_value'] if pre_only else ['omega_pre_qc', 'omega_final', 'cv_value'],
+            ascending=True, kind='mergesort'
         )
         best_idx = df_sorted.index[0]
         best_cv = df_sorted.loc[best_idx, 'cv_value']
         best_score = df_sorted.loc[best_idx, 'omega_pre_qc']
         
         best_row = df_sorted.loc[best_idx]
-        selection_details.append("  ⚠️ WARNING: No confident trees found (all have pruning_ratio >= 10.0)")
+        if pre_only:
+            selection_details.append("  All final matrices empty: selecting pre_fallback by omega_pre_qc, then CV.")
+        else:
+            selection_details.append(f"  WARNING: No confident trees found (all have pruning_ratio >= {PRUNING_CONFIDENCE_THRESHOLD})")
         selection_details.append("     This indicates potential over-pruning across all CV thresholds.")
         selection_details.append(f"  ✓ Falling back to LOWEST omega_pre_qc: CV = {best_cv}")
         selection_details.append(f"      omega_pre_qc    = {best_row['omega_pre_qc']:.4f}")
@@ -1071,6 +1102,8 @@ def save_comprehensive_results(search_results, outputpath, sampleid,
         if result.get('success', False):
             row = {
                 'cv': result['cv_value'],
+                'output_stage': result.get('output_stage', 'final'),
+                'zero_final_omega': result.get('zero_final_omega', False),
                 'selected': result['cv_value'] == best_cv if best_cv is not None else False,
                 'omega_pre_qc': result.get('omega_pre_qc', float('inf')),
                 'omega_final': result.get('omega_final', float('inf')),
@@ -1194,6 +1227,8 @@ if __name__ == '__main__':
                 
                 # ---- Extract variables from best result ----
                 best_result = best_row.to_dict()
+                output_stage = best_result.get('output_stage', 'final')
+                pre_qc_snapshot = best_result['pre_qc_snapshot']
                 T_current = best_result.get('T_current')
                 M_current = best_result.get('M_current')
                 root_mutations = best_result.get('root_mutations', [])
@@ -1268,6 +1303,9 @@ if __name__ == '__main__':
             logger.error(f"Pipeline failed for cv_rank_thresh={cv_value}")
             sys.exit(1)
         
+        output_stage = result.get('output_stage', 'final')
+        pre_qc_snapshot = result['pre_qc_snapshot']
+
         # Extract variables
         T_current = result.get('T_current')
         M_current = result.get('M_current')
@@ -1298,6 +1336,8 @@ if __name__ == '__main__':
         # Save single CV results
         df_single = pd.DataFrame([{
             'cv_value': cv_value,
+            'output_stage': result.get('output_stage', 'final'),
+            'zero_final_omega': result.get('zero_final_omega', False),
             'omega_pre_qc': result['omega_pre_qc'],
             'omega_final': result['omega_final'],
             'omega_sum': result['omega_sum'],
@@ -1322,6 +1362,7 @@ if __name__ == '__main__':
             f.write("=" * 80 + "\n\n")
             f.write(f"Sample ID: {sampleid}\n")
             f.write(f"CV threshold: {cv_value}\n")
+            f.write(f"Output stage: {output_stage}\n")
             f.write(f"Pruning confidence threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}\n")
             f.write(f"omega_pre_qc: {result['omega_pre_qc']:.4f}\n")
             f.write(f"omega_final: {result['omega_final']:.4f}\n")
@@ -1337,6 +1378,7 @@ if __name__ == '__main__':
             f.write("=" * 80 + "\n\n")
             f.write(f"Sample ID: {sampleid}\n")
             f.write(f"CV threshold: {cv_value}\n")
+            f.write(f"Output stage: {output_stage}\n")
             f.write(f"Pruning confidence threshold: pruning_ratio < {PRUNING_CONFIDENCE_THRESHOLD}\n")
             f.write(f"omega_pre_qc: {result['omega_pre_qc']:.4f}\n")
             f.write(f"omega_final: {result['omega_final']:.4f}\n")
@@ -1358,15 +1400,8 @@ if __name__ == '__main__':
     logger.info("STEP 9.1: Prepare final data")
     logger.info("-" * 80)
     
-    M_current_filtered = M_current.drop(columns=['ROOT'], errors='ignore')
-    
-    for mut_on_root in root_mutations:
-        M_current_filtered.insert(0, mut_on_root, 1)
-    
-    mutations_on_T_current = M_current_filtered.columns.to_series().apply(lambda x: x.split("|")).explode().unique().tolist()
-    
     T_full = copy.deepcopy(T_current)
-    M_full = split_merged_columns(M_current_filtered, mutations_on_T_current)
+    M_full = prepare_phylo_matrix(M_current, root_mutations)
     
     logger.info("Final full-resolved tree:")
     print_tree_logger(T_full)
@@ -1377,6 +1412,7 @@ if __name__ == '__main__':
 
     phylo_export = export_final_phylo_results(
         outputpath_04, T_full, M_full, I_attached, params['fnfp_ratio'], logger_obj=logger,
+        pre_qc_snapshot=pre_qc_snapshot, output_stage=output_stage,
     )
     phylo_dir = phylo_export["phylo_dir"]
     final_cleaned_M_full = phylo_export["M_cleaned"]
@@ -1423,12 +1459,13 @@ if __name__ == '__main__':
     logger.info("  ├─────────────────────────────────────────────────────────────────────┤")
     logger.info("  │  DISCORDANCE METRICS                                               │")
     logger.info("  ├─────────────────────────────────────────────────────────────────────┤")
+    logger.info(f"  Output stage: {output_stage}")
     logger.info(f"  │  Omega (pre-QC)                 : {omega_before_qc:.4f}      │")
     logger.info(f"  │  Omega (final)                  : {omega_final:.4f}      │")
     logger.info(f"  │  Omega (reduced)                : {omega_before_qc - omega_final:.4f}      │")
-    logger.info(f"  │  Pruning ratio                  : {(omega_before_qc - omega_final) / omega_final if omega_final > 0 else float('inf'):.4f}      │")
+    logger.info(f"  │  Pruning ratio                  : {compute_pruning_ratio(omega_before_qc, omega_final):.4f}      │")
     logger.info(f"  │  Retention rate                 : {(final_cleaned_M_full.shape[0] + final_cleaned_M_full.shape[1]) / (I_somatic.shape[0] + I_somatic.shape[1]):.4f}      │")
-    logger.info("  │                                   (pruning ratio < 10.0 = confident)│")
+    logger.info(f"  │                                   (pruning ratio < {PRUNING_CONFIDENCE_THRESHOLD} = guard passed)│")
     logger.info("  └─────────────────────────────────────────────────────────────────────┘")
     logger.info("")
     if is_search_mode:

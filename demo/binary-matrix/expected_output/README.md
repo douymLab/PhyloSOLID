@@ -9,8 +9,10 @@ demo_binput/
 ├── 02_mutation_integrator/      # created by the run; files omitted
 └── 03_final_results/
     ├── phylo/                   # shipped: cleaned tree + matrices
-    ├── phylo_unpruned/          # created by the run; files omitted
+    ├── phylo_unpruned/          # shipped: cleaned Step 7 pre-QC snapshot
     └── circos/circle_tree_output_as_point.pdf
 ```
 
-Shipped result: **7 cells × 9 mutations** (12 ghost sites pruned). Full intermediates: `bash ../run_demo.sh`.
+Shipped post-QC result: **8 cells × 19 mutations**. Pre-QC snapshot: **13 cells × 21 mutations**. Full intermediates: `bash ../run_demo.sh`.
+
+Refreshed on 2026-10-27 using current source. Both phylo bundles remove all-zero inferred matrix rows/columns and include `output_stage.json`. Upstream feature/tree-input files were reused where applicable; tree building and circos were rerun. See `demo_result_refresh.json` for commands, source/input hashes and dimensions.

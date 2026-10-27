@@ -1,0 +1,9 @@
+{
+  "output_stage": "pre_qc",
+  "source_step": "step7",
+  "all_zero_rows_columns_removed": true,
+  "ghost_mutations": [],
+  "cells": 22,
+  "mutations": 78,
+  "omega": 8.0
+}

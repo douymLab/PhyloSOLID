@@ -1,33 +1,42 @@
 feature_extraction:
-  features_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt
+  features_file: demo/scrna/output/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt
   outputs:
-    depth_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/01_features/depth_in_spots
-    features_file: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt
+    depth_dir: demo/scrna/output/demo_scrna/01_features/depth_in_spots
+    features_file: demo/scrna/output/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt
   sample_id: demo_scrna
   status: completed
   step_name: 01_features
-  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/01_features
+  workdir: demo/scrna/output/demo_scrna/01_features
 summary:
   sample_id: demo_scrna
   steps_completed:
   - feature_extraction
   - tree_input
   - tree_building
-  tree_file: null
-  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna
+  tree_file: demo/scrna/output/demo_scrna/03_tree_building/PhyloSOLID/celltree.newick
+  workdir: demo/scrna/output/demo_scrna
 tree_building:
-  outputs: {}
-  results_dir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/03_tree_building
+  outputs:
+    cfmatrix: demo/scrna/output/demo_scrna/03_tree_building/05_final_results/phylo/final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix
+    phylo_dir: demo/scrna/output/demo_scrna/03_tree_building/05_final_results/phylo
+    phylo_unpruned_dir: demo/scrna/output/demo_scrna/03_tree_building/05_final_results/phylo_unpruned
+    results_dir: demo/scrna/output/demo_scrna/03_tree_building
+    tree_file: demo/scrna/output/demo_scrna/03_tree_building/PhyloSOLID/celltree.newick
+  results_dir: demo/scrna/output/demo_scrna/03_tree_building
   sample_id: demo_scrna
   status: completed
   step_name: 03_tree_building
-  tree_file: null
-  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/03_tree_building
+  tree_file: demo/scrna/output/demo_scrna/03_tree_building/PhyloSOLID/celltree.newick
+  workdir: demo/scrna/output/demo_scrna/03_tree_building
 tree_input:
   outputs:
-    scid_barcode: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/02_treeinput/treeinput_scid_barcode.txt
-    spot_matrix: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/02_treeinput/treeinput_spot_c_3319.csv
+    scid_barcode: demo/scrna/output/demo_scrna/02_treeinput/treeinput_scid_barcode.txt
+    spot_matrix: demo/scrna/output/demo_scrna/02_treeinput/treeinput_spot_c_3319.csv
   sample_id: demo_scrna
   status: completed
   step_name: 02_treeinput
-  workdir: /storage/douyanmeiLab/yangqing/tools/PhyloMosaicGenie/pmg/PhyloSOLID/demo/scrna/output/demo_scrna/02_treeinput
+  workdir: demo/scrna/output/demo_scrna/02_treeinput
+result_refresh:
+  date: '2026-10-27'
+  rerun: tree_building_and_circos
+  reused: existing feature extraction and tree-input matrices

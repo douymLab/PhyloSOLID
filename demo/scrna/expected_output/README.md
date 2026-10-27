@@ -17,8 +17,10 @@ demo_scrna/
     ├── 04_mutation_integrator/  # CV folders omitted
     └── 05_final_results/
         ├── phylo/               # shipped: cleaned tree + matrices
-        ├── phylo_unpruned/      # files omitted
+        ├── phylo_unpruned/      # shipped: cleaned Step 7 pre-QC snapshot
         └── circos/circle_tree_output_as_point.pdf
 ```
 
-Shipped result: **352 cells × 17 mutations**. Full intermediates: `bash ../run_demo.sh` (scRNA BAM from Figshare).
+Shipped post-QC result: **352 cells × 17 mutations**. Pre-QC snapshot: **433 cells × 17 mutations**. Full intermediates: `bash ../run_demo.sh` (scRNA BAM from Figshare).
+
+Refreshed on 2026-10-27 using current source. Both phylo bundles remove all-zero inferred matrix rows/columns and include `output_stage.json`. Upstream feature/tree-input files were reused where applicable; tree building and circos were rerun. See `demo_result_refresh.json` for commands, source/input hashes and dimensions.

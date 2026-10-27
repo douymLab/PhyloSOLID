@@ -1,9 +1,9 @@
 """
-Export cleaned and unpruned phylo result bundles.
+Export cleaned post-QC and pre-QC phylo result bundles.
 
-Ghost mutations (all-zero columns after cell QC) are dropped from the cleaned
-matrix *and* collapsed out of final_cleaned_tree_node*. The unpruned tree and
-matching matrices are written only under final_results/phylo_unpruned/.
+Both final directories drop all-zero matrix rows/columns and collapse ghost
+mutations from the matching tree. phylo_unpruned means before Step 8 QC,
+not before Step 7 refinement or before export cleanup.
 """
 
 import json
@@ -20,15 +20,28 @@ from src.mutation_integrator import (
     get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency,
     prune_mutations_from_tree,
 )
-from src.scaffold_builder import WriteTfile, find_flipping_spots, tree_to_dict
+from src.scaffold_builder import WriteTfile, find_flipping_spots, tree_to_dict, split_merged_columns
 
 logger = logging.getLogger(__name__)
 
 
+def prepare_phylo_matrix(M_current: pd.DataFrame, root_mutations) -> pd.DataFrame:
+    """Expand merged mutations and restore ROOT-assigned mutations consistently."""
+    matrix = M_current.drop(columns=['ROOT'], errors='ignore').copy()
+    names = list(dict.fromkeys(m for column in matrix.columns for m in column.split('|')))
+    matrix = split_merged_columns(matrix, names)
+    for mutation in reversed(list(dict.fromkeys(root_mutations))):
+        if mutation not in matrix.columns:
+            matrix.insert(0, mutation, 1)
+    return matrix
+
+
 def _align_I_to_M(I_withNA3: pd.DataFrame, M: pd.DataFrame) -> pd.DataFrame:
-    rows = M.index.intersection(I_withNA3.index)
-    cols = M.columns.intersection(I_withNA3.columns)
-    return I_withNA3.loc[rows, cols]
+    missing_rows = M.index.difference(I_withNA3.index)
+    missing_cols = M.columns.difference(I_withNA3.columns)
+    if len(missing_rows) or len(missing_cols):
+        raise ValueError(f'Missing observations for phylo matrix: cells={list(missing_rows)}, mutations={list(missing_cols)}')
+    return I_withNA3.loc[M.index, M.columns]
 
 
 def _flipping_tables(I_bin: pd.DataFrame, M: pd.DataFrame):
@@ -67,7 +80,9 @@ def _flipping_tables(I_bin: pd.DataFrame, M: pd.DataFrame):
         "total_NA_to_1": int(((I_bin == 3) & (M == 1)).sum().sum()),
     }
     df_total = pd.DataFrame([counts])
-    df_per_mut = calculate_flip_counts_per_site(I_bin, M)
+    df_per_mut = (calculate_flip_counts_per_site(I_bin, M) if len(M.columns) else
+                  pd.DataFrame(columns=['flipping_False_Negative', 'flipping_False_Positive',
+                                        'flipping_NA_to_0', 'flipping_NA_to_1']))
     return df_flipping_spots, df_total, df_per_mut, counts
 
 
@@ -78,6 +93,9 @@ def _write_tree(T, outdir: str, stem: str) -> None:
 
 
 def _write_clones(T, M: pd.DataFrame, I_for_freq: pd.DataFrame, outpath: str, logger_obj=None) -> None:
+    if M.empty:
+        pd.DataFrame(columns=["label", "color", "backbone_mutation"]).to_csv(outpath, index=False)
+        return
     mutation_clones = get_mutation_clone_and_backbone_mut_as_keys_by_first_level_with_frequency(
         T, I_for_freq, logger_obj=logger_obj
     )
@@ -92,6 +110,16 @@ def _write_clones(T, M: pd.DataFrame, I_for_freq: pd.DataFrame, outpath: str, lo
         pd.DataFrame(columns=["label", "color", "backbone_mutation"]).to_csv(outpath, sep=",", index=False)
         return
     assign_clone_labels(M, filtered).to_csv(outpath, sep=",", index=False)
+
+
+def _write_inferred_matrix(prefix, matrix, logger_obj=None):
+    """Always save the inferred matrix, including empty/non-conflict-free cases."""
+    output = matrix.astype(int)
+    output.index.name = 'cellIDxmutID'
+    output.to_csv(prefix + '.CFMatrix', sep='\t')
+    if not matrix.empty:
+        WriteTfile(prefix, matrix, matrix.index.tolist(), matrix.columns.tolist(),
+                   judge='yes', logger_obj=logger_obj)
 
 
 def write_phylo_bundle(
@@ -111,9 +139,9 @@ def write_phylo_bundle(
     M_aligned = M.loc[I_aligned.index, I_aligned.columns]
 
     if cleaned:
-        WriteTfile(
+        _write_inferred_matrix(
             os.path.join(outdir, f"final_cleaned_M_full_basedPivots.filtered_sites_inferred{suffix}"),
-            M_aligned, M_aligned.index.tolist(), M_aligned.columns.tolist(), judge="yes",
+            M_aligned, logger_obj=logger_obj,
         )
         I_aligned.to_csv(
             os.path.join(outdir, f"final_cleaned_I_full_withNA3_for_circosPlot{suffix}.txt"),
@@ -121,9 +149,9 @@ def write_phylo_bundle(
         )
         tree_stem = f"final_cleaned_tree_node{suffix}"
     else:
-        WriteTfile(
+        _write_inferred_matrix(
             os.path.join(outdir, f"M_full_basedPivots.filtered_sites_inferred{suffix}"),
-            M_aligned, M_aligned.index.tolist(), M_aligned.columns.tolist(), judge="yes",
+            M_aligned, logger_obj=logger_obj,
         )
         I_aligned.to_csv(os.path.join(outdir, f"I_full_withNA3{suffix}.txt"), sep="\t")
         tree_stem = f"tree_node{suffix}"
@@ -167,13 +195,24 @@ def export_final_phylo_results(
     I_attached: pd.DataFrame,
     fnfp_ratio: float,
     logger_obj=None,
+    *,
+    pre_qc_snapshot,
+    output_stage: str = 'final',
 ) -> Dict[str, object]:
     """
-    Write cleaned results to phylo/ and the matching unpruned bundle to phylo_unpruned/.
+    Write cleaned Step 8 output to phylo/ and cleaned Step 7 snapshot to phylo_unpruned/.
 
     Only called for the selected tree under final_results, not for every CV folder.
     """
     log = logger_obj if logger_obj is not None else logger
+    if output_stage not in ('final', 'pre_fallback'):
+        raise ValueError('Unknown phylo output stage: ' + str(output_stage))
+    if pre_qc_snapshot is None:
+        raise ValueError('A Step 7 pre-QC snapshot is required for phylo_unpruned')
+    T_pre, M_pre, root_pre, _ = pre_qc_snapshot
+    M_pre_full = prepare_phylo_matrix(M_pre, root_pre)
+    T_pre_cleaned, M_pre_cleaned, I_pre, pre_ghost_muts = split_cleaned_and_unpruned(
+        T_pre, M_pre_full, I_attached)
     T_cleaned, M_cleaned, I_withNA3, ghost_muts = split_cleaned_and_unpruned(T_full, M_full, I_attached)
 
     phylo_dir = os.path.join(outputpath_final, "phylo")
@@ -191,11 +230,25 @@ def export_final_phylo_results(
         cleaned=True, logger_obj=log,
     )
     unpruned = write_phylo_bundle(
-        unpruned_dir, T_full, M_full, I_withNA3, fnfp_ratio,
+        unpruned_dir, T_pre_cleaned, M_pre_cleaned, I_pre, fnfp_ratio,
         cleaned=False, logger_obj=log,
     )
     log.info("  Cleaned phylo:   %s (%s cells x %s muts)", phylo_dir, cleaned["cells"], cleaned["muts"])
-    log.info("  Unpruned phylo:  %s (%s cells x %s muts)", unpruned_dir, unpruned["cells"], unpruned["muts"])
+    log.info("  Pre-QC phylo:    %s (%s cells x %s muts)", unpruned_dir, unpruned["cells"], unpruned["muts"])
+    for directory, stage, source, stats, ghosts in [
+        (phylo_dir, output_stage, 'step8' if output_stage == 'final' else 'step7', cleaned, ghost_muts),
+        (unpruned_dir, 'pre_qc', 'step7', unpruned, pre_ghost_muts),
+    ]:
+        with open(os.path.join(directory, 'output_stage.json'), 'w') as handle:
+            json.dump(dict(output_stage=stage, source_step=source,
+                           all_zero_rows_columns_removed=True, ghost_mutations=ghosts,
+                           cells=stats['cells'], mutations=stats['muts'], omega=stats['omega']),
+                      handle, indent=2)
+    with open(os.path.join(outputpath_final, 'README_phylo.txt'), 'w') as handle:
+        handle.write('phylo/: Step 8 output; stage=' + output_stage + '\n'
+                     'phylo_unpruned/: Step 7 snapshot before Step 8 QC.\n'
+                     'Both bundles remove all-zero inferred matrix rows/columns and collapse corresponding tree nodes.\n'
+                     'pre_fallback means QC produced no usable tree, so phylo also uses the Step 7 snapshot.\n')
 
     tree_muts = [name for name in T_cleaned.all_names_no_root() for name in name.split("|")]
     extra_on_tree = sorted(set(tree_muts) - set(M_cleaned.columns))
@@ -214,6 +267,8 @@ def export_final_phylo_results(
         "I_withNA3": I_withNA3,
         **cleaned,
         "unpruned": unpruned,
+        "output_stage": output_stage,
+        "omega_pre_qc": unpruned["omega"],
     }
 
 

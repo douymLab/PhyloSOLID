@@ -1,969 +1,203 @@
 # PhyloSOLID
 
-**Tree building from single-cell sequencing data (scRNA-seq and scDNA-seq)**
+**Phylogeny reconstruction from single-cell mutation data.**
 
-> **Important Note for Users:**
-> 
-> PhyloSOLID is under active development, especially during its preprint stage. The software and its associated resources are continuously being updated and improved.
-> 
-> Our current priority is optimizing the runtime efficiency of the core tree-building pipeline, particularly for large datasets with high mutation counts. We are actively addressing performance bottlenecks while maintaining full model accuracy and all constraints.
-> 
-> If you encounter any issues, have feature requests, or need guidance, **please do not hesitate to contact us**. We are committed to providing timely support and would greatly appreciate your feedback to make PhyloSOLID better for the entire community. You can reach us at the emails provided in the Contact section.
+PhyloSOLID builds a scaffold tree, integrates additional mutations, refines their
+placements and applies cell/mutation quality control. It supports scRNA-seq,
+scDNA-seq, SpaceTracer and pre-called binary matrices, and exports trees,
+observed/inferred genotype matrices and discordance statistics.
 
----
+[Quick start](#quick-start) · [Run your data](#run-your-data) · [Outputs](#outputs) · [Documentation](#documentation) · [Citation](#citation)
 
-## What Will You Get?
+![PhyloSOLID workflow overview](images/1figure_plot.png)
 
-PhyloSOLID takes your single-cell sequencing data and produces **phylogenetic trees** that reveal the evolutionary relationships among cells. Here's the complete output structure after running the pipeline:
+## Choose a mode
 
-```
-your_results/
-└── YOUR_SAMPLE/
-    ├── 01_features/                # Feature extraction results
-    │   ├── depth_in_spots/
-    │   └── YOUR_SAMPLE.benchmark_patched.feature.txt
-    │
-    ├── 02_treeinput/               # Tree input files
-    │   ├── treeinput/
-    │   └── data/
-    │
-    ├── 03_tree_building/           # ★ Tree building results
-    │   ├── 03_scaffold_builder/
-    │   │   └── df_celltype.txt     # Cell annotation for circos (no row index)
-    │   └── 05_final_results/
-    │       ├── phylo/              # ★ Cleaned tree + matrices (consistent)
-    │       ├── phylo_unpruned/     # Pre-QC-drop tree + matrices
-    │       └── circos/             # Demo circos plots (separate vis env)
-    └── ...
-```
+| Your starting point | Mode | Input |
+|---|---|---|
+| Pre-called mutation genotypes | `binary-matrix` | Cell × mutation TSV with `0`, `1`, `NA` |
+| Single-cell RNA sequencing | `scrna` | BAM, mutation list and cell barcodes |
+| Single-cell DNA sequencing | `scdna` | One BAM per cell and a mutation list; bulk BAM optional |
+| BAM-based tracing without feature extraction/classifier | `spacetracer` | BAM, mutation list and cell barcodes |
 
-**Two key outputs you'll work with:**
-- **`03_tree_building/05_final_results/phylo/`**: Cleaned phylogenetic tree and matrices (tree nodes match matrix columns)
-- **`03_tree_building/03_scaffold_builder/df_celltype.txt`**: Cell annotation matching tree barcodes (no row names)
+Developed and tested primarily on Linux. The software is under active development;
+Current version: **v3.6.0**; see [changes and release history](docs/changelog.md).
 
-**Unpruned copy:** After cell QC, mutations that are all 0 in remaining cells are dropped from `phylo/`. The tree before that collapse is written only under `phylo_unpruned/` for the selected CV (not for every CV folder).
+## Quick start
 
-**Visualization:** Circos is drawn in the **demos** after tree building, using a **separate** R environment (`phylosolid_vis` or `circos_env`). Do not install PhyloSOLIDvis into `pmg` / `phylosolid_env`. See the Visualization section.
-
----
-
-## Overview
-
-PhyloSOLID is a comprehensive pipeline for building phylogenetic trees from single-cell sequencing data. It supports both scRNA-seq and scDNA-seq modes, with features for mutation filtering, tree construction, and visualization.
-
-<div align="center">
-  <img src="https://raw.githubusercontent.com/douymLab/PhyloSOLID/main/images/1figure_plot.png" alt="PhyloSOLID workflow overview" width="800">
-  <br>
-  <em>Figure 1: Overview of the PhyloSOLID pipeline</em>
-</div>
-
-> **System Requirements:**
-> PhyloSOLID is primarily developed and tested on Linux. We recommend running it on Linux or macOS systems. Windows users can use WSL (Windows Subsystem for Linux).
-
----
-
-## Version History
-
-- **v3.5.0** (2026-09-20): scDNA BAM-to-tree end-to-end packaging (bulk BAM optional); self-contained scRNA / scDNA / binary-matrix demos; cleaned vs unpruned export consistency; dedicated visualization environment (`install_vis.sh`, `environment_vis.yml`); English localization of pipeline scripts and docs
-- **v3.4.0** (2026-09-03): Adaptive Leiden graph resolution and pruning confidence CV selection: automatic resolution tuning based on data sparsity; new `pruning_confidence` criterion prevents over-pruning by evaluating `pruning_ratio = (Ω_pre-QC - Ω_final) / Ω_final < 10.0`; cleaner output structure with reduced file redundancy ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.4.0))
-- **v3.3.1** (2026-08-21): Deterministic parallel CV search: fixed non-determinism where same CV threshold produced different results in parallel vs single-run mode ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.3.1))
-- **v3.3.0** (2026-08-20): Improved optimal tree selection with `Omega_final` criterion and robust tie-breaking mechanism ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.3.0))
-- **v3.2.1** (2026-08-20): Critical bug fixes for CV threshold search: fixed logger `NameError`, eliminated duplicate mutation nodes in scaffold tree, standardized logger parameter passing ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.2.1))
-- **v3.2.0** (2026-08-15): Parallel CV traversal, unified optimal selection, structured logging overhaul, full English localization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.2.0))
-- **v3.1.1** (2026-08-08): Performance optimization: 4-33x speedup in penalty calculation with caching and vectorization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.1.1))
-- **v3.1.0** (2026-07-28): CV threshold auto-search, organized output structure, new `full_tree_builder.py` module ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.1.0))
-- **v3.0.0** (2026-07-02): Smart conflict resolution, Leiden graph acceleration, multi-threaded data loading ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v3.0.0))
-- **v2.0.0** (2026-07-01): Major performance optimization ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v2.0.0))
-- **v1.0.0** (2026-02-27): Initial public release ([changelog](https://github.com/douymLab/PhyloSOLID/releases/tag/v1.0.0))
-
-For complete release notes, visit the [Releases page](https://github.com/douymLab/PhyloSOLID/releases).
-
----
-
-## Installation
-
-### Prerequisites
-
-- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) (required)
-- samtools, bedtools
-- ANNOVAR (for variant annotation)
-
-### Step 1: Clone the repository
+### Install the tree-building environment
 
 ```bash
 git clone https://github.com/douymLab/PhyloSOLID.git
 cd PhyloSOLID
-```
-
-### Step 2: Install ANNOVAR
-
-PhyloSOLID uses ANNOVAR for variant annotation. You need to install it separately:
-
-1. Register and download ANNOVAR from the ANNOVAR Download Page (free for academic use).
-
-2. Install ANNOVAR:
-```bash
-tar -xzvf annovar.latest.tar.gz -C /path/to/software/
-cd /path/to/software/annovar
-```
-
-3. Download required databases (hg38 build):
-```bash
-# Create humandb directory
-mkdir -p /path/to/software/annovar/humandb
-
-# Download refGene database (required)
-./annotate_variation.pl -downdb -buildver hg38 -webfrom annovar refGene humandb/
-
-# Download additional databases (recommended)
-./annotate_variation.pl -downdb -buildver hg38 -webfrom annovar cytoBand humandb/
-./annotate_variation.pl -downdb -buildver hg38 -webfrom annovar snp138 humandb/
-```
-
-### Step 3: Download and setup resource files
-
-All required resource files for running PhyloSOLID with the hg38 genome build are available on Figshare. **Due to their large total size (~9.18 GB), these files are not included in the GitHub repository and must be downloaded separately.**
-
-**Figshare URL**: [https://figshare.com/s/2aee3e878688722e9c6f](https://figshare.com/s/2aee3e878688722e9c6f)
-
-The Figshare repository contains the following files:
-
-**Reference and resource files (required for pipeline execution):**
-
-| File | Description | Size |
-|:-----|:------------|------:|
-| `genome.fa.gz` | hg38 reference genome | 840.4 MB |
-| `genome.fa.fai.gz` | FASTA index file for genome.fa | 2.13 KB |
-| `wgEncodeGencodeExonSupportV44.sort.bed.gz` | Exon coordinates for variant annotation | 51.07 MB |
-| `k24.umap.bedgraph.gz` | Mappability track for filtering (k-mer 24) | 2.57 GB |
-| `k100.umap.bedgraph.gz` | Mappability track for filtering (k-mer 100) | 718.29 MB |
-| `hg38_gnomad312_genome_only_af_all.txt.gz` | Population allele frequencies from gnomAD v3.1.2 | 4.65 GB |
-| `COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz` | Curated RNA editing sites | 58.26 MB |
-
-**Demo data files (optional, for testing the pipeline):**
-
-| File | Description | Size |
-|:-----|:------------|------:|
-| `demo_scrna.bam` | Demo BAM file for testing the pipeline | 52.06 MB |
-| `demo_scrna.bam.bai` | BAM index file | 314.56 KB |
-
-**Download and Setup Instructions:**
-
-1. Download all files from Figshare using the URL above
-2. Place the downloaded files in a dedicated directory on your system (e.g., `/path/to/resource/`)
-3. Extract the reference and resource files:
-
-```bash
-# Navigate to your resource directory
-cd /path/to/resource/
-
-# Extract reference and resource files
-gunzip genome.fa.gz
-gunzip genome.fa.fai.gz
-gunzip wgEncodeGencodeExonSupportV44.sort.bed.gz
-gunzip k24.umap.bedgraph.gz
-gunzip k100.umap.bedgraph.gz
-gunzip hg38_gnomad312_genome_only_af_all.txt.gz
-gunzip COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed.gz
-```
-
-**Important:** 
-- The BAM file (`demo_scrna.bam`) and its index (`demo_scrna.bam.bai`) are **demo data** for testing the pipeline. They are not required for running PhyloSOLID on your own data.
-- If you want to test the pipeline with the provided demo data, place the BAM files in the `demo/scrna/input/` directory.
-
-### Step 4: Configure paths.yaml
-
-Copy the template configuration file and update it with your paths:
-
-```bash
-cp config/paths.yaml.template config/paths.yaml
-```
-
-Edit `config/paths.yaml` to set the correct paths for:
-- Conda environment (Python interpreter and environment path)
-- ANNOVAR installation directory
-- Reference files (genome FASTA, GFF3, etc.)
-- Paths to the extracted resource files
-- **scDNA:** `scdna.genotyper_dir` (unphased genotyper). Bulk BAM is not required.
-
-Example `config/paths.yaml` configuration:
-
-```yaml
-# Conda environment (required for Python scripts)
-conda:
-  python: "/path/to/phylosolid_env/bin/python"
-  env_path: "/path/to/phylosolid_env"
-
-# ANNOVAR configuration
-annovar:
-  script_dir: "/path/to/software/annovar"
-  humandb: "/path/to/software/annovar/humandb"
-  build: "hg38"
-
-# Reference files (paths to extracted files)
-reference:
-  genome_fasta: "/path/to/resource/genome.fa"
-  genome_fasta_index: "/path/to/resource/genome.fa.fai"
-  gff3_file: "/path/to/resource/wgEncodeGencodeExonSupportV44.sort.bed"
-  mappability_file: "/path/to/resource/k24.umap.bedgraph"
-  gnomad_file: "/path/to/resource/hg38_gnomad312_genome_only_af_all.txt"
-  rna_editing_file: "/path/to/resource/COMBINED_RADAR_REDIprotal_DARNED_hg38_all_sites.bed"
-
-# scDNA end-to-end (bulk BAM optional)
-scdna:
-  genotyper_dir: "/path/to/scMosaicCaller/scMosaicCaller/genotyper"
-```
-
-### Step 5: Run the environment installation script
-
-```bash
 bash install.sh
-```
-
-This script will:
-- Create a conda environment with all Python/R dependencies for **tree building**
-- Install the converTree R package from GitHub (needed for Newick conversion)
-
-Circos plots use a **second** conda environment. After `install.sh`:
-
-```bash
-bash install_vis.sh
-# or, if you already have one: export PHYLOSOLID_VIS_ENV=circos_env
-```
-
-### Step 6: Install PhyloSOLID
-
-```bash
 conda activate phylosolid_env
 pip install -e .
 ```
 
-### Step 7: Verify installation
+A conda or mamba installation is required. `install.sh` creates the tree-building
+environment and installs the R dependency for Newick conversion. For BAM workflows,
+configure external tools and resources before running your data; see
+[installation and resources](docs/installation.md).
+
+### Try a bundled demo
+
+The binary-matrix demo needs no BAM, ANNOVAR or reference-resource download:
 
 ```bash
-# Check if ANNOVAR is properly configured
-phylosolid check-annovar --config config/paths.yaml
-
-# Run a mode-specific demo (tree building, then circos if the vis env is available)
-bash demo/scrna/run_demo.sh
-# bash demo/scdna/run_demo.sh
-# bash demo/binary-matrix/run_demo.sh
-```
-
----
-
-## Usage
-
-> **💡 Tip:** scRNA / SpaceTracer: one individual → one BAM (merge replicates with `samtools merge` beforehand). scDNA: one BAM per cell (`--bam-dir` or `--bam-list`); bulk BAM is optional.
-
-### Binary matrix mode (Direct tree building)
-
-For users who already have a binary mutation matrix, PhyloSOLID provides a direct mode that skips feature extraction and tree input generation:
-
-```bash
-# Basic usage
-python -m cli.main binary-matrix --sampleid SAMPLE_ID --inputfile matrix.txt --outputpath output_dir
-
-# Or using the installed command
-phylosolid binary-matrix --sampleid SAMPLE_ID --inputfile matrix.txt --outputpath output_dir
-```
-
-**Input format (tab-separated):**
-
-Rows: cells (first column contains cell barcodes/IDs)
-Columns: mutations (column headers are mutation IDs)
-Values: 1 (present), 0 (absent), NA (missing data)
-
-Example (matrix.txt):
-
-| cell_id | chr1_1000_A_G | chr2_2000_C_T | chr3_3000_G_A |
-|:--------|:--------------|:--------------|--------------:|
-| Cell_1 | 1 | 0 | 1 |
-| Cell_2 | 0 | 1 | NA |
-| Cell_3 | 1 | 1 | 0 |
-
-**Output:**
-```
-output_dir/SAMPLE_ID/
-├── 01_scaffold_builder/
-├── 02_mutation_integrator/
-├── 03_final_results/
-│   ├── phylo/
-│   ├── phylo_unpruned/
-│   └── circos/
-└── logs/
-```
-
-Binary-matrix mode does not run classifier, germline filtering, or CV-threshold search. The demo draws circos into `circos/` from `phylo/` plus `01_scaffold_builder/df_celltype.txt`. `phylo_unpruned/` keeps the tree before dropping all-zero mutations.
-
-### CV Threshold Selection (--cv_rank_thresh)
-
-PhyloSOLID now supports **automatic CV threshold search** to find the optimal threshold for coverage-based filtration. The `--cv_rank_thresh` parameter accepts the following formats:
-
-| Format | Example | Description |
-|--------|---------|-------------|
-| **Single value** | `--cv_rank_thresh 0.3` | Run once with this value |
-| **Comma-separated** | `--cv_rank_thresh 0.3,0.5,0.7` | Search over these values, select best |
-| **Range** | `--cv_rank_thresh 0.3-0.7:0.1` | Search from 0.3 to 0.7 with step 0.1 |
-| **Auto** | `--cv_rank_thresh auto` | Use presets: `[0.3, 0.4, 0.5, 0.6, 0.7]` |
-
-**How the search works:**
-
-1. For each CV threshold value, PhyloSOLID builds a complete phylogenetic tree
-2. Two metrics are computed for each tree:
-   - **Ω (pre-QC)**: Discordance index before quality control (full data)
-   - **Ω (final)**: Discordance index after QC (cleaned data)
-3. The optimal threshold is selected using the **pruning confidence criterion**:
-   - **Pruning ratio**: `pruning_ratio = (Ω_pre-QC - Ω_final) / Ω_final`
-   - **Confident pruning**: `pruning_ratio < 10.0` (the "One-Tenth Rule")
-   - If confident trees exist: select the one with lowest **Ω (final)**
-   - If no confident trees: fallback to lowest **Ω (pre-QC)**
-   - This prevents over-pruning while preserving biologically valid signal
-
-**Usage examples:**
-
-```bash
-# Single value (default behavior)
-phylosolid --workdir ./results scrna ... --cv_rank_thresh 0.3
-
-# Search over multiple values
-phylosolid --workdir ./results scrna ... --cv_rank_thresh 0.3,0.5,0.7
-
-# Range search
-phylosolid --workdir ./results scrna ... --cv_rank_thresh 0.3-0.7:0.1
-
-# Auto mode
-phylosolid --workdir ./results scrna ... --cv_rank_thresh auto
-```
-
-**Output structure when searching:**
-
-```
-your_results/
-├── 01_classifier_filter/
-├── 02_germline_filter/
-├── 03_scaffold_builder/
-│   ├── CV0_3/          # Scaffold outputs for CV=0.3
-│   ├── CV0_4/          # Scaffold outputs for CV=0.4
-│   └── CV0_5/          # Scaffold outputs for CV=0.5
-├── 04_mutation_integrator/
-│   ├── CV0_3/          # Complete tree outputs for CV=0.3
-│   ├── CV0_4/          # Complete tree outputs for CV=0.4
-│   └── CV0_5/          # Complete tree outputs for CV=0.5
-├── 05_final_results/   # Best CV results only
-│   ├── phylo/
-│   ├── phylo_unpruned/
-│   └── circos/         # written by demo vis step
-└── cv_threshold_search_results.csv  # Summary of all CV values tested
-```
-
-**Selection criteria summary:**
-
-| Metric | Description | What it tells you |
-|--------|-------------|-------------------|
-| Ω (pre-QC) | Discordance before QC | How well the initial tree fits all data |
-| Ω (final) | Discordance after QC | How well the cleaned tree fits remaining data |
-| Ω (reduced) | Ω_pre-QC - Ω_final | Amount of discordance removed by QC |
-| pruning_ratio | Ω_reduced / Ω_final | Confidence of pruning; < 10.0 indicates confident pruning |
-| **Selection rule** | If confident trees exist → lowest Ω_final; else → lowest Ω_pre-QC | Prevents over-pruning while preserving biological signal |
-
-**Pruning Confidence Criterion (v3.4.0+):**
-
-The pruning confidence criterion detects over-pruning by comparing the discordance removed by QC against the discordance that remains. A threshold of 10.0 was empirically determined through systematic benchmark analysis across eight datasets spanning a wide range of data quality (Ω_pre-QC from ~175 to ~2600), ensuring optimal balance between preserving biological signal and excluding over-pruned trees.
-
-
-### scRNA-seq mode
-
-**Basic usage:**
-```bash
-phylosolid --workdir ./results scrna \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam sample.bam \
-    --barcode barcodes.txt \
-    --read-len 120 \
-    --cellnum 155
-```
-
-**With all options:**
-```bash
-phylosolid --workdir ./results scrna \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam sample.bam \
-    --barcode barcodes.txt \
-    --metadata metadata.txt \
-    --read-len 120 \
-    --cellnum 155 \
-    --threads 8 \
-    --workdir ./results \
-    --config config/paths.yaml
-```
-
-### Running specific steps
-
-```bash
-# Run only feature extraction
-phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps feature_extraction
-
-# Run only tree input generation
-phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps tree_input
-
-# Run only tree building
-phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --steps tree_building
-```
-
-### Parallel execution
-
-```bash
-# Run feature extraction and tree input in parallel
-phylosolid --workdir ./results scrna --sample SAMPLE_ID ... --parallel
-```
-
-### scDNA-seq mode (BAM to tree)
-
-scDNA mode is an **end-to-end** pipeline: pileup mutation sites from **single-cell BAMs**, run the unphased genotyper, write tree-input matrices, then build the tree. **Bulk BAM is optional** and is omitted by default.
-
-**Requirements:** set `scdna.genotyper_dir` in `config/paths.yaml` (directory containing `run_unphased_prod_whether_bulk.py`), or export `PHYLOSOLID_GENOTYPER_DIR`. Copy `config/paths.yaml.template` if you do not have `config/paths.yaml` yet.
-
-```bash
-# Directory of per-cell BAMs named {cell}.bam
-phylosolid --workdir ./results scdna \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam-dir /path/to/sc_bams \
-    --sample-list sample_list.txt \
-    --threads 8
-
-# Or a text file with one BAM path per line
-phylosolid --workdir ./results scdna \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam-list bam_paths.txt
-
-# Optional bulk BAM (not required)
-phylosolid --workdir ./results scdna \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam-dir /path/to/sc_bams \
-    --bulk-bam /path/to/bulk.bam
-```
-
-### SpaceTracer mode (Skip feature extraction and classifier)
-
-SpaceTracer mode is designed for users who want to directly build trees without running feature extraction and the classifier step. This mode:
-
-- Skips the feature extraction step entirely
-- Bypasses the mutation classifier
-- Uses a dedicated tree building script
-- Accepts the same input parameters as scRNA mode
-
-**Basic usage:**
-```bash
-phylosolid --workdir ./results spacetracer \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam sample.bam \
-    --barcode barcodes.txt \
-    --read-len 120 \
-    --cellnum 155
-```
-
-**With all options:**
-```bash
-phylosolid --workdir ./results spacetracer \
-    --sample SAMPLE_ID \
-    --mutation-list mutations.txt \
-    --bam sample.bam \
-    --barcode barcodes.txt \
-    --metadata metadata.txt \
-    --read-len 120 \
-    --cellnum 155 \
-    --threads 8 \
-    --config config/paths.yaml
-```
-
----
-
-## Input File Formats
-
-### Mutation list (mutations.txt)
-```
-chr1_1000_A_G
-chr1_2000_C_T
-chr2_3000_G_A
-chr3_4000_T_C
-```
-Format: `chromosome_position_reference_alt`
-
-### Barcode file (barcodes.txt)
-```
-AAACCTGAGAAACCAT-1
-AAACCTGAGAAACCGG-1
-AAACCTGAGAAACCTA-1
-```
-
-### Metadata file (metadata.txt) - OPTIONAL
-
-The metadata file is **optional** for tree building. If provided, it enables cell-type annotation layers in the final visualization.
-
-**Format:** Tab-separated file with header:
-
-| Column | Required | Description |
-|--------|----------|-------------|
-| `cell_barcode` | Yes | Cell barcode/ID matching the barcode file |
-| `cell_type` | No | Cell type annotations (e.g., CD8+T, CD4+T, Monocyte) |
-| `cluster_info` | No | Cell cluster assignments |
-| `sample` | No | Sample identifiers |
-| `tumor_score` | No | Numeric tumor scores |
-| `B_cell_prop` | No | B cell proportions |
-
-**Example:**
-```
-cell_barcode    cell_type   cluster_info    sample
-AAACCTGAGAAACCAT-1  CD8+T   cluster1    sample1
-AAACCTGAGAAACCGG-1  CD4+T   cluster2    sample1
-AAACCTGAGAAACCTA-1  Monocyte    cluster1    sample2
-```
-
-**Note:** The metadata file is not required for tree construction. It is only used for visualization purposes when generating circos plots with PhyloSOLIDvis. If no metadata is provided, the tree and heatmap will still be generated without annotation layers.
-
----
-
-## Visualization
-
-PhyloSOLID provides a dedicated R package **PhyloSOLIDvis** for generating publication-ready circular (circos-style) phylogenetic tree visualizations.
-
-<div align="center">
-  <img src="https://raw.githubusercontent.com/TsingYang1112/PhyloSOLIDvis/master/inst/demo_circos.png" alt="Example circos plot from PhyloSOLIDvis" width="800">
-  <br>
-  <em>Figure 2: Example circos plot generated from PhyloSOLID output (351 cells, 17 mutations)</em>
-</div>
-
-### Installation
-
-PhyloSOLIDvis lives in a **separate** conda environment from tree building. `bash install.sh` does **not** install it into `pmg` / `phylosolid_env`.
-
-```bash
-# Recommended: dedicated vis env
-bash install_vis.sh
-conda activate phylosolid_vis
-```
-
-If you already have a working visualization env (for example `circos_env`):
-
-```bash
-export PHYLOSOLID_VIS_ENV=circos_env
-# or
-export PHYLOSOLID_VIS_RSCRIPT=/path/to/envs/circos_env/bin/Rscript
-# optional: install from a local PhyloSOLIDvis clone
-# export PHYLOSOLIDVIS_SRC=/path/to/PhyloSOLIDvis
-```
-
-Demos call `scripts/visualization/run_circos.sh` after tree building. They look for `PHYLOSOLID_VIS_RSCRIPT`, then `PHYLOSOLID_VIS_ENV`, then `phylosolid_vis`, then `circos_env`. The tree-building envs `pmg` and `phylosolid_env` are never used for plotting. If no vis R is found, circos is skipped and the demo still finishes.
-
-Manual install inside the vis env only:
-
-```r
-library(ggplot2)
-library(PhyloSOLIDvis)
-```
-
-### Demo and manual run
-
-Each `demo/*/run_demo.sh` builds the tree, then draws circos into `0*_final_results/circos/` using the vis env.
-
-Cell annotation is `0*_scaffold_builder/df_celltype.txt` (tab-separated, **no row index**, barcodes already match the tree). If you did not provide `--celltype-file`, that table still exists with `cell_type=default_type`.
-
-To plot an existing `phylo/` directory without re-running the demo:
-
-```bash
-bash scripts/visualization/run_circos.sh \
-  path/to/05_final_results/phylo \
-  path/to/05_final_results/circos \
-  path/to/03_scaffold_builder/df_celltype.txt
-```
-
-> **⚠️ Important:** `ggplot2` must be loaded **before** `PhyloSOLIDvis` to avoid namespace conflicts.
-
-```r
-library(ggplot2)
-library(PhyloSOLIDvis)
-
-# Run the complete pipeline
-results <- run_all(
-  inputpath = "path/to/workdir/sampleid/03_tree_building/05_final_results/phylo/",
-  outputpath = "path/to/workdir/sampleid/03_tree_building/05_final_results/circos/",
-  annotation_file = "path/to/workdir/sampleid/03_tree_building/03_scaffold_builder/df_celltype.txt"
-)
-```
-
-### Locating the correct input directory
-
-After running the PhyloSOLID pipeline with `--workdir ./results` and `--sample SAMPLE_ID`, the required files are located in:
-
-```
-workdir/
-└── SAMPLE_ID/
-    └── 03_tree_building/
-        ├── 03_scaffold_builder/
-        │   └── df_celltype.txt
-        └── 05_final_results/
-            ├── phylo/
-            │   ├── final_cleaned_I_full_withNA3_for_circosPlot.txt
-            │   ├── final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix
-            │   ├── final_cleaned_tree_node.txt
-            │   ├── df_flipping_count_for_each_mut.txt
-            │   └── df_total_flipping_count.txt
-            ├── phylo_unpruned/   # tree before dropping all-zero mutations
-            └── circos/           # written by the demo vis step
-```
-
-**Set `inputpath` to this `phylo/` directory.** Binary-matrix mode uses `03_final_results/phylo/` and `01_scaffold_builder/df_celltype.txt`.
-
-### Required Input Files
-
-| File | Description |
-|------|-------------|
-| `final_cleaned_I_full_withNA3_for_circosPlot.txt` | Input genotype matrix |
-| `final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix` | Conflict-free matrix |
-| `df_flipping_count_for_each_mut.txt` | Per-mutation flipping statistics |
-| `df_total_flipping_count.txt` | Total flipping statistics |
-
-### Annotation File Format (Optional)
-
-The annotation file (TSV format) should contain a `barcode` column matching cell IDs in the PhyloSOLID output. Optional columns include:
-
-| Column | Description |
-|--------|-------------|
-| `cluster_info` | Cell cluster assignments |
-| `cell_type` | Cell type annotations |
-| `sample` | Sample identifiers |
-| `tumor_score` | Numeric tumor scores |
-| `B_cell_prop` | B cell proportions |
-
-**Note:** `annotation_file` is optional. If not provided, the plot will be generated without annotation layers (tree + heatmap only).
-
-### Output Files
-
-After running `run_all()` or `plot_circos()`, files are written to `0*_final_results/circos/`:
-
-| File | Description |
-|------|-------------|
-| `No_target.circle_tree_output_as_point.*.svg/pdf` | ★ Main circular plot |
-| `heatmap_and_histograms_for_our_tree.pdf` | ★ Mutation heatmap with histograms |
-| `legend_components.circos_annotation.svg/pdf` | Circos annotation legend |
-| `legend_components.total_flipping_count.svg/pdf` | Flipping count legend |
-| `sorted_cf_matrix.txt` | Sorted mutation matrix |
-| `ordered_metadata_for_heatmap.txt` | Heatmap ordering data |
-| `phylo_tree.rds` | Phylogenetic tree object |
-
-### Usage Examples
-
-**Basic usage with annotation:**
-```r
-library(ggplot2)
-library(PhyloSOLIDvis)
-
-result <- plot_circos(
-  inputpath = "results/demo_scrna/03_tree_building/05_final_results/phylo/",
-  outputpath = "results/demo_scrna/03_tree_building/05_final_results/circos/",
-  annotation_file = "results/demo_scrna/03_tree_building/03_scaffold_builder/df_celltype.txt"
-)
-```
-
-**With custom parameters:**
-```r
-library(ggplot2)
-library(PhyloSOLIDvis)
-
-result <- plot_circos(
-  inputpath = "results/demo_scrna/03_tree_building/05_final_results/phylo/",
-  outputpath = "results/demo_scrna/03_tree_building/05_final_results/circos/",
-  annotation_file = "results/demo_scrna/03_tree_building/03_scaffold_builder/df_celltype.txt",
-  target_mut = "chr11_65426524_T_C",
-  tip_label_offset = 8,
-  tip_label_size = 3,
-  heatmap_width = 0.3,
-  flipping_point_size = 1.3,
-  plot_height = 12,
-  plot_width = 18,
-  verbose = TRUE
-)
-```
-
-**Complete pipeline (matrix ordering + circos plot + heatmap):**
-```r
-library(ggplot2)
-library(PhyloSOLIDvis)
-
-results <- run_all(
-  inputpath = "results/demo_scrna/03_tree_building/05_final_results/phylo/",
-  outputpath = "results/demo_scrna/03_tree_building/05_final_results/circos/",
-  annotation_file = "results/demo_scrna/03_tree_building/03_scaffold_builder/df_celltype.txt",
-  target_mut = "chr11_65426524_T_C",
-  run_adjusted = TRUE,
-  adjusted_tip_label_offset = 6,
-  adjusted_flipping_point_size = 1.3,
-  verbose = TRUE
-)
-```
-
-### For Complete Documentation
-
-> **📘 For detailed parameter descriptions, advanced usage, and troubleshooting, please visit the PhyloSOLIDvis GitHub repository:**
-> 
-> **[https://github.com/TsingYang1112/PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)**
-
-### Quick Troubleshooting for Visualization
-
-| Issue | Solution |
-|-------|----------|
-| `could not find function "plot_circos"` | Run `library(ggplot2)` then `library(PhyloSOLIDvis)` |
-| `cannot open file '.../phylo/final_cleaned_I_...'` | Verify `inputpath` points to the exact `phylo/` subdirectory |
-| Missing `annotation_file` column | Ensure file has a `barcode` column matching cell IDs |
-| Plot renders with overlapping labels | Adjust `tip_label_offset` (increase for more space) |
-| Network issues during installation | Set CRAN/BioC mirrors and retry |
-
----
-
-## Interactive Online Inspection Platform
-
-For interactive post-analysis and quality control, you can upload your PhyloSOLIDvis outputs to our dedicated web server:
-
-**Web Server**: [https://phylosolid.westlake.edu.cn](https://phylosolid.westlake.edu.cn)
-
-**🔐 Access:** Please register with your **institutional email address** (e.g., `@edu.cn`, `@*.edu`). Registration is free for academic users.
-
-**Features:**
-- Interactive Circos exploration with zoom and cell-level query
-- Tree topology evaluation and quality control
-- Genotype flip statistics for assessing tree reliability
-- Optional upload of IGV snapshots and ANNOVAR annotation results
-
-**Required upload files:**
-
-| File | Location |
-|:-----|:---------|
-| `ordered_metadata_for_heatmap.txt` | `05_final_results/circos/` |
-| `df_muts_corresponding_to_ordered_tiplabels_by_anticlockwise.txt` | `05_final_results/circos/` |
-| `No_target.circle_tree_output_as_point.*.svg` | `05_final_results/circos/` |
-| `legend_components.circos_annotation.svg` | `05_final_results/circos/` |
-| `df_total_flipping_count.txt` | `05_final_results/phylo/` |
-| `df_flipping_count_for_each_mut.txt` | `05_final_results/phylo/` |
-
----
-
-## Demo Example
-
-Each mode has its own demo under `demo/`. Sample IDs are `demo_scrna`, `demo_scdna`, and `demo_binput`.
-
-See [demo/README.md](demo/README.md) for inputs, how to run, and which example files are shipped.
-
-```bash
-bash demo/scrna/run_demo.sh
-bash demo/scdna/run_demo.sh
 bash demo/binary-matrix/run_demo.sh
 ```
 
-Full pipeline intermediates are written to `demo/<mode>/output/` (gitignored). GitHub ships the **output directory framework plus key files** under `demo/<mode>/expected_output/` (cleaned tree/matrix, `df_celltype.txt`, one circos PDF, CV summary). Re-run the demo locally to regenerate everything, including circos if the visualization env is installed.
-
-**Inputs in this repository:**
-- scDNA: target-site mini BAMs in `demo/scdna/input/bam/` (indexes are built by `run_demo.sh`)
-- binary-matrix: `demo/binary-matrix/input/demo_input.tsv`
-- scRNA: mutation list, barcodes, and cell types in `demo/scrna/input/`. The scRNA BAM is **not** in GitHub (size); download it from Figshare and place it at `demo/scrna/input/demo_scrna.bam`
-
-**Example result sizes from the packaged demos:**
-- binary-matrix: 7 cells × 9 mutations after dropping 12 ghost sites
-- scDNA: 22 cells × 78 mutations
-- scRNA: 352 cells × 17 mutations
-
-### Run individual steps with demo data
-
-**1. Feature extraction**
+Two BAM-based demos are also available after mode-specific setup:
 
 ```bash
-phylosolid --workdir demo/scrna/output scrna \
-    --sample demo_scrna \
-    --mutation-list demo/scrna/input/identifier.txt \
-    --bam demo/scrna/input/demo_scrna.bam \
-    --barcode demo/scrna/input/barcodes.txt \
-    --threads 4 \
-    --read-len 120 \
-    --cellnum 3319 \
-    --steps feature_extraction
+bash demo/scdna/run_demo.sh
+bash demo/scrna/run_demo.sh
 ```
 
-**2. Tree input generation**
+scDNA mini BAMs are included. Download the scRNA demo BAM from the
+[resource collection](https://figshare.com/s/2aee3e878688722e9c6f) and place it at
+`demo/scrna/input/demo_scrna.bam`. Demo scripts build trees and then draw circos
+if a separate visualization environment is available.
+
+| Demo | Step 7 pre-QC cells × mutations | Step 8 post-QC cells × mutations |
+|---|---:|---:|
+| scRNA | 433 × 17 | 352 × 17 |
+| scDNA | 22 × 78 | 22 × 78 |
+| Binary matrix | 13 × 21 | 8 × 19 |
+
+These example results were refreshed on 2026-10-27. Full runs write to
+`demo/<mode>/output/`; packaged trees, matrices, plots and summaries are in
+`demo/<mode>/expected_output/`. See [demo instructions](demo/README.md) for inputs
+and the scope of the refresh.
+
+## Run your data
+
+### Binary matrix
 
 ```bash
-phylosolid --workdir demo/scrna/output scrna \
-    --sample demo_scrna \
-    --mutation-list demo/scrna/input/identifier.txt \
-    --bam demo/scrna/input/demo_scrna.bam \
-    --barcode demo/scrna/input/barcodes.txt \
-    --cellnum 3319 \
-    --steps tree_input
+phylosolid binary-matrix \
+  --sampleid SAMPLE_ID --inputfile matrix.tsv --outputpath results
 ```
 
-**3. Tree building**
+Rows are cells, columns are mutations, and the first column contains cell IDs.
+This mode skips classifier, germline filtering and coverage CV search.
+
+### scRNA
 
 ```bash
-phylosolid --workdir demo/scrna/output scrna \
-    --sample demo_scrna \
-    --mutation-list demo/scrna/input/identifier.txt \
-    --bam demo/scrna/input/demo_scrna.bam \
-    --barcode demo/scrna/input/barcodes.txt \
-    --celltype-file demo/scrna/input/celltype.txt \
-    --steps tree_building
+phylosolid --config config/paths.yaml --workdir results scrna \
+  --sample SAMPLE_ID --mutation-list mutations.txt \
+  --bam sample.bam --barcode barcodes.txt \
+  --read-len 120 --cellnum 3319 --threads 4
 ```
 
-**Complete pipeline with demo data**
+Set read length and cell count for your data. Cell-type annotation is optional
+(`--celltype-file celltype.tsv`). BAM preprocessing requires external resources;
+copy [config/paths.yaml.template](config/paths.yaml.template) to `config/paths.yaml`
+and edit it for your machine.
+
+### scDNA
 
 ```bash
-phylosolid --workdir demo/scrna/output scrna \
-    --sample demo_scrna \
-    --mutation-list demo/scrna/input/identifier.txt \
-    --bam demo/scrna/input/demo_scrna.bam \
-    --barcode demo/scrna/input/barcodes.txt \
-    --celltype-file demo/scrna/input/celltype.txt \
-    --threads 4 \
-    --read-len 120 \
-    --cellnum 3319
+phylosolid --config config/paths.yaml --workdir results scdna \
+  --sample SAMPLE_ID --mutation-list mutations.txt \
+  --bam-dir /path/to/sc_bams --sample-list sample_list.txt --threads 4
 ```
 
----
+Use `{cell}.bam` files or `--bam-list bam_paths.txt`. Configure the external
+unphased genotyper via `scdna.genotyper_dir` or `PHYLOSOLID_GENOTYPER_DIR`.
+Bulk BAM is optional.
 
-## Troubleshooting
+SpaceTracer commands, input formats, annotations and selective pipeline stages
+are described in the [usage guide](docs/usage.md). Run `phylosolid MODE --help`
+for pipeline arguments. CV search and resolution-backoff controls belong to the
+[direct tree-building entry points](docs/tree_building.md), not the pipeline CLI.
 
-### Conda not found
+## Outputs
 
-If you see "conda: command not found":
+Each mode writes a final-results directory containing:
 
-1. Download and install Miniconda: https://docs.conda.io/en/latest/miniconda.html
-2. Or install Mambaforge: https://github.com/conda-forge/miniforge#mambaforge
-3. Restart your terminal after installation
+```text
+final-results/
+├── phylo/             # Step 8 output; marked pre_fallback if restored from Step 7
+├── phylo_unpruned/    # Step 7 snapshot before Step 8 QC
+└── README_phylo.txt
+```
 
-### ANNOVAR not found
+**Both bundles remove all-zero inferred matrix rows/columns and collapse the
+corresponding tree nodes.** `phylo_unpruned` is already refined by Step 7; it is
+not raw input. Each bundle's `output_stage.json` records its stage, dimensions
+and Omega. When Step 8 leaves no usable tree, `phylo/` uses the Step 7 snapshot
+and is explicitly marked `pre_fallback`.
 
-If you see "ANNOVAR not found" error:
+| Mode | Final-results path under the sample directory | Cell annotation |
+|---|---|---|
+| scRNA / scDNA | `03_tree_building/05_final_results/` | `03_tree_building/03_scaffold_builder/df_celltype.txt` |
+| SpaceTracer | `03_tree_building/04_final_results/` | `03_tree_building/02_scaffold_builder/df_celltype.txt` |
+| Binary matrix | `03_final_results/` | `01_scaffold_builder/df_celltype.txt` |
 
-1. Check that ANNOVAR is installed
-2. Verify the paths in config/paths.yaml
-3. Run `phylosolid check-annovar` to diagnose
+Start with `phylo/final_cleaned_tree_node.json` or `.txt` and
+`phylo/final_cleaned_M_full_basedPivots.filtered_sites_inferred.CFMatrix`.
+The aligned observed matrix is `final_cleaned_I_full_withNA3_for_circosPlot.txt`;
+missing observations are encoded as `3` in this export. Flip-count tables
+summarize disagreements between observations and inferred genotypes.
 
-### Reference files not found
+CV search writes `cv_search_summary.csv` and `cv_selection_report.txt` in the
+tree-building directory. The pruning ratio is an operational selection guard,
+not a confidence probability. See [scoring and selection](docs/tree_building.md)
+and [output-stage details](docs/phylo_output_stages.md).
 
-If you see errors about missing reference files:
+## Visualization
 
-1. Download the resource files package from Figshare using the URL above
-2. Ensure files are extracted to the correct location
-3. Verify paths in config/paths.yaml point to the extracted files
-4. Check file permissions (ensure files are readable)
+Circos uses the separate [PhyloSOLIDvis](https://github.com/TsingYang1112/PhyloSOLIDvis)
+R package and environment:
 
-### Read length mismatch
-
-If you see warnings about read length:
-
-1. Check your BAM file's actual read length:
 ```bash
-samtools view your.bam | head -n1 | awk '{print length($10)}'
-```
-2. Use the `--read-len` parameter to specify the correct value
-
-### CV threshold search takes too long
-
-If searching over multiple CV values is slow:
-
-1. Reduce the number of values to test:
-   - Use a smaller range: `--cv_rank_thresh 0.3,0.5,0.7`
-   - Or increase step size: `--cv_rank_thresh 0.3-0.7:0.2`
-
-2. Use the `auto` mode which tests only 5 values:
-   ```bash
-   --cv_rank_thresh auto
-   ```
-
-3. For large datasets, consider running a single value first:
-   ```bash
-   --cv_rank_thresh 0.3
-   ```
-
-### cv_threshold_search_results.csv is empty
-
-If the search results file is empty:
-
-1. Check that you used a search format (comma-separated, range, or auto)
-2. Single value mode does not generate a search results file
-3. Ensure the pipeline completed successfully for all tested values
-
-### Understanding the search results metrics
-
-The search results CSV contains the following columns:
-
-| Column | Description |
-|--------|-------------|
-| `cv_value` | The CV threshold tested |
-| `omega_pre_qc` | Discordance before QC (lower is better) |
-| `omega_final` | Discordance after QC (lower is better) |
-| `omega_reduced` | Ω_pre-QC - Ω_final (discordance removed by QC) |
-| `pruning_ratio` | omega_reduced / omega_final (confidence of pruning) |
-| `is_confident` | True if pruning_ratio < 10.0 (confident pruning) |
-| `scaffold_count` | Number of scaffold mutations selected |
-
-**Interpretation:**
-- A `pruning_ratio < 10.0` indicates confident pruning: QC removed noise without eliminating meaningful signal
-- A `pruning_ratio >= 10.0` suggests over-pruning: QC may have removed too much biological signal
-- If `is_confident` is True for one or more CV values, the pipeline selects the one with lowest `omega_final`
-- If `is_confident` is False for all CV values, the pipeline falls back to the lowest `omega_pre_qc`
-
-### Large BAM files?
-
-If your BAM files are large, extract only target sites before running:
-```bash
-samtools view -b large.bam -L target_sites.bed > mini.bam
+bash install_vis.sh
+bash scripts/visualization/run_circos.sh \
+  path/to/final-results/phylo \
+  path/to/final-results/circos \
+  path/to/scaffold-builder/df_celltype.txt
 ```
 
-### Permission denied errors
+Use the `phylo/` directory as input and the pipeline's exported annotation table.
+Keep visualization dependencies separate from `phylosolid_env` / `pmg`.
+See [visualization and interactive inspection](docs/visualization.md) for R usage,
+plot options, upload files for the [inspection platform](https://phylosolid.westlake.edu.cn),
+and troubleshooting.
 
-Ensure scripts are executable:
-```bash
-chmod +x scripts/scrna/**/*.sh
-chmod +x scripts/scrna/**/*.py
-chmod +x scripts/scrna/**/*.R
-```
+## Documentation
 
----
+| Guide | Contents |
+|---|---|
+| [Installation](docs/installation.md) | ANNOVAR, reference downloads, configuration and environments |
+| [Usage and inputs](docs/usage.md) | All modes, file formats, annotations and selective stages |
+| [Complete parameter reference](docs/parameters.md) | Every CLI/dictionary setting, defaults by mode, active conditions and key mechanisms |
+| [Tree-building controls](docs/tree_building.md) | CV search, metrics, resolution controls and Step 1–9 |
+| [Output stages](docs/phylo_output_stages.md) | Pre-QC/post-QC bundles, cleanup and fallback |
+| [Resolution backoff](docs/resolution_backoff.md) | Conflict budget, audit files and limitations |
+| [Visualization](docs/visualization.md) | Circos, R examples and interactive inspection |
+| [Troubleshooting](docs/troubleshooting.md) | Setup, runtime and output issues |
+| [Demos](demo/README.md) | Bundled inputs and regenerated result snapshots |
+| [Version history](docs/changelog.md) | Current source updates and tagged releases |
+
+The [workflow overview](images/1figure_plot.png) illustrates the pipeline.
 
 ## Citation
 
-If you use PhyloSOLID in your research, please cite:
-
-1. Yang, Q. et al. PhyloSOLID: Robust phylogeny reconstruction from single-cell data despite inherent error and sparsity. (2026) doi:10.64898/2026.02.04.703905.
-
----
+Yang, Q. et al. *PhyloSOLID: Robust phylogeny reconstruction from single-cell data
+despite inherent error and sparsity.* (2026).
+DOI: [10.64898/2026.02.04.703905](https://doi.org/10.64898/2026.02.04.703905).
 
 ## License
 
-PhyloSOLID is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-### Code Availability
-
-The source code, documentation and examples are available on GitHub at [https://github.com/douymLab/PhyloSOLID](https://github.com/douymLab/PhyloSOLID).
-
-### Third-party Dependencies
-
-PhyloSOLID uses several third-party tools and libraries:
-- **ANNOVAR**: Users need to install ANNOVAR separately (free for academic use, registration required)
-- **R packages**: Various R packages under GPL/MIT licenses
-- **Python packages**: See environment.yml for details
-
-Please respect the licenses of these dependencies when using PhyloSOLID.
-
----
+[MIT License](LICENSE). ANNOVAR and other dependencies have their own installation
+and licensing requirements. Python/R dependencies are listed in
+[environment.yml](environment.yml).
 
 ## Contact
 
-For questions and support, please contact:  
-Qing Yang: yangqing@westlake.edu.cn  
+Qing Yang: yangqing@westlake.edu.cn
+
 Yanmei Dou: yanmeidou@westlake.edu.cn

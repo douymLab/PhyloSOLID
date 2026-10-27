@@ -1,0 +1,2 @@
+iteration	resolution	n_input_cells	n_grouped_mutations	n_groups	n_informative_cells	n_multi_group_cells	multi_group_fraction	n_high_conflict_cells	high_conflict_fraction	fp_cutoff	total_positive_calls	minimum_out_of_group_fp
+0	1.2	433	14	3	379	20	0.052770448548812667	11	0.029023746701846966	0.5	550	20

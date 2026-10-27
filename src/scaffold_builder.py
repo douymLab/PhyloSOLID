@@ -1010,7 +1010,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
 def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, seed=42, 
-                           ordered_mutations=None, logger_obj=None):
+                           ordered_mutations=None, logger_obj=None, plot_graph=True):
     """
     Build a weighted co-occurrence graph from clone_weights and pair_weights,
     and use the Leiden algorithm to partition mutations into groups.
@@ -1091,9 +1091,10 @@ def leiden_mutation_groups(clone_weights, pair_weights, pdf_file, resolution=1, 
         log.debug(f"Group {idx}: {len(community)} mutations")
     
     # 7. Plot graph
-    log.info(f"Saving mutation graph plot to: {pdf_file}")
-    plot_mutation_graph(G_ig, mutation_group, pdf_file, seed=seed, 
-                       ordered_mutations=all_mutations, logger_obj=log)
+    if plot_graph:
+        log.info(f"Saving mutation graph plot to: {pdf_file}")
+        plot_mutation_graph(G_ig, mutation_group, pdf_file, seed=seed,
+                           ordered_mutations=all_mutations, logger_obj=log)
     
     return mutation_group, partition, G_ig
 
@@ -7425,6 +7426,7 @@ def build_scaffold_tree(
     log.info("Performing mutation grouping with Leiden algorithm...")
     
     # Calculate adaptive resolution
+    resolution_was_auto = params.get('resolution_of_graph') is None
     if 'resolution_of_graph' in params and params['resolution_of_graph'] is not None:
         resolution = params['resolution_of_graph']
         log.info(f"Using user-specified resolution: {resolution}")
@@ -7451,16 +7453,48 @@ def build_scaffold_tree(
         I_resolved, 100, 42, cutoff_mcf_for_graph, cutoff_mcn_for_graph, logger_obj=log
     )
     
-    # ===== Pass sorted scaffold_mutations =====
+    # Bounded backoff applies only to initial main groups.
+    # Fixed resolution takes precedence. Entry points opt in through params.
+    backoff_threshold = params.get('resolution_backoff_threshold')
+    use_backoff = resolution_was_auto and backoff_threshold is not None
     mutation_group, partition, G_ig = leiden_mutation_groups(
-        clone_weights, pair_weights, 
-        outputpath_scaffold + "/" + sampleid + ".graph_for_mut_grouping.pdf", 
-        params['resolution_of_graph'], 
-        seed=get_seed(), 
-        ordered_mutations=scaffold_mutations,
-        logger_obj=log
+        clone_weights, pair_weights,
+        outputpath_scaffold + "/" + sampleid + ".graph_for_mut_grouping.pdf",
+        params['resolution_of_graph'], seed=get_seed(),
+        ordered_mutations=scaffold_mutations, logger_obj=log,
+        plot_graph=not use_backoff,
     )
-    
+    if use_backoff:
+        from src.resolution_backoff import refine_resolution
+        backoff = refine_resolution(
+            G_ig, I_resolved, partition, params['resolution_of_graph'],
+            threshold=backoff_threshold,
+            min_resolution=params.get('min_resolution', 0.5),
+            step=0.1, max_steps=20, seed=get_seed(),
+            fp_cutoff=params.get('fp_ratio_per_cell_cross_all_muts_cutoff', 0.5),
+            logger_obj=log,
+        )
+        mutation_group = backoff['mutation_group']
+        partition = backoff['partition']
+        params['resolution_of_graph'] = backoff['resolution']
+        audit = {key: value for key, value in backoff.items()
+                 if key not in ['partition', 'mutation_group', 'initial_cells', 'final_cells']}
+        audit['scope'] = 'initial_main_groups_only; downstream uses selected resolution'
+        with open(os.path.join(outputpath_scaffold, sampleid + '.resolution_backoff.json'), 'w') as handle:
+            json.dump(audit, handle, indent=2, allow_nan=False)
+        pd.DataFrame(backoff['trace']).to_csv(
+            os.path.join(outputpath_scaffold, sampleid + '.resolution_backoff_trajectory.tsv'),
+            sep='\t', index=False,
+        )
+        for label, key in [('initial', 'initial_cells'), ('selected', 'final_cells')]:
+            backoff[key].to_csv(os.path.join(
+                outputpath_scaffold, sampleid + '.resolution_backoff_' + label + '_cells.tsv'), sep='\t')
+        plot_mutation_graph(
+            G_ig, mutation_group,
+            outputpath_scaffold + '/' + sampleid + '.graph_for_mut_grouping.pdf',
+            seed=get_seed(), ordered_mutations=list(G_ig.vs['name']), logger_obj=log,
+        )
+
     # ===== Reorder mutation_group =====
     sorted_mutation_names = get_ordered_mutations(I_resolved, df_features_new)
     mutation_group = {mut: mutation_group[mut] for mut in sorted_mutation_names if mut in mutation_group}

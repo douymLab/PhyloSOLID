@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-27",
+  "sample": "demo_scrna",
+  "mode": "scrna",
+  "rerun": "tree_building_and_circos",
+  "reused_upstream": true,
+  "command": [
+    "python",
+    "-m",
+    "src.run_phylosilid_fullTree_scRNA",
+    "--sampleid",
+    "demo_scrna",
+    "--inputpath",
+    "demo/scrna/output/demo_scrna/02_treeinput/data",
+    "--outputpath",
+    "demo/scrna/output/demo_scrna/03_tree_building",
+    "--features_file",
+    "demo/scrna/output/demo_scrna/01_features/demo_scrna.benchmark_patched.feature.txt",
+    "--max_workers",
+    "4",
+    "--is_predict_germ",
+    "yes",
+    "--celltype_file",
+    "demo/scrna/input/celltype.txt"
+  ],
+  "source_sha256": {
+    "src/phylo_export.py": "c039119e1445e91d8f1ac7cb3f5d1c9129048dd5e08920616d50db093d30ae52",
+    "src/full_tree_builder.py": "5c589b0fef33b288e53e05a569fe8553e06161f12aba5b26808d750c29f4016d",
+    "src/scaffold_builder.py": "6266c293334e4a8c270289ddcb403e14f49e385dbc16bf99b798a20e233055e3",
+    "src/pruning_policy.py": "cef35b2aa6908e0eea3fbd134b6061ae9fba936f085391b32576ef30f7935b8c",
+    "src/resolution_backoff.py": "d03c5f97b50eeb507aee86cabe958ee3ddcb4214eb9a7677062f345037c9fd43",
+    "src/run_phylosilid_fullTree_scRNA.py": "7ba2b7f88916ca67cf3fc820ecfc12f43b9d30fd9946a0c2ffc0f2dcc37f407e",
+    "src/run_phylosilid_fullTree_scDNA.py": "908c68be5f7c448c5001f2db5b336a2937a9002c99cef92fb6163d21024dad00",
+    "src/run_phylosilid_fullTree_binput.py": "f1629770009064fca18d623563840fa1fabde637befa5fd933e848429f640761"
+  },
+  "results": {
+    "phylo": {
+      "output_stage": "final",
+      "source_step": "step8",
+      "all_zero_rows_columns_removed": true,
+      "ghost_mutations": [],
+      "cells": 352,
+      "mutations": 17,
+      "omega": 25.900000000000002
+    },
+    "phylo_unpruned": {
+      "output_stage": "pre_qc",
+      "source_step": "step7",
+      "all_zero_rows_columns_removed": true,
+      "ghost_mutations": [],
+      "cells": 433,
+      "mutations": 17,
+      "omega": 55.4
+    }
+  },
+  "input_sha256": {
+    "demo/scrna/output/demo_scrna/02_treeinput/data/Summary_data_17.filtered_and_calculatedAF_and_mutantAnno.txt": "8126cef14ac16a7d43bc4ae2d54e97d76d02c71679a90f989b3b0060d5cba5d5",
+    "demo/scrna/output/demo_scrna/02_treeinput/data/data.allele_count.txt": "1555cd3f87d91ca7d92d76c5ec7685ddc24d66296914c732da08cda5265ef0d6",
+    "demo/scrna/output/demo_scrna/02_treeinput/data/data.likelihood_mut_matrix.txt": "90c1b81410b04870090b4cc20b0744a33a44e4f12ae08499c7607fd8741c8fd7",
+    "demo/scrna/output/demo_scrna/02_treeinput/data/data.likelihood_unmut_matrix.txt": "388ab49b12f236a4e573477f8085499d8da6c1335f54d123f80949f0d2631d41",
+    "demo/scrna/output/demo_scrna/02_treeinput/data/data.posterior_matrix.txt": "90c1b81410b04870090b4cc20b0744a33a44e4f12ae08499c7607fd8741c8fd7",
+    "demo/scrna/output/demo_scrna/02_treeinput/data/features.preprocess_items.txt": "ff399b57fea9b8d4d76a5cfef56ec88938302df1b93a196520b75cb86712500e"
+  },
+  "path_convention": "Paths relative to repository root; upstream files regenerated locally."
+}
